@@ -2873,7 +2873,7 @@ pub struct RuleMatches {
     #[prost(uint64, tag = "3")]
     pub matches: u64,
 }
-/// The watcher that holds the store now.
+/// The watcher that holds the store now and, for the background service, is making progress.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2896,7 +2896,8 @@ pub struct Watcher {
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WatcherFailure {
-    /// What failed, the core's word: `read`, `sample` or `events`.
+    /// What failed, the core's word: `read`, `sample`, `resubscribe`, `events`, `full_check`, or
+    /// `store` for a failure the store did not take.
     #[prost(string, tag = "1")]
     pub what: ::prost::alloc::string::String,
     #[prost(int64, tag = "2")]

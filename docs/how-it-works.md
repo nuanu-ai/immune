@@ -35,13 +35,13 @@ flowchart TD
 
 ## When things run
 
-A full check, `immune run`, runs every reader once and then every rule. While the app is open it runs one every hour. `immune watch`, which the app keeps running as its child, does the faster work:
+A full check, `immune run`, runs every reader once and then every rule. The [background service](core-service.md) runs `immune watch --background`, which starts a full check at startup and every hour. The watcher does the faster work:
 
 - it reads the places where persistence lives about a second after FSEvents reports a change there. First it reads only the readings whose places the change is in, each whole: one kind of place on this Mac, the hooks of one checkout, or one way a file runs code by itself in every checkout. It reads every place at its start, whatever an earlier watcher left, after a reading that failed, when it finds new places to watch or a new way into one, when FSEvents says it dropped or coalesced events, and when a change is at a path in no watched place. A path is matched to a place by its spelling, and a link spelled in another case or Unicode form, or a hard link, gets past that. So after any reading of some places, and when a watched path now leads somewhere else, the watcher reads every place at its next look at what to watch, once a minute. The place a change names is read within seconds, every other place within about a minute. What one watcher still owed when it stopped, and whatever changed while none ran, is read by the next one at its start. It subscribes before that reading begins, so a change made meanwhile is either in the reading or brings an event. On a Mac where nothing changed that reading records no change and opens nothing;
 - it samples the user's programs and their internet connections every 30 seconds (`--sample-every`);
 - it reads the collector's log every 10 seconds (`--events-every`), when the collector is installed.
 
-Each prints one JSON line per event. Only one watcher may hold a store, and a full check waits up to a minute for a watcher's reading to finish. When the app quits, all of this stops.
+The watcher prints one JSON line per event. Only one watcher may hold a store, and a full check waits up to a minute for a watcher's reading to finish. The optional app reads the store through the commands. The core runs when the app is closed.
 
 ## Levels of access
 
@@ -240,7 +240,7 @@ A watcher whose latest reading or sample failed does not count as watching live 
 
 ## The app
 
-The app lives in the menu bar. On first launch it asks once for permission to send notifications, and the first check takes about a minute.
+The optional app lives in the menu bar. On first launch it asks once for permission to send notifications. It reads the core's status and findings periodically, and gets the details of a finding when asked. The core's first full check can take several minutes.
 
 The panel under the icon answers whether this Mac is OK. Its headline counts the findings that need the person now and the ones to look at. Each finding is a row that starts with the thing itself, a file's path or a program with its arguments, and a click opens its evidence, the response layer's verdicts and the person's answer. An answer given through an agent or on the command line stays in the panel with Take back. What Immune cannot see on this Mac and the person can fix is a group of its own below the findings. Open report opens a page in the browser with everything Immune knows, including known vulnerabilities and rule matches, which the panel leaves out.
 
@@ -283,6 +283,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
 | Which places of persistence are watched | the categories Objective-See's KnockKnock enumerates and MITRE ATT&CK's persistence techniques for macOS. Immune keeps the places current macOS still acts on, that a program running as the user can read without a permission dialog, and that have a normal state to compare with. The rest are named as limits |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
+| Background process supervision | macOS launchd keeps one job running in the user's login session. The core schedules its own checks and uses a process group and a lifetime pipe to stop a check and its tools if the watcher exits. The watcher refreshes its lock while it makes progress so status can detect a stall |
 | Who a process is | Apple's audit token, the pid with its version, and the start time `eslogger` gives. The Elastic Common Schema leaves `process.entity_id`, an identifier that survives a reused pid, to each data source to build from what identifies a process; Immune hands over those parts as they are and builds no identifier of its own |
 | Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |
 | A run of unchanged readings kept as its first and its last | monitoring systems such as Nagios and Icinga, which keep for each check the time of its last result and of its last change of state (`last_check`, `last_state_change`) |
@@ -319,6 +320,6 @@ Immune's own:
 
 ## Planned
 
-Not built: grouping related findings into cases, adding up weak rule matches, raising a finding's weight when something is seen on this Mac for the first time, and any reaction that stops or suspends a program. Immune reports and never blocks, suspends or kills anything.
+Planned work includes grouping related findings into cases, adding up weak rule matches and raising a finding's weight when something is seen on this Mac for the first time. Immune reports what rules find and takes no action against the programs they match.
 
 Version 1 of the contract with the response layer is built. Its protobuf schema is in `contract/immune/v1/`, the core's types are generated from it, and seven commands use it (see [reference.md](reference.md#the-contract)). `immune project`, `immune program` and `immune machine` answer with one message what the store knows of one project, one program installed on this Mac and one machine. `immune matches` is the queue of rule matches: every match of every level with the event it matched, what was read and lost on the way, the collector's state and the rules that judge nothing. It reads the collector's log again from a place the caller keeps, so the store holds no event for it. `immune findings` and `immune finding <id>` give the core's own findings, the second one whole: its words, its evidence by kind, the journal entries it rests on and the person's answer. `immune verdict` takes the response layer's verdict back. Every message carries the id of the store it was read from, random and made with the store, because a finding's id is unique only within one store.

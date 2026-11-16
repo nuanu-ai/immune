@@ -48,8 +48,7 @@ public enum RunFor: Sendable, Equatable {
   /// A click: Check now, an answer, opening Details, opening the panel. The owner is
   /// waiting for the result: user-initiated.
   case owner
-  /// What the app starts by itself: the hourly check, the status every minute and after
-  /// each reading of the watcher, the page written ahead. Nobody waits on it, but its
+  /// What the app starts by itself: the status every minute and the page written ahead. Nobody waits on it, but its
   /// result must not be put off for long: utility, not background, which the system may
   /// defer for minutes and throttles hardest on battery.
   case app
@@ -62,12 +61,8 @@ public enum RunFor: Sendable, Equatable {
   }
 }
 
-/// Where `immune` is, and which store it is pointed at. The binary inside the bundle
-/// and Immune's own default store, unless a test passes absolute paths with
-/// `--immune-path <path>` / `IMMUNE_PATH` and `--store <path>` /
-/// `IMMUNE_STORE`. The app honours these only in a debug build (see
-/// main.swift). A relative path is refused, so `immune` is never looked up through
-/// PATH or the working folder.
+/// The installed core's absolute path, recorded by app/build in Info.plist, and its store.
+/// Debug builds may override both for trials. Paths are never looked up through PATH.
 public enum ImmuneLocation {
   public static let argument = "--immune-path"
   public static let environment = "IMMUNE_PATH"
@@ -90,30 +85,28 @@ public enum ImmuneLocation {
   }
 
   public static func resolve(
-    arguments: [String], environment env: [String: String], executableDirectory: URL?
+    arguments: [String], environment env: [String: String], configuredPath: String?
   ) -> Result<URL, LocationProblem> {
     var override: String? = env[environment]
     if let i = arguments.firstIndex(of: argument) {
       guard i + 1 < arguments.count else { return .failure(.missingValue) }
       override = arguments[i + 1]
     }
-    if let path = override {
-      guard path.hasPrefix("/") else { return .failure(.notAbsolute) }
-      return .success(URL(fileURLWithPath: path))
-    }
-    guard let dir = executableDirectory else { return .failure(.noBundle) }
-    return .success(dir.appendingPathComponent("immune"))
+    guard let path = override ?? configuredPath else { return .failure(.notConfigured) }
+    guard path.hasPrefix("/") else { return .failure(.notAbsolute) }
+    return .success(URL(fileURLWithPath: path))
   }
 }
 
 public enum LocationProblem: Error, Equatable, Sendable {
-  case missingValue, notAbsolute, noBundle
+  case missingValue, notAbsolute, notConfigured
 
   public var words: String {
     switch self {
     case .missingValue: "A path option was given without a path."
-    case .notAbsolute: "A path given for a trial is not absolute, so it is not used."
-    case .noBundle: "The app cannot find its own folder, so it cannot find immune."
+    case .notAbsolute: "The configured path is not absolute, so it is not used."
+    case .notConfigured:
+      "The app has no ImmuneExecutablePath. Rebuild it with the installed core’s absolute path."
     }
   }
 }

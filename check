@@ -11,12 +11,14 @@ cd "$(dirname "$0")"
 . ./scripts/prerequisites.sh
 
 lint() {
+  rust_prerequisites
   cargo fmt --check
   cargo clippy --all-targets -- -D warnings
 }
 
 # The menu-bar app: Swift on Apple's Command Line Tools.
 app() {
+  swift_prerequisites
   swift format lint --strict -r app/Package.swift app/Sources app/Tests
   app/test
 }
@@ -27,6 +29,7 @@ while [ $# -gt 0 ]; do
     lint) lint ;;
     app) app ;;
     tests)
+      rust_prerequisites
       case "${2-}" in
         */*)
           targets=$(scripts/test-half.sh "$2")

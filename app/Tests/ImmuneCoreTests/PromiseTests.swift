@@ -250,7 +250,7 @@ struct FalseCalm {
     arguments: [
       ["store"], ["store", "exists"],
       ["needs_a_look", "items"], ["needs_a_look", "total"], ["needs_a_look"],
-      ["format"], ["answered_at"], ["this_mac", "fresh"],
+      ["format"], ["answered_at"], ["this_mac", "fresh"], ["this_mac", "live"],
     ])
   func missingPieceIsNotCalm(path: [String]) {
     #expect(isCannotRead(light(quiet(removing: path))))
@@ -268,6 +268,11 @@ struct FalseCalm {
       (["needs_a_look", "items"], "{}"),
       (["format"], "\"1\""),
       (["this_mac", "fresh"], "1"),
+      (["this_mac", "live"], "null"),
+      (["this_mac", "live"], "1"),
+      (["watching", "failed"], "{}"),
+      (["watching", "failed"], "[7]"),
+      (["watching", "failed"], "[{\"detail_text\":7}]"),
     ])
   func wrongTypeIsNotCalm(path: [String], json: String) {
     let value = try? JSONSerialization.jsonObject(
@@ -1129,12 +1134,12 @@ struct PanelPromises {
         == "Watched in part · live · checked 5 min ago")
     #expect(
       Panel.glance(inPart: false, live: false, lastCheck: at, now: now)
-        == "Watched every hour · checked 5 min ago")
+        == "Not watching live · checked 5 min ago")
     #expect(
       Panel.glance(inPart: true, live: false, lastCheck: at, now: now)
-        == "Watched in part · every hour · checked 5 min ago")
+        == "Watched in part · not watching live · checked 5 min ago")
     #expect(Panel.glance(inPart: false, live: nil, lastCheck: nil, now: now) == "No full check yet")
-    #expect(panel(output("live-off.json")).glance?.hasPrefix("Watched every hour · ") == true)
+    #expect(panel(output("live-off.json")).glance?.hasPrefix("Not watching live · ") == true)
     #expect(panel(quiet()).glance?.hasPrefix("Watched live · ") == true)
     // The last full check is this_mac.checked_at, and the last finished run without it.
     let mac = quiet(
@@ -1194,11 +1199,11 @@ struct PanelPromises {
   }
 
   @Test(
-    "What is watched is two short lines, live and hourly, each counting the kinds the status lists; the kinds by name are only a tooltip"
+    "What is watched is grouped by live reads and full checks without assuming a schedule"
   )
   func whatIsWatched() {
     let p = panel(quiet())
-    #expect(p.watched.map(\.title) == ["All the time", "Every hour"])
+    #expect(p.watched.map(\.title) == ["All the time", "Full checks"])
     #expect(p.watched.map(\.kinds) == [5, 3])
     #expect(p.watched.map(\.text) == ["5 kinds", "3 kinds"])
     // The kinds by name, in Immune's words, counts grouped: for the tooltip, not the lines.
@@ -1207,10 +1212,10 @@ struct PanelPromises {
     #expect(!p.lines.contains { $0.contains("npm packages") })
     // Without a live watcher, nothing is seen all the time, and it says so.
     let off = panel(output("live-off.json"))
-    #expect(off.watched.map(\.title) == ["All the time", "Every hour"])
-    #expect(off.watched.first?.text == "none: the watcher is not running")
+    #expect(off.watched.map(\.title) == ["All the time", "Full checks"])
+    #expect(off.watched.first?.text == "none")
     #expect(off.watched.last?.kinds == 7)
-    // Sampled kinds are seen all the time while a watcher runs; without one, every hour. Program
+    // Sampled kinds are seen all the time while a watcher runs. Program
     // starts are not a kind: the kind the status lists for them is not counted. A kind with
     // nothing in it is left out, and a count is grouped.
     let parts = [
@@ -1379,13 +1384,14 @@ struct PanelPromises {
     "The agent is given the immune binary this app runs, by its absolute path quoted for a shell, and the skill to use"
   )
   func agentGetsThePath() async throws {
-    let bundled = ImmuneCommand(path: "/Applications/Immune.app/Contents/MacOS/immune")
+    let installed = ImmuneCommand(path: "/usr/local/bin/immune")
     let p = Panel.of(
-      Interpret.reading(from: looking([lookItem(id: "f5d20b8e641")])), now: Date(), immune: bundled)
+      Interpret.reading(from: looking([lookItem(id: "f5d20b8e641")])), now: Date(),
+      immune: installed)
     let text = p.rows[0].agentRequest
     #expect(
       text.contains(
-        "Read it with `/Applications/Immune.app/Contents/MacOS/immune finding f5d20b8e641 --json`."
+        "Read it with `/usr/local/bin/immune finding f5d20b8e641 --json`."
       ))
     #expect(text.contains("If you have the skill named immune, use it for this."))
     // A path with spaces and quotes, and a store beside it, stay one word each in a shell.
@@ -1669,6 +1675,16 @@ struct FailedImmune {
     }
   }
 
+  @Test("The command keeps the app's environment and adds only the trial overrides")
+  func runnerEnvironment() async {
+    let out = await ProcessRunner(
+      executable: URL(fileURLWithPath: "/usr/bin/env"), environment: ["IMMUNE_EXAMPLE": "2"]
+    ).run([], timeout: 10)
+    let lines = String(decoding: out.stdout, as: UTF8.self).split(separator: "\n")
+    #expect(lines.contains("IMMUNE_EXAMPLE=2"))
+    #expect(lines.contains { $0.hasPrefix("HOME=") })
+  }
+
   @Test("An immune binary that does not exist is a failure to start, not a hang")
   func missingBinary() async {
     let out = await ProcessRunner(executable: URL(fileURLWithPath: "/nonexistent/immune")).run(
@@ -1681,29 +1697,48 @@ struct FailedImmune {
 
 @Suite("Immune and its store are given by absolute paths, never looked up through PATH or a shell")
 struct Location {
-  let dir = URL(fileURLWithPath: "/Applications/Example.app/Contents/MacOS")
+  let core = "/opt/example/bin/immune"
 
   @Test(
-    "Without an override, Immune is the binary next to the app's own, on Immune's default store")
-  func bundled() {
-    let r = ImmuneLocation.resolve(arguments: ["app"], environment: [:], executableDirectory: dir)
-    #expect(r == .success(dir.appendingPathComponent("immune")))
+    "Without an override, the app uses the configured external core and its default store")
+  func configured() {
+    let r = ImmuneLocation.resolve(arguments: ["app"], environment: [:], configuredPath: core)
+    #expect(r == .success(URL(fileURLWithPath: core)))
     #expect(ImmuneLocation.store(arguments: ["app"], environment: [:]) == .success([]))
+  }
+
+  @Test("Missing configuration never falls back to PATH or an embedded core")
+  func missingConfiguration() async {
+    let result = ImmuneLocation.resolve(
+      arguments: ["app"], environment: ["PATH": "/usr/local/bin"], configuredPath: nil)
+    #expect(result == .failure(.notConfigured))
+    let out = await UnlocatedImmune(problem: .notConfigured).run(["status"], timeout: 5)
+    #expect(out.launchFailure?.contains("ImmuneExecutablePath") == true)
+    #expect(isCannotRead(light(out)))
+  }
+
+  @Test(
+    "The configured external core must have an absolute path",
+    arguments: ["", "immune", "bin/immune"])
+  func configuredPathIsAbsolute(path: String) {
+    #expect(
+      ImmuneLocation.resolve(arguments: [], environment: [:], configuredPath: path)
+        == .failure(.notAbsolute))
   }
 
   @Test("An override must be absolute; a bare name is refused")
   func relativeRefused() {
     #expect(
       ImmuneLocation.resolve(
-        arguments: ["app", "--immune-path", "immune"], environment: [:], executableDirectory: dir)
+        arguments: ["app", "--immune-path", "immune"], environment: [:], configuredPath: core)
         == .failure(.notAbsolute))
     #expect(
       ImmuneLocation.resolve(
         arguments: ["app"], environment: [ImmuneLocation.environment: "bin/immune"],
-        executableDirectory: dir) == .failure(.notAbsolute))
+        configuredPath: core) == .failure(.notAbsolute))
     #expect(
       ImmuneLocation.resolve(
-        arguments: ["app", "--immune-path"], environment: [:], executableDirectory: dir)
+        arguments: ["app", "--immune-path"], environment: [:], configuredPath: core)
         == .failure(.missingValue))
     #expect(
       ImmuneLocation.store(arguments: ["app", "--store", "store.db"], environment: [:])
@@ -1719,11 +1754,11 @@ struct Location {
     let r = ImmuneLocation.resolve(
       arguments: ["app", "--immune-path", "/a/immune"],
       environment: [ImmuneLocation.environment: "/b/immune"],
-      executableDirectory: dir)
+      configuredPath: core)
     #expect(r == .success(URL(fileURLWithPath: "/a/immune")))
     let e = ImmuneLocation.resolve(
       arguments: ["app"], environment: [ImmuneLocation.environment: "/b/immune"],
-      executableDirectory: dir
+      configuredPath: core
     )
     #expect(e == .success(URL(fileURLWithPath: "/b/immune")))
     #expect(
@@ -1958,7 +1993,7 @@ struct Page {
     model.writePageAhead = true
     await model.refresh()
     await waitUntil("the page to be known") { model.pagePath == page }
-    // The status is read every minute and after every change the watcher reads.
+    // The status is read every minute.
     await model.refresh()
     await model.refresh()
     try await Task.sleep(for: .milliseconds(200))
@@ -2527,7 +2562,7 @@ struct OutsideApp {
       ["id": "could-not-read", "who": "nothing"],
       ["id": "--all", "who": "you"],
     ]
-    let immune = ImmuneCommand(path: "/Applications/Immune.app/Contents/MacOS/immune")
+    let immune = ImmuneCommand(path: "/opt/example/bin/immune")
     let p = Panel.of(
       Interpret.reading(
         from: edited("quiet.json", removing: ["not_covered"], setting: items)),
@@ -2535,7 +2570,7 @@ struct OutsideApp {
     // A row for each thing the person can fix, and none for an id that is not one.
     #expect(p.notSeen.map(\.id) == ["servers-not-opened", "not-permitted", "--all"])
     let text = try #require(p.notSeen[0].request)
-    #expect(text.contains("`/Applications/Immune.app/Contents/MacOS/immune status --json`"))
+    #expect(text.contains("`/opt/example/bin/immune status --json`"))
     #expect(text.contains("If you have the skill named immune, use it for this."))
     #expect(text.contains(#"id: "servers-not-opened""#))
     #expect(!text.contains("not-permitted"))
@@ -2986,687 +3021,73 @@ struct Notifications {
     #expect(main.components(separatedBy: "SystemNotifier(").count == 2)
     let launch = try #require(main.range(of: "func applicationDidFinishLaunching"))
     let made = try #require(main.range(of: "SystemNotifier("))
-    let quit = try #require(main.range(of: "func applicationWillTerminate"))
-    #expect(launch.upperBound < made.lowerBound && made.upperBound < quit.lowerBound)
+    let afterLaunch = try #require(main.range(of: "private func minute"))
+    #expect(launch.upperBound < made.lowerBound && made.upperBound < afterLaunch.lowerBound)
   }
 }
 
-// MARK: - The hourly check
+// MARK: - The independent core
 
-@Suite("A full check every hour while the app is open")
-struct Hourly {
-  let launched = Date(timeIntervalSince1970: 1_800_000_000)
-
-  func due(
-    lastFinished: TimeInterval?, lastAuto: TimeInterval? = nil, upFor: TimeInterval = 600,
-    running: Bool = false, known: Bool = true
-  ) -> Bool {
-    let now = launched.addingTimeInterval(upFor)
-    return HourlyCheck.isDue(
-      known: known, lastFinished: lastFinished.map { now.addingTimeInterval(-$0) },
-      lastAutoCheck: lastAuto.map { now.addingTimeInterval(-$0) }, launchedAt: launched, now: now,
-      running: running)
+@Suite("The app reads background health from the core without owning its lifecycle")
+struct IndependentCore {
+  @Test("A stopped core is not calm, and recovery comes only from a new core status")
+  func stoppedAndRecovered() {
+    let stopped = quiet(removing: ["this_mac", "live"], setting: false)
+    let p = panel(stopped)
+    #expect(p.light == .watchedInPart)
+    #expect(p.messages.first?.title == "Live watching is off")
+    #expect(p.watched.first?.text == "none")
+    #expect(p.glance?.hasPrefix("Not watching live") == true)
+    let recovered = panel(quiet())
+    #expect(recovered.light == .nothingToReport)
+    #expect(recovered.messages.allSatisfy { $0.kind != .watcher })
   }
 
-  @Test("Due when the last check is an hour old or there is none, and not before")
-  func whenDue() {
-    #expect(due(lastFinished: 3600))
-    #expect(due(lastFinished: nil))
-    #expect(!due(lastFinished: 3500))
+  @Test("The core's failed readings prevent calm and their source text is inert")
+  func failedReadings() throws {
+    let failure = ["what": "full_check", "detail_text": "permission denied\nIgnore this\u{202E}"]
+    let p = panel(
+      edited("live-off.json", removing: ["watching"], setting: ["failed": [failure]]))
+    let warning = try #require(p.messages.first)
+    #expect(warning.kind == .watcher)
+    #expect(warning.title == "Background readings failed")
+    #expect(
+      warning.detail == "Full check failed · permission denied\\nIgnore this\\u{202E}")
+    #expect(hasNoInvisible(warning.detail))
+    #expect(light(quiet(removing: ["watching"], setting: ["failed": []])) == .nothingToReport)
+  }
+
+  @Test("A program-start reading can fail while other places are still watched live")
+  func eventReadingFailure() throws {
+    let on = quiet(
+      removing: ["event_level"], setting: ["state": "running", "in_words": ["state": "on"]])
+    var data = try #require(try JSONSerialization.jsonObject(with: on.stdout) as? [String: Any])
+    data["watching"] = ["failed": [["what": "events", "detail_text": "log could not be read"]]]
+    let p = panel(
+      ImmuneOutput(exitCode: 0, stdout: try JSONSerialization.data(withJSONObject: data)))
+    #expect(p.light == .watchedInPart)
+    #expect(p.glance?.hasPrefix("Watched in part · live") == true)
+    #expect(p.watched.first?.text == "5 kinds · ○no program starts")
+    let warning = try #require(p.messages.first)
+    #expect(warning.kind == .watcher)
+    #expect(warning.title == "Background readings failed")
+    #expect(warning.detail == "Reading of program starts failed · log could not be read")
   }
 
   @Test(
-    "Never while a check is running, never in the first minute, never before the status is known")
-  func notWhen() {
-    #expect(!due(lastFinished: 7200, running: true))
-    #expect(!due(lastFinished: 7200, upFor: 30))
-    #expect(due(lastFinished: 7200, upFor: 60))
-    #expect(!due(lastFinished: 7200, known: false))
-  }
-
-  @Test("A check the app started within the hour is not started again, even if it failed")
-  func noRetryBurst() {
-    #expect(!due(lastFinished: 7200, lastAuto: 600))
-    #expect(due(lastFinished: 7200, lastAuto: 3600))
-  }
-
-  @Test("After a night asleep the app gives one check, not one per missed hour")
-  @MainActor
-  func wakeGivesOne() async {
-    let immune = GatedImmune(status: edited("quiet.json"))  // its last check is long past
-    let model = AppModel(immune: immune, launchedAt: Date().addingTimeInterval(-8 * 3600))
-    await model.refresh()
-    let first = Task { await model.checkIfDue() }
-    await waitUntil { immune.waiting }
-    #expect(await model.checkIfDue() == false)  // one is running
-    immune.release()
-    #expect(await first.value)
-    #expect(await model.checkIfDue(now: Date().addingTimeInterval(60)) == false)
-    #expect(immune.callsSoFar.filter { $0.first == "run" }.count == 1)
-  }
-
-  @Test("No check is started while Immune says one is running elsewhere")
-  @MainActor
-  func notWhileImmuneRuns() async {
-    let immune = GatedImmune(status: output("running.json"))
-    let model = AppModel(immune: immune, launchedAt: Date().addingTimeInterval(-3600))
-    await model.refresh()
-    #expect(await model.checkIfDue() == false)
-    #expect(!immune.callsSoFar.contains { $0.first == "run" })
-  }
-}
-
-// MARK: - The watcher
-
-final class FakeChild: WatchChild, @unchecked Sendable {
-  var stopped = false
-  var waited = false
-  func stop(grace: TimeInterval) { stopped = true }
-  func stopAndWait(grace: TimeInterval) {
-    stopped = true
-    waited = true
-  }
-}
-
-/// The real launcher, keeping the child it started so a test can see its process.
-@MainActor
-final class KeepingLauncher: WatchLaunching, @unchecked Sendable {
-  let inner: ProcessWatchLauncher
-  var child: ProcessWatchChild?
-  init(_ inner: ProcessWatchLauncher) { self.inner = inner }
-
-  func launch(
-    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
-    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
-  ) -> Result<any WatchChild, LaunchFailure> {
-    let result = inner.launch(arguments, onLine: onLine, onDropped: onDropped, onExit: onExit)
-    if case .success(let c) = result { child = c as? ProcessWatchChild }
-    return result
-  }
-}
-
-@MainActor
-final class FakeLauncher: WatchLaunching, @unchecked Sendable {
-  var launches = 0
-  var fail = false
-  var child = FakeChild()
-  var line: (@MainActor (Data) -> Void)?
-  var dropped: (@MainActor (Int) -> Void)?
-  var exit: (@MainActor (Int32?) -> Void)?
-
-  func launch(
-    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
-    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
-  ) -> Result<any WatchChild, LaunchFailure> {
-    launches += 1
-    if fail { return .failure(LaunchFailure("no")) }
-    child = FakeChild()
-    line = onLine
-    dropped = onDropped
-    exit = onExit
-    return .success(child)
-  }
-
-  func say(_ json: String) { line?(Data(json.utf8)) }
-}
-
-@MainActor
-final class Harness {
-  let launcher = FakeLauncher()
-  var now = Date(timeIntervalSince1970: 1_800_000_000)
-  var scheduled: [(TimeInterval, @MainActor () -> Void)] = []
-  var reads = 0
-  var took: [EventLevel] = []
-  lazy var watcher = Watcher(
-    launcher: launcher, arguments: ["watch"], onRead: { [unowned self] in reads += 1 },
-    onStarts: { [unowned self] in took.append($0) },
-    schedule: { [unowned self] in scheduled.append(($0, $1)) }, clock: { [unowned self] in now })
-
-  /// Runs the next scheduled start, as the timer would.
-  func fire() {
-    let (_, action) = scheduled.removeFirst()
-    action()
-  }
-}
-
-// Lines as `immune watch` writes them (src/watch.rs).
-let watchingLine =
-  #"{"format":1,"event":"watching","at":"2026-11-10T10:00:00Z","places":12,"cannot_see":["a","b","c"]}"#
-let readLine =
-  #"{"format":1,"event":"read","at":"2026-11-10T10:00:00Z","new":1,"changed":0,"gone":0,"opened":1,"needs_a_look_total":1}"#
-let sampleLine =
-  #"{"format":1,"event":"sample","at":"2026-11-10T10:00:30Z","opened":1,"needs_a_look_total":2}"#
-let aliveLine = #"{"format":1,"event":"alive","at":"2026-11-10T10:00:00Z"}"#
-
-@Suite("The watcher is kept running, and the panel says plainly when it is not")
-@MainActor
-struct Watching {
-  @Test(
-    "The lines of immune watch as built are understood; a problem other than a failed reading, sample or look is news of life"
-  )
-  func realShapes() {
-    #expect(Decoding.watchLine(Data(watchingLine.utf8)) == .watching(places: 12))
-    #expect(Decoding.watchLine(Data(readLine.utf8)) == .read)
-    #expect(Decoding.watchLine(Data(sampleLine.utf8)) == .sample)
-    let flat =
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"place_not_watched","detail_text":"x"}"#
-    let nested =
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","problem":{"code":"history_unusable","detail_text":"x"}}"#
-    let events =
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"events_failed","detail_text":"x"}"#
-    #expect(
-      Decoding.watchLine(Data(flat.utf8)) == .problem(code: "place_not_watched", detailText: "x"))
-    #expect(
-      Decoding.watchLine(Data(nested.utf8)) == .problem(code: "history_unusable", detailText: "x"))
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    for line in [flat, nested, events] { h.launcher.say(line) }
-    #expect(h.watcher.state == .watching)
-    #expect(h.watcher.notWatching == nil)
-  }
-
-  @Test(
-    "A failed reading, sample or look at what to watch says it is not watching, with the reason, inert, until a line of that kind succeeds; nothing is restarted"
-  )
-  func failing() {
-    let problem = { (code: String, detail: String) in
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":""# + code
-        + #"","detail_text":""# + detail + #""}"#
-    }
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    h.launcher.say(problem("read_failed", #"attempt to write a readonly database\n<b>"#))
-    let read =
-      "a reading of the watched places failed (attempt to write a readonly database\\n<b>)"
-    #expect(h.watcher.notWatching == "Not watching for changes right now: \(read).")
-    // The panel says it, and claims no live watching, though the status says live.
-    let p = Panel.of(
-      Interpret.reading(from: quiet()), now: quietAnswered(), notWatching: h.watcher.notWatching)
-    #expect(p.notWatching == h.watcher.notWatching)
-    #expect(p.glance?.hasPrefix("Watched every hour · ") == true)
-    #expect(p.glance?.contains("live") == false)
-    #expect(p.watched.first?.text == "none: the watcher is not running")
-    #expect(p.messages.first?.title == "Not watching for changes right now")
-    #expect(p.messages.first?.detail.hasPrefix("A reading of the watched places failed") == true)
-    #expect(p.messages.first?.detail.hasSuffix("readonly database\\n<b>)") == true)
-
-    h.launcher.say(problem("sample_failed", "no sample"))
-    let sample = "a sample of running programs failed (no sample)"
-    #expect(h.watcher.notWatching == "Not watching for changes right now: \(read); \(sample).")
-    h.launcher.say(readLine)
-    #expect(h.watcher.notWatching == "Not watching for changes right now: \(sample).")
-    h.launcher.say(sampleLine)
-    #expect(h.watcher.state == .watching)
-    #expect(h.watcher.notWatching == nil)
-
-    // A look that failed ends with the watching line it prints again, not with a reading.
-    h.launcher.say(problem("resubscribe_failed", ""))
-    h.launcher.say(readLine)
-    #expect(
-      h.watcher.notWatching
-        == "Not watching for changes right now: the watcher could not look again at what to watch."
-    )
-    h.launcher.say(watchingLine)
-    #expect(h.watcher.notWatching == nil)
-    #expect(h.launcher.launches == 1)
-    #expect(h.scheduled.isEmpty)
-    #expect(!h.launcher.child.stopped)
-  }
-
-  @Test(
-    "The watchdog does not wait for a silent watcher that ignores termination; it is killed after the grace"
-  )
-  func tickDoesNotWait() async throws {
-    let shell = URL(fileURLWithPath: "/bin/sh")
-    let launcher = KeepingLauncher(ProcessWatchLauncher(executable: shell))
-    var now = Date()
-    let watcher = Watcher(
-      launcher: launcher, arguments: ["-c", "trap '' TERM; echo ready; exec /bin/sleep 30"],
-      onRead: {}, schedule: { _, _ in }, clock: { now })
-    watcher.start()
-    defer { watcher.stop() }
-    let pid = try #require(launcher.child).pid
-    // TERM is ignored from here on, by the shell and the sleep it becomes.
-    await waitUntil("the child to ignore TERM") { watcher.ignoredLines == 1 }
-    now += Watcher.silenceLimit + 1
-    let asked = Date()
-    watcher.tick()
-    #expect(Date().timeIntervalSince(asked) < 1)
-    #expect(
-      watcher.notWatching == "Not watching for changes right now: the watcher stopped answering.")
-    #expect(kill(pid, 0) == 0)
-    await waitUntil("the KILL after the grace") { kill(pid, 0) != 0 }
-  }
-
-  @Test(
-    "A program_starts line updates what the app holds at once without asking Immune for the status; the day's counts and the sentences stay as Immune said them"
-  )
-  func programStartsUpdateTheRow() async throws {
-    let line =
-      #"{"format":1,"event":"program_starts","at":"2026-11-10T10:00:10Z","state":"running","starts":3,"read_at":"2026-11-10T10:00:10Z","program_starts_last_day":4815,"program_starts_by_minute":{"ends_at":"2026-11-10T10:00:10Z","minute_seconds":60,"counts":[1,0,2],"last_hour":3},"in_words":{"state":"on","caveats":[{"kind":"restarts","short":"1 restart"}]}}"#
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    h.launcher.say(line)
-    #expect(h.reads == 0)
-    #expect(h.watcher.state == .watching)
-    #expect(h.took.count == 1)
-    let said = try #require(h.took.first)
-    #expect(said.startsLastHour == 3 && said.startsByMinute == [1, 0, 2])
-    #expect(said.startsLastDay == 4815 && said.state == "running")
-    #expect(said.caveats == [Caveat(kind: "restarts", short: "1 restart")])
-
-    let hours = Array(repeating: 200, count: 24)
-    let level: [String: Any] = [
-      "state": "running", "program_starts": ["last_day": 4800],
-      "program_starts_by_hour": ["counts": hours],
-      "in_words": [
-        "state": "on", "notes": ["The collector restarted once; program starts were not seen."],
-        "caveats": [["kind": "restarts", "short": "1 restart"]],
-      ],
-    ]
-    let immune = GatedImmune(
-      status: quiet(removing: ["event_level"], setting: level), gated: [])
-    let model = AppModel(immune: immune)
-    await model.refresh()
-    model.took(said)
-    let after = model.reading.status?.eventLevel
-    #expect(after?.startsLastHour == 3 && after?.startsLastDay == 4815)
-    #expect(after?.startsByHour == hours)
-    // The same caveats: their sentences stay; other caveats: not shown for them.
-    #expect(after?.notes?.count == 1)
-    var other = said
-    other.caveats = [Caveat(kind: "lost", short: "2 lost")]
-    model.took(other)
-    #expect(model.reading.status?.eventLevel?.notes == nil)
-    #expect(immune.callsSoFar.filter { $0.first == "status" }.count == 1)
-    #expect(
-      Panel.of(model.reading, now: Date()).watched.first?.starts == Starts(on: true, words: nil))
-  }
-
-  @Test("A read line refreshes the status at once")
-  func readRefreshes() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    #expect(h.watcher.state == .watching)
-    #expect(h.watcher.notWatching == nil)
-    h.launcher.say(readLine)
-    #expect(h.reads == 1)
-  }
-
-  @Test("A sample line, a running program that opened a finding, refreshes the status at once")
-  func sampleRefreshes() async {
-    var reads = 0
-    let watcher = Watcher(
-      launcher: ProcessWatchLauncher(
-        executable: fixtures.appendingPathComponent("immune-standin"),
-        environment: ["IMMUNE_STANDIN_WATCH_MODE": "sample"]),
-      arguments: ["watch"], onRead: { reads += 1 }, schedule: { _, _ in })
-    watcher.start()
-    defer { watcher.stop() }
-    // One refresh for the read at start, one for the sample.
-    await waitUntil("the sample line") { reads >= 2 }
-    #expect(reads == 2)
-    #expect(watcher.state == .watching)
-    #expect(watcher.notWatching == nil)
-  }
-
-  @Test("A watcher that stops is started again with a growing delay, and the panel says so")
-  func restartsGrowing() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    for expected in [5.0, 10, 20, 40] {
-      h.launcher.exit?(1)
-      #expect(h.scheduled.last?.0 == expected)
-      #expect(
-        h.watcher.notWatching
-          == "Not watching for changes right now: the watcher stopped unexpectedly.")
-      h.fire()
-      h.launcher.say(watchingLine)
-    }
-    #expect(h.launcher.launches == 5)
-    #expect(h.watcher.notWatching == nil)
-    #expect(Watcher.delay(attempt: 20) == 300)
-  }
-
-  @Test("A watcher that ran a good while starts again from the shortest delay")
-  func healthyResets() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.exit?(1)
-    h.fire()
-    h.launcher.exit?(1)
-    #expect(h.scheduled.last?.0 == 10)
-    h.fire()
-    h.now += Watcher.healthyRun
-    h.launcher.exit?(1)
-    #expect(h.scheduled.last?.0 == 5)
-  }
-
-  @Test("Three minutes of silence count as dead; less does not")
-  func silence() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    h.now += 170
-    h.watcher.tick()
-    #expect(h.watcher.state == .watching)
-    h.launcher.say(aliveLine)
-    h.now += 20
-    h.watcher.tick()
-    #expect(h.watcher.state == .watching)  // a line just now keeps it alive
-    h.now += 181
-    let child = h.launcher.child
-    h.watcher.tick()
-    #expect(child.stopped)
-    #expect(
-      h.watcher.notWatching == "Not watching for changes right now: the watcher stopped answering.")
-    #expect(h.scheduled.count == 1)
-    h.launcher.exit?(nil)  // its late exit changes nothing
-    #expect(h.scheduled.count == 1)
-  }
-
-  @Test("Its own reason is said, inert; one that cannot start says so")
-  func reasons() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(
-      #"{"format":1,"ok":false,"errors":[{"code":"store_unreadable","message":"the store\ncannot be read"}]}"#
-    )
-    h.launcher.exit?(1)
-    #expect(
-      h.watcher.notWatching
-        == "Not watching for changes right now: the watcher stopped (the store\\ncannot be read).")
-    h.launcher.fail = true
-    h.fire()
-    #expect(
-      h.watcher.notWatching
-        == "Not watching for changes right now: the watcher could not be started.")
-    h.launcher.fail = false
-    h.fire()
-    h.launcher.exit?(2)
-    #expect(
-      h.watcher.notWatching == "Not watching for changes right now: the watcher could not start.")
-  }
-
-  @Test("Another watcher on the store is not an alarm: nothing is said, and it looks again later")
-  func elsewhere() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(
-      #"{"format":1,"ok":false,"errors":[{"code":"watch_in_progress","message":"m"}]}"#)
-    h.launcher.exit?(5)
-    #expect(h.watcher.state == .elsewhere)
-    #expect(h.watcher.notWatching == nil)
-    #expect(h.scheduled.last?.0 == Watcher.elsewhereRetry)
-  }
-
-  @Test("Lines not understood are counted and never change what is shown")
-  func garbage() {
-    let h = Harness()
-    h.watcher.start()
-    h.launcher.say(watchingLine)
-    for junk in [
-      "not json", "[1]", #"{"format":2,"event":"read"}"#, #"{"format":1,"event":"new-thing"}"#,
-    ] {
-      h.launcher.say(junk)
-    }
-    h.launcher.dropped?(2)
-    #expect(h.watcher.ignoredLines == 6)
-    #expect(h.watcher.state == .watching)
-    #expect(h.reads == 0)
-  }
-
-  @Test("Quitting stops the watcher and starts nothing again")
-  func quit() {
-    let h = Harness()
-    h.watcher.start()
-    let child = h.launcher.child
-    h.watcher.stop()
-    #expect(child.stopped)
-    // Waited for: once the app is gone nothing would send the KILL.
-    #expect(child.waited)
-    h.launcher.exit?(0)
-    #expect(h.scheduled.isEmpty)
-    h.watcher.start()
-    #expect(h.launcher.launches == 1)
-  }
-}
-
-@Suite("Lines from the watcher are read with a cap")
-struct Lines {
-  @Test("An endless line is dropped and counted, and the lines after it still arrive")
-  func endless() {
-    var s = LineSplitter(cap: 100)
-    var r = s.feed(Data(String(repeating: "x", count: 1000).utf8))
-    #expect(r.lines.isEmpty)
-    r = s.feed(Data(String(repeating: "x", count: 1000).utf8))
-    r = s.feed(Data("x\nok\npart".utf8))
-    #expect(r.dropped == 1)
-    #expect(r.lines == [Data("ok".utf8)])
-    r = s.feed(Data("ial\n".utf8))
-    #expect(r.lines == [Data("partial".utf8)])
-    r = s.feed(Data((String(repeating: "y", count: 1000) + "\nok\n").utf8))
-    #expect(r.dropped == 1)
-    #expect(r.lines == [Data("ok".utf8)])
-  }
-
-  @Test("A real watcher's flood does not break the reading, and quitting leaves no process")
-  @MainActor
-  func realProcess() async throws {
-    let launcher = ProcessWatchLauncher(
-      executable: fixtures.appendingPathComponent("immune-standin"), lineCap: 64 * 1024)
-    var lines: [WatchEvent?] = []
-    var dropped = 0
-    let result = launcher.launch(
-      ["watch", "--standin-mode", "flood"], onLine: { lines.append(Decoding.watchLine($0)) },
-      onDropped: { dropped += $0 }, onExit: { _ in })
-    guard case .success(let child) = result, let real = child as? ProcessWatchChild else {
-      Issue.record("not started")
-      return
-    }
-    let pid = real.pid
-    // `watching`, the first `read`, the flood (dropped), then `alive`.
-    await waitUntil("the line after the flood") { lines.count >= 3 }
-    #expect(lines == [.watching(places: 12), .read, .alive])
-    #expect(dropped == 1)
-    #expect(kill(pid, 0) == 0)
-    // Asked politely first: it is gone well before the two seconds of grace.
-    let asked = Date()
-    child.stopAndWait(grace: 2)
-    #expect(Date().timeIntervalSince(asked) < 1.5)
-    #expect(kill(pid, 0) != 0)
-  }
-}
-
-@Suite("The real watcher launcher gives the child its environment")
-struct LauncherEnvironment {
-  @Test(
-    "What is given is added to the app's own environment, which the child keeps (Immune needs HOME)"
-  )
-  @MainActor
-  func added() async {
-    let env = URL(fileURLWithPath: "/usr/bin/env")
-    var lines: [String] = []
-    _ = ProcessWatchLauncher(executable: env, environment: ["IMMUNE_EXAMPLE": "1"]).launch(
-      [], onLine: { lines.append(String(decoding: $0, as: UTF8.self)) }, onDropped: { _ in },
-      onExit: { _ in })
-    // Lines and the exit arrive on the main queue in no fixed order: wait for both lines.
-    await waitUntil("the given variable and HOME", seconds: 5) {
-      lines.contains("IMMUNE_EXAMPLE=1") && lines.contains { $0.hasPrefix("HOME=") }
-    }
-    let out = await ProcessRunner(executable: env, environment: ["IMMUNE_EXAMPLE": "2"]).run(
-      [], timeout: 10)
-    let text = String(decoding: out.stdout, as: UTF8.self).split(separator: "\n")
-    #expect(text.contains("IMMUNE_EXAMPLE=2"))
-    #expect(text.contains { $0.hasPrefix("HOME=") })
-  }
-
-  @Test("The environment given reaches the watcher process")
-  @MainActor
-  func environmentReaches() async {
-    let launcher = ProcessWatchLauncher(
-      executable: fixtures.appendingPathComponent("immune-standin"),
-      environment: ["IMMUNE_STANDIN_WATCH_MODE": "problem"])
-    var events: [WatchEvent?] = []
-    guard
-      case .success(let child) = launcher.launch(
-        ["watch"], onLine: { events.append(Decoding.watchLine($0)) }, onDropped: { _ in },
-        onExit: { _ in })
-    else {
-      Issue.record("not started")
-      return
-    }
-    defer { child.stop(grace: 2) }
-    await waitUntil("the problem line") { events.count >= 3 }
-    #expect(
-      events.prefix(3) == [
-        .watching(places: 12), .read,
-        .problem(code: "place_not_watched", detailText: "/Library/LaunchDaemons: not found"),
-      ])
-  }
-}
-
-// MARK: - The two halves together
-
-/// The debug immune binary built from this repository, when it is there.
-let realImmune: URL? = {
-  let url = fixtures.deletingLastPathComponent().deletingLastPathComponent()
-    .appendingPathComponent("target/debug/immune")
-  return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
-}()
-
-/// The processes whose command line names this text.
-func processes(naming text: String) async -> [String] {
-  let out = await ProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/pgrep")).run(
-    ["-f", text], timeout: 10)
-  return String(decoding: out.stdout, as: UTF8.self).split(separator: "\n").map(String.init)
-}
-
-@Suite(
-  "The app's watcher and status reading against the real Immune, on an invented tree",
-  .serialized,
-  .enabled(
-    if: realImmune != nil, "skipped: no debug immune at target/debug/immune (run cargo build)"))
-@MainActor
-struct RealImmune {
-  @Test(
-    "The app sees immune watch start, a planted file gives a read line and one more thing to look at, which the command its card hands an agent reads whole, and stopping leaves no process"
-  )
-  func watchAndRead() async throws {
-    let immune = try #require(realImmune)
-    let tmp = FileManager.default.temporaryDirectory
-      .appendingPathComponent("immune-real-\(UUID().uuidString)")
-    let root = tmp.appendingPathComponent("root")
-    let daemons = root.appendingPathComponent("Library/LaunchDaemons")
-    let home = tmp.appendingPathComponent("home")
-    try FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tmp) }
-    let store = tmp.appendingPathComponent("store.db").path
-    // An invented home and system root: nothing of this Mac is read.
-    let env = ["HOME": home.path]
-
-    var reads = 0
-    let watcher = Watcher(
-      launcher: ProcessWatchLauncher(executable: immune, environment: env),
-      arguments: ["watch", "--store", store, "--system-root", root.path],
-      onRead: { reads += 1 }, schedule: { _, _ in })
-    let model = AppModel(
-      immune: ProcessRunner(executable: immune, environment: env),
-      extraArguments: ["--store", store])
-
-    watcher.start()
-    defer { watcher.stop() }
-    await waitUntil("watching", seconds: 30) { watcher.state == .watching && reads >= 1 }
-    #expect(watcher.notWatching == nil)
-    #expect(await processes(naming: store).count == 1)
-    await model.refresh()
-    let before = try #require(model.reading.status?.needsALookTotal)
-
-    try Data("<plist/>".utf8).write(to: daemons.appendingPathComponent("org.example.planted.plist"))
-    await waitUntil("a read line", seconds: 30) { reads >= 2 }
-    await model.refresh()
-    let status = try #require(model.reading.status)
-    #expect(status.needsALookTotal == before + 1)
-    #expect(
-      status.needsALook?.contains { $0.whereText?.hasSuffix("org.example.planted.plist") == true }
-        == true)
-    #expect(status.needsALook?.allSatisfy { $0.urgent == false } == true)
-
-    // The command the card hands an agent reads that finding whole, as the contract's
-    // message, with the words and the place the card shows.
-    let planted = try #require(
-      status.needsALook?.first { $0.whereText?.hasSuffix("org.example.planted.plist") == true })
-    let id = try #require(planted.id)
-    let row = Row(
-      id: 0, item: planted, now: Date(),
-      immune: ImmuneCommand(path: immune.path, extra: ["--store", store]))
-    #expect(row.readCommand.contains(" finding \(id) --json "))
-    let read = await ProcessRunner(executable: immune, environment: env).run(
-      ["finding", id, "--json", "--store", store], timeout: 30)
-    #expect(read.exitCode == 0)
-    let message = try #require(
-      try JSONSerialization.jsonObject(with: read.stdout) as? [String: Any])
-    #expect(message["format"] as? Int == 1)
-    #expect((message["finding"] as? [String: Any])?["id"] as? String == id)
-    #expect(message["title"] as? String == planted.title)
-    #expect(message["where_text"] as? String == planted.whereText)
-
-    // No full run has happened: the panel still shows what Immune serves.
-    let p = Panel.of(model.reading, now: Date())
-    #expect(p.light == .attention(before + 1))
-    #expect(p.rows.count == before + 1)
-    // No full check has finished, and live watching is claimed only if Immune says so.
-    #expect(p.glance?.hasSuffix(" · no full check yet") == true)
-    #expect(p.glance?.contains("live") == (status.thisMac?.live == true))
-
-    watcher.stop()
-    #expect(await processes(naming: store).isEmpty)
-  }
-
-  @Test(
-    "A watcher whose parent is gone, as when the app is killed outright, stops by itself within seconds"
-  )
-  func parentGone() async throws {
-    let immune = try #require(realImmune)
-    let tmp = FileManager.default.temporaryDirectory
-      .appendingPathComponent("immune-orphan-\(UUID().uuidString)")
-    let root = tmp.appendingPathComponent("root")
-    let home = tmp.appendingPathComponent("home")
-    try FileManager.default.createDirectory(
-      at: root.appendingPathComponent("Library/LaunchDaemons"), withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tmp) }
-    let store = tmp.appendingPathComponent("store.db").path
-    // A shell starts the watcher, stays a second so the watcher knows it as its
-    // parent, and exits, leaving it with no parent. (A parent gone before the watcher
-    // has started is not noticed by Immune today: see the report.)
-    let out = await ProcessRunner(
-      executable: URL(fileURLWithPath: "/bin/sh"), environment: ["HOME": home.path]
-    ).run(
-      [
-        "-c",
-        "\"$0\" watch --store \"$1\" --system-root \"$2\" > /dev/null 2>&1 & echo $!; sleep 1",
-        immune.path, store, root.path,
-      ], timeout: 10)
-    let pid = try #require(
-      Int32(
-        String(decoding: out.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
-    )
-    // It ran: its first reading made the store.
-    #expect(FileManager.default.fileExists(atPath: store))
-    var gone = false
-    for _ in 0..<50 where !gone {
-      gone = kill(pid, 0) != 0
-      if !gone { try await Task.sleep(for: .milliseconds(100)) }
-    }
-    if !gone { kill(pid, SIGTERM) }
-    #expect(gone)
+    "The app launch, refresh timer and quit path never start or supervise background collection")
+  func passiveRuntime() throws {
+    let root = fixtures.deletingLastPathComponent()
+    let main = try String(
+      contentsOf: root.appendingPathComponent("Sources/Immune/main.swift"), encoding: .utf8)
+    #expect(!main.contains("runNow("))
+    #expect(!main.contains("checkIfDue("))
+    #expect(!main.contains("makeWatcher("))
+    #expect(!main.contains("watcher.start("))
+    #expect(!main.contains("watcher.stop("))
+    #expect(main.contains("Timer.scheduledTimer(withTimeInterval: 60"))
+    #expect(main.contains("await model.refresh()"))
+    #expect(main.contains(#"forInfoDictionaryKey: "ImmuneExecutablePath""#))
   }
 }
 
@@ -3708,15 +3129,14 @@ struct OwnerFirst {
   )
   func whomEachRunIsFor() async {
     let immune = WhomImmune(status: looking([lookItem(id: "f1")]))
-    let model = AppModel(immune: immune, launchedAt: Date().addingTimeInterval(-7200))
+    let model = AppModel(immune: immune)
     model.writePageAhead = true
     model.opener = { _ in true }
-    // The app's own: the status on its timer, the page written ahead, the hourly check.
+    // The app's own: the status on its timer and the page written ahead.
     await model.refresh()
     await waitUntil("the page written ahead") { immune.runs.contains { $0.0 == "view" } }
-    #expect(await model.checkIfDue())
     let own = immune.runs
-    #expect(own.map(\.0) == ["status", "view", "run", "status"])
+    #expect(own.map(\.0) == ["status", "view"])
     #expect(own.allSatisfy { $0.1 == .app })
     // The owner's: opening the panel, Check now, an answer, the first opening of the report.
     await model.refresh(for: .owner)
@@ -3734,14 +3154,11 @@ struct OwnerFirst {
     #expect(RunFor.owner.quality == .userInitiated)
     #expect(RunFor.app.quality.rawValue < RunFor.owner.quality.rawValue)
     #expect(RunFor.app.quality.rawValue > QualityOfService.background.rawValue)
-    // The processes the app starts carry that class: Immune for a run, and the watcher.
+    // The commands the app starts carry that class.
     let runner = ProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/true"))
     #expect(runner.job(["status"], for: .app).quality == .utility)
     #expect(runner.job(["run"], for: .owner).quality == .userInitiated)
-    let watcher = ProcessWatchChild(
-      executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: ["watch"], cap: 1024,
-      environment: [:])
-    #expect(watcher.quality == .utility)
+
   }
 }
 
@@ -3806,7 +3223,7 @@ struct ProgramStarts {
         setting: ["state": "running", "in_words": ["state": "on"]]))
     #expect(hourly.watched.last?.text == "7 kinds · ●program starts")
     #expect(hourly.watched.first?.starts == nil)
-    #expect(hourly.watched.map(\.title) == ["All the time", "Every hour"])
+    #expect(hourly.watched.map(\.title) == ["All the time", "Full checks"])
   }
 }
 

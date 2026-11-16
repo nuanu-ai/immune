@@ -16,7 +16,6 @@
 // stay whole and the list between them scrolls.
 
 import AppKit
-import Combine
 import ImmuneCore
 import SwiftUI
 
@@ -449,7 +448,7 @@ struct Dot: View {
 }
 
 /// What is watched, as one row of two lines: how many kinds are seen all the time and how many
-/// are read every hour, and program starts with a dot on the line they are read on. The kinds by
+/// are read at full checks, and program starts with a dot on the line they are read on. The kinds by
 /// name are in the tooltip and in the report, which a click opens.
 struct CoverageRow: View {
   let lines: [CoverageLine]
@@ -547,9 +546,13 @@ struct MessageRowView: View {
   var body: some View {
     RowFrame(symbol: message.symbol, chevron: false, hover: false) {
       Plain(message.title).textStyle(.body)
-      MetaLine(text: message.detail) {
-        if message.kind == .notificationsOff {
-          RowLink(label: "Open Settings", action: openSettings)
+      if message.kind == .watcher {
+        Plain(message.detail).textStyle(.caption)
+      } else {
+        MetaLine(text: message.detail) {
+          if message.kind == .notificationsOff {
+            RowLink(label: "Open Settings", action: openSettings)
+          }
         }
       }
     }
@@ -566,7 +569,6 @@ public enum PanelPart: String, Sendable {
 public struct PanelView: View {
   @ObservedObject var model: AppModel
   /// nil when nothing is watched (an off-screen render or `--print-panel`).
-  @ObservedObject var watcher: WatcherBox
   /// Fixed for an off-screen render; nil means now.
   var now: Date?
   /// The most the panel may be high: the visible height of the screen it opens on, less a
@@ -591,12 +593,11 @@ public struct PanelView: View {
   }
 
   public init(
-    model: AppModel, watcher: WatcherBox, now: Date? = nil, maxHeight: CGFloat? = nil,
+    model: AppModel, now: Date? = nil, maxHeight: CGFloat? = nil,
     openSettings: @escaping () -> Void = {},
     probe: (@MainActor (PanelPart, CGRect) -> Void)? = nil
   ) {
     self.model = model
-    self.watcher = watcher
     self.now = now
     self.maxHeight = maxHeight
     self.openSettings = openSettings
@@ -606,7 +607,7 @@ public struct PanelView: View {
   public var body: some View {
     let p = Panel.of(
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
-      notWatching: watcher.watcher?.notWatching, answering: model.answering,
+      answering: model.answering,
       refusals: model.refusals, notificationsOff: model.notificationsOff,
       immune: model.immuneCommand)
     Group {
@@ -778,16 +779,5 @@ public struct PanelView: View {
       .frame(width: Metrics.more)
       .accessibilityLabel("More")
     }
-  }
-}
-
-/// Lets the panel observe a watcher that may not exist (renders, `--print-panel`).
-@MainActor
-public final class WatcherBox: ObservableObject {
-  public let watcher: Watcher?
-  private var forward: AnyCancellable?
-  public init(_ watcher: Watcher?) {
-    self.watcher = watcher
-    forward = watcher?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
   }
 }

@@ -603,7 +603,7 @@ pub const EVENTS_OFF: Cause = Cause {
         "Program starts on this Mac are not seen.",
         "Program starts on this Mac are not seen.",
     ],
-    meaning: "Seeing every program start as it happens, with its command line, needs the event level: Apple's eslogger, run as administrator. Without it, running programs are looked at only in samples while the app is open, and a program that starts and ends between two samples goes unseen.",
+    meaning: "Seeing every program start as it happens, with its command line, needs the event level: Apple's eslogger, run as administrator. Without it, running programs are looked at only in samples while the watcher runs, and a program that starts and ends between two samples goes unseen.",
     meaning_none: None,
     advice: "If you want it, give /usr/bin/eslogger Full Disk Access in System Settings, Privacy & Security, and run the event level's install command once with your administrator password; your agent can prepare it.",
 };

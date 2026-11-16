@@ -1,6 +1,6 @@
 //! Promises of the scripts that build and check the program on a colleague's Mac: what they
 //! ask of the Mac is said once and asked by both, and the build finds the binary where cargo
-//! put it. The scripts run here against invented tools; `./build` itself is never run.
+//! put it. Builds run only in temporary trees against invented tools.
 
 mod common;
 
@@ -21,7 +21,7 @@ impl Tools {
         let dir = std::env::temp_dir().join(format!("immune-scripts-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
-        Tools(dir)
+        Tools(dir.canonicalize().unwrap())
     }
 
     fn tool(&self, rel: &str, body: &str) {
@@ -50,11 +50,43 @@ impl Tools {
         self.tool("bin/cargo", &format!("echo 'cargo {cargo} (2025-01-01)'"));
     }
 
+    fn checkout(&self) {
+        for rel in [
+            "build",
+            "check",
+            "app/build",
+            "app/Info.plist",
+            "scripts/prerequisites.sh",
+            "scripts/rust-path.sh",
+            "scripts/cargo-built.sh",
+        ] {
+            let destination = self.0.join(rel);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(Path::new(ROOT).join(rel), destination).unwrap();
+        }
+    }
+
+    fn run(&self, script: &str, args: &[&str]) -> std::process::Output {
+        Command::new("/bin/sh")
+            .arg(self.0.join(script))
+            .args(args)
+            .current_dir(&self.0)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.0.join("bin").display()),
+            )
+            .env("RUST_PLACES", "")
+            .output()
+            .unwrap()
+    }
+
     /// The prerequisites as `./check` and `./build` source them: the exit code and stderr.
-    fn prerequisites(&self) -> (Option<i32>, String) {
+    fn prerequisites(&self, part: &str) -> (Option<i32>, String) {
         let out = Command::new("/bin/sh")
             .arg("-c")
-            .arg(". ./scripts/prerequisites.sh")
+            .arg(format!(
+                ". ./scripts/prerequisites.sh; {part}_prerequisites"
+            ))
             .current_dir(ROOT)
             .env(
                 "PATH",
@@ -76,13 +108,12 @@ impl Drop for Tools {
 }
 
 #[test]
-fn building_and_checking_refuse_a_mac_older_than_macos_15_or_tools_without_swift_6_and_say_what_to_install()
- {
+fn app_checks_refuse_old_macos_or_swift_and_say_what_to_install() {
     // macOS 14 has no /usr/bin/jq, which the collector and tests need, and its Command Line
     // Tools carry no Swift 6, which the app's package asks for.
     let t = Tools::new("prerequisites");
     t.mac("14.6.1", "6.0.3", "1.89.0");
-    let (code, said) = t.prerequisites();
+    let (code, said) = t.prerequisites("swift");
     assert_eq!(code, Some(2), "{said}");
     assert!(
         said.contains(
@@ -92,7 +123,7 @@ fn building_and_checking_refuse_a_mac_older_than_macos_15_or_tools_without_swift
     );
 
     t.mac("15.6", "5.10", "1.89.0");
-    let (code, said) = t.prerequisites();
+    let (code, said) = t.prerequisites("swift");
     assert_eq!(code, Some(2), "{said}");
     assert!(
         said.contains(
@@ -102,9 +133,191 @@ fn building_and_checking_refuse_a_mac_older_than_macos_15_or_tools_without_swift
     );
 
     t.mac("15.6", "6.1.2", "1.89.0");
-    assert_eq!(t.prerequisites(), (Some(0), String::new()));
+    assert_eq!(t.prerequisites("swift"), (Some(0), String::new()));
     t.mac("26.1", "6.2", "1.91.1");
-    assert_eq!(t.prerequisites(), (Some(0), String::new()));
+    assert_eq!(t.prerequisites("swift"), (Some(0), String::new()));
+    t.tool("bin/xcode-select", "exit 1");
+    let (code, said) = t.prerequisites("swift");
+    assert_eq!(code, Some(2), "{said}");
+    assert!(
+        said.contains("install them with: xcode-select --install"),
+        "{said}"
+    );
+}
+
+#[test]
+fn the_core_build_and_checks_need_no_swift_and_use_cargos_external_artifact() {
+    let t = Tools::new("core-only");
+    t.mac("15.6", "5.10", "1.89.0");
+    t.checkout();
+    t.tool(
+        "bin/xcode-select",
+        "echo 'Swift must not be requested' >&2; exit 1",
+    );
+    t.tool("bin/swift", "exit 1");
+    t.tool("elsewhere/core with spaces", "exit 99");
+    let core = t.0.join("elsewhere/core with spaces");
+    let artifact = serde_json::json!({
+        "reason": "compiler-artifact", "target": {"name": "immune", "kind": ["bin"]},
+        "executable": core,
+    });
+    t.tool("bin/cargo", &format!(
+        "case \"$1\" in --version) echo 'cargo 1.89.0' ;; build) echo '{}' ;; fmt|clippy|test) exit 0 ;; *) exit 1 ;; esac",
+        artifact,
+    ));
+    let out = t.run("build", &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        core.to_str().unwrap()
+    );
+    assert!(!t.0.join("target/app").exists());
+    let out = t.run("check", &["lint", "tests"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    t.tool("bin/cargo", "echo 'cargo 1.88.0'");
+    assert_eq!(t.run("build", &[]).status.code(), Some(2));
+    assert_eq!(t.run("check", &["lint"]).status.code(), Some(2));
+    assert_eq!(t.run("check", &["tests"]).status.code(), Some(2));
+    t.tool(
+        "bin/cargo",
+        "case \"$1\" in --version) echo 'cargo 1.89.0' ;; esac",
+    );
+    assert_eq!(t.run("build", &[]).status.code(), Some(2));
+}
+
+#[test]
+fn app_build_keeps_the_external_core_unchanged_and_records_its_exact_path_without_rust() {
+    let t = Tools::new("app-only");
+    t.mac("15.6", "6.1.2", "1.1.0");
+    t.checkout();
+    t.tool("bin/cargo", "echo 'Rust must not be requested' >&2; exit 1");
+    t.tool("bin/ps", "exit 0");
+    t.tool("bin/codesign", "exit 0");
+    t.tool("built/ImmuneApp", "exit 99");
+    t.tool(
+        "bin/swift",
+        &format!(
+            "case \"$*\" in *--show-bin-path*) echo '{}' ;; esac",
+            t.0.join("built").display(),
+        ),
+    );
+    t.tool("app/test", "exit 0");
+    let relative = "external/core 'quoted' & \"double\"";
+    t.tool(relative, "exit 99");
+    let core = t.0.join(relative);
+    let before = std::fs::read(&core).unwrap();
+    for args in [vec![relative], vec!["--debug", relative]] {
+        let out = t.run("app/build", &args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let bundle = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+        assert!(!bundle.join("Contents/MacOS/immune").exists());
+        assert_eq!(std::fs::read(&core).unwrap(), before);
+        let plist = Command::new("/usr/bin/plutil")
+            .args(["-extract", "ImmuneExecutablePath", "raw", "-o", "-"])
+            .arg(bundle.join("Contents/Info.plist"))
+            .output()
+            .unwrap();
+        assert!(plist.status.success());
+        assert_eq!(
+            String::from_utf8(plist.stdout).unwrap().trim(),
+            core.to_str().unwrap()
+        );
+    }
+    let out = t.run("check", &["app"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(t.run("app/build", &["absent"]).status.code(), Some(2));
+    t.mac("15.6", "5.10", "1.89.0");
+    assert_eq!(t.run("app/build", &[relative]).status.code(), Some(2));
+    assert_eq!(t.run("check", &["app"]).status.code(), Some(2));
+}
+
+#[test]
+fn app_build_refuses_to_replace_a_bundle_containing_the_only_core() {
+    let t = Tools::new("embedded-core");
+    t.mac("15.6", "6.1.2", "1.89.0");
+    t.checkout();
+    t.tool("bin/ps", "exit 0");
+    t.tool("bin/codesign", "exit 0");
+    t.tool("built/ImmuneApp", "exit 99");
+    t.tool(
+        "bin/swift",
+        &format!("echo '{}'", t.0.join("built").display()),
+    );
+    let bundle = "target/app/Immune.app";
+    let embedded = format!("{bundle}/Contents/MacOS/immune");
+    t.tool(&embedded, "exit 99");
+    let core = t.0.join(&embedded);
+    let original = std::fs::read(&core).unwrap();
+    let marker = t.0.join(bundle).join("keep");
+    std::fs::write(&marker, "old app").unwrap();
+    std::os::unix::fs::symlink(&core, t.0.join("linked-core")).unwrap();
+    for input in [embedded.as_str(), "linked-core"] {
+        let out = t.run("app/build", &[input]);
+        let reason = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{reason}");
+        assert!(
+            reason.contains("the core is inside the app bundle being replaced"),
+            "{reason}"
+        );
+        assert_eq!(std::fs::read(&core).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "old app");
+    }
+}
+
+#[test]
+fn app_build_refuses_to_replace_a_running_bundle_before_and_after_compiling() {
+    let t = Tools::new("running-app");
+    t.mac("15.6", "6.1.2", "1.89.0");
+    t.checkout();
+    t.tool("core", "exit 99");
+    t.tool("built/ImmuneApp", "exit 99");
+    t.tool("bin/codesign", "exit 0");
+    let bundle = t.0.join("target/app/Immune.app");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("keep"), "running bundle").unwrap();
+    t.tool(
+        "bin/ps",
+        &format!("echo '{}/Contents/MacOS/ImmuneApp'", bundle.display()),
+    );
+    t.tool("bin/swift", "exit 99");
+    assert_eq!(t.run("app/build", &["core"]).status.code(), Some(2));
+    assert!(bundle.join("keep").exists());
+
+    t.tool(
+        "bin/ps",
+        &format!(
+            "if [ -f '{}' ]; then echo '{}/Contents/MacOS/ImmuneApp'; fi",
+            t.0.join("started").display(),
+            bundle.display()
+        ),
+    );
+    t.tool(
+        "bin/swift",
+        &format!(
+            "touch '{}'; echo '{}'",
+            t.0.join("started").display(),
+            t.0.join("built").display()
+        ),
+    );
+    assert_eq!(t.run("app/build", &["core"]).status.code(), Some(2));
+    assert!(bundle.join("keep").exists());
 }
 
 #[test]

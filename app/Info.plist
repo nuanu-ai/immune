@@ -3,8 +3,7 @@
 <plist version="1.0">
 <dict>
 	<!-- CFBundleName and CFBundleIdentifier live only here: app/build and the app
-	     read them from this file. CFBundleExecutable is not "Immune": the bundle also
-	     holds `immune`, and on a case-insensitive volume the two would be one file. -->
+	     read them from this file. app/build records the external core path. -->
 	<key>CFBundleName</key>
 	<string>Immune</string>
 	<key>CFBundleIdentifier</key>

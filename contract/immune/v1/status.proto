@@ -201,7 +201,7 @@ message RuleMatches {
   uint64 matches = 3;
 }
 
-// The watcher that holds the store now.
+// The watcher that holds the store now and, for the background service, is making progress.
 message Watcher {
   // When it started, from its lock file. Absent when the file does not say.
   optional int64 since_at = 1;
@@ -215,7 +215,8 @@ message Watcher {
 }
 
 message WatcherFailure {
-  // What failed, the core's word: `read`, `sample` or `events`.
+  // What failed, the core's word: `read`, `sample`, `resubscribe`, `events`, `full_check`, or
+  // `store` for a failure the store did not take.
   string what = 1;
   int64 at = 2;
   // What the failure said, with the secrets the core recognises cut out, each a mark as in

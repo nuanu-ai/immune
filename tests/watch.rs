@@ -9,6 +9,7 @@ mod common;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
+use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -559,9 +560,9 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
 }
 
 #[test]
-fn the_view_says_whether_a_watcher_watches_live_once_one_has_run() {
+fn the_view_says_whether_a_watcher_watches_live() {
     // The owner reading the view must know whether a watcher watches now, and which places it
-    // watches within seconds; on a store no watcher ever read, neither is said.
+    // watches within seconds. Full checks have no stated cadence.
     let mac = Mac::new("view-watching");
     mac.run();
     let summary = |pages: &str| -> String {
@@ -572,7 +573,9 @@ fn the_view_says_whether_a_watcher_watches_live_once_one_has_run() {
     let before = summary(&mac.view());
     let fast = "<span class=\"wh2 t2\">within seconds</span>";
     assert!(
-        before.contains(" · hourly only · ") && !before.contains(fast),
+        before.contains(" · live watching is off · ")
+            && before.contains(">at full checks<")
+            && !before.contains(fast),
         "{before}"
     );
     let mut w = mac.watch().started();
@@ -588,7 +591,8 @@ fn the_view_says_whether_a_watcher_watches_live_once_one_has_run() {
     drop(w);
     let after = summary(&mac.view_if_stale());
     assert!(
-        after.contains(" · hourly only · ")
+        after.contains(" · live watching is off · ")
+            && after.contains(">at full checks<")
             && !after.contains(" · watched live")
             && !after.contains(fast),
         "{after}"
@@ -1733,7 +1737,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     let page = mac.view_if_stale();
     assert!(
         page.contains(
-            " · hourly only: the watcher's latest reading of the watched places failed · "
+            " · live watching is off · the watcher's latest reading of the watched places failed · "
         ) && !page.contains(" · watched live"),
         "{page}"
     );
@@ -1913,6 +1917,336 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
     assert!(mac.status()["watching"].is_null());
     let said = std::fs::read_to_string(&out).unwrap_or_default();
     assert!(!said.contains("\"problem\""), "{said}");
+}
+
+#[test]
+fn a_standalone_watcher_survives_its_parent_and_can_start_under_launchd_without_a_ui() {
+    for orphan_at_start in [true, false] {
+        let mac = Mac::new(if orphan_at_start {
+            "service-start"
+        } else {
+            "service-parent"
+        });
+        mac.sample(now(), &[]);
+        let out = mac.root.join("out");
+        let pid = mac.root.join("pid");
+        let ready = mac.root.join("ready");
+        let mut parent = Command::new("/bin/sh")
+            .env("HOME", mac.home())
+            .current_dir(mac.home())
+            .arg("-c")
+            .arg(r#"(while [ ! -f "$5" ]; do sleep 0.02; done; exec "$0" watch --standalone --store "$1" --system-root "$2" --sample-input "$6") > "$3" & echo $! > "$4"; if [ "$7" = wait ]; then wait; fi"#)
+            .arg(env!("CARGO_BIN_EXE_immune"))
+            .arg(mac.store())
+            .arg(mac.sys())
+            .arg(&out)
+            .arg(&pid)
+            .arg(&ready)
+            .arg(mac.root.join("sample.json"))
+            .arg(if orphan_at_start { "exit" } else { "wait" })
+            .spawn()
+            .unwrap();
+        let end = Instant::now() + WAIT;
+        let start = || {
+            std::fs::write(&ready, "ready").unwrap();
+            while !std::fs::read_to_string(&out).is_ok_and(|s| s.contains("\"event\":\"read\"")) {
+                assert!(Instant::now() < end, "the standalone watcher did not start");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::fs::read_to_string(&pid)
+                .unwrap()
+                .trim()
+                .parse::<i32>()
+                .unwrap()
+        };
+        let watcher = if orphan_at_start {
+            // The child cannot exec until its parent has exited: getppid() is 1 at entry.
+            assert!(parent.wait().unwrap().success());
+            start()
+        } else {
+            let watcher = start();
+            parent.kill().unwrap();
+            parent.wait().unwrap();
+            watcher
+        };
+        let reap = Reap(watcher);
+        mac.put(".zshrc", "export EXAMPLE=1\n");
+        while !std::fs::read_to_string(&out)
+            .is_ok_and(|s| s.matches("\"event\":\"read\"").count() >= 2)
+        {
+            assert!(
+                Instant::now() < end,
+                "the standalone watcher stopped with its parent"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!mac.status()["watching"].is_null());
+        let duplicate = mac.watch_cmd().arg("--standalone").output().unwrap();
+        assert_eq!(duplicate.status.code(), Some(5));
+        // SAFETY: the process is the standalone watcher this test started.
+        unsafe { libc::kill(watcher, libc::SIGTERM) };
+        while !mac.status()["watching"].is_null() {
+            assert!(
+                Instant::now() < end,
+                "the standalone watcher did not release the store"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::mem::forget(reap);
+    }
+}
+
+#[test]
+fn a_background_watcher_reports_live_only_after_its_first_read_and_while_its_heartbeat_is_fresh() {
+    let mac = Mac::new("background-heartbeat");
+    mac.app_run();
+    let folder = mac.root.join("store");
+    // A different full check is already fetching. The scheduled check must leave its work
+    // alone, so this test never asks the network. The run lock delays the first watcher read.
+    let fetch = std::fs::File::open(folder.join("feeds/fetch.lock")).unwrap();
+    fetch.lock().unwrap();
+    let reading = std::fs::File::open(&folder).unwrap();
+    reading.lock().unwrap();
+    let mut watcher = mac.watch_with(&["--background", "--alive-every", "1"]);
+    watcher.next("watching");
+    assert_eq!(mac.status()["this_mac"]["live"], false);
+    drop(reading);
+    watcher.next("read");
+    assert_eq!(mac.status()["this_mac"]["live"], true);
+    let duplicate = mac.watch_cmd().arg("--background").output().unwrap();
+    assert_eq!(duplicate.status.code(), Some(5));
+
+    watcher.signal(libc::SIGSTOP);
+    let lock = std::fs::File::options()
+        .write(true)
+        .open(folder.join("watch.lock"))
+        .unwrap();
+    for at in [
+        SystemTime::now() - Duration::from_secs(181),
+        SystemTime::now() + Duration::from_secs(60),
+    ] {
+        lock.set_modified(at).unwrap();
+        let status = mac.status();
+        assert!(status["watching"].is_null(), "{status}");
+        assert_eq!(status["this_mac"]["live"], false, "{status}");
+    }
+    watcher.signal(libc::SIGCONT);
+    assert_eq!(watcher.stop().code(), Some(0));
+}
+
+#[test]
+fn a_watcher_started_without_background_writes_the_heartbeat_so_a_stalled_one_is_not_live() {
+    let mac = Mac::new("plain-heartbeat");
+    mac.run();
+    let mut watcher = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    // Past this line it writes nothing to the store, so stopped it holds no write lock.
+    watcher.next("alive");
+    assert_eq!(mac.status()["this_mac"]["live"], true);
+    watcher.signal(libc::SIGSTOP);
+    let lock = std::fs::File::options()
+        .write(true)
+        .open(mac.root.join("store/watch.lock"))
+        .unwrap();
+    lock.set_modified(SystemTime::now() - Duration::from_secs(181))
+        .unwrap();
+    let status = mac.status();
+    assert!(status["watching"].is_null(), "{status}");
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    watcher.signal(libc::SIGCONT);
+    assert_eq!(watcher.stop().code(), Some(0));
+}
+
+/// Gives a file its mode back when dropped, so that a test that fails leaves it removable.
+struct Mode(PathBuf, u32);
+
+impl Drop for Mode {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+    }
+}
+
+#[test]
+fn a_failure_the_store_did_not_take_is_not_calm_and_live_comes_back_when_the_reading_succeeds() {
+    let mac = Mac::new("unrecorded");
+    mac.run();
+    // Samples and readings of program starts only at start, so that the store refuses only
+    // the readings this test asks for.
+    let mut w = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    // The sample and the reading of program starts made at start are done before this line.
+    w.next("alive");
+    assert_eq!(mac.status()["this_mac"]["live"], true);
+    let store = mac.store();
+    let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+    let restore = Mode(store.clone(), mode);
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o444)).unwrap();
+    mac.put(".zshrc", "one\n");
+    w.until("problem", |v| v["code"] == "read_failed");
+
+    let status = mac.status();
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    let failed = status["watching"]["failed"].as_array().unwrap();
+    assert!(
+        failed
+            .iter()
+            .any(|f| f["what"] == "store" && !f["detail_text"].as_str().unwrap().is_empty()),
+        "{status}"
+    );
+    let out = mac
+        .immune()
+        .args(["status", "--store"])
+        .arg(&store)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("write to the store failed, so it does not watch live")
+            && !text.contains("a watcher runs now;"),
+        "{text}"
+    );
+    let pages = mac.view();
+    assert!(
+        pages.contains("write to the store failed") && !pages.contains(" · watched live · "),
+        "the page says calm"
+    );
+
+    drop(restore);
+    mac.put(".zshrc", "two\n");
+    w.next("read");
+    let status = mac.status();
+    assert_eq!(status["this_mac"]["live"], true, "{status}");
+    assert!(
+        status["watching"]["failed"]
+            .as_array()
+            .is_none_or(|f| f.is_empty()),
+        "{status}"
+    );
+    assert_eq!(w.stop().code(), Some(0));
+}
+
+#[test]
+fn a_scheduled_check_requires_its_own_live_parent_and_an_open_lifetime_pipe() {
+    let mac = Mac::new("background-guards");
+    let ours = std::process::id().to_string();
+    for (parent, closed, reason) in [
+        ("1", false, "has no supervising watcher"),
+        (ours.as_str(), true, "watcher has already stopped"),
+    ] {
+        let (read, write) = std::io::pipe().unwrap();
+        let _keep_open = if closed {
+            drop(write);
+            None
+        } else {
+            Some(write)
+        };
+        let mut command = mac.immune();
+        command
+            .args(["--background-check", parent, "run"])
+            .stdin(read)
+            .process_group(0);
+        let output = mac
+            .run_args(command, &mac.root.join("absent"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(reason), "{error}");
+        assert!(!mac.root.join("store/feeds/fetch.lock").exists());
+    }
+}
+
+#[test]
+fn a_scheduled_check_stops_with_its_tools_if_its_watcher_is_killed() {
+    const TEST: &str = "a_scheduled_check_stops_with_its_tools_if_its_watcher_is_killed";
+    if let Some(root) = std::env::var_os("IMMUNE_TEST_CHECK_ROOT") {
+        let root = PathBuf::from(root);
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(r#"while [ ! -f "$1/start" ]; do /bin/sleep 0.02; done; exec "$2" --background-check "$3" run --store "$1/store/store.db" --system-root "$1/sys" --curl "$1/curl""#)
+            .arg("check")
+            .arg(&root)
+            .arg(env!("CARGO_BIN_EXE_immune"))
+            .arg(std::process::id().to_string())
+            .env("HOME", root.join("home"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut check = cmd.spawn().unwrap();
+        let _lifetime = check.stdin.take().unwrap();
+        std::fs::write(root.join("check-pid"), check.id().to_string()).unwrap();
+        check.wait().unwrap();
+        return;
+    }
+
+    for started in [false, true] {
+        let mac = Mac::new("background-lifetime");
+        let tool = mac.root.join("curl");
+        std::fs::write(
+            &tool,
+            "#!/bin/sh\nprintf '%s' $$ > \"$HOME/../tool-pid\"\nexec /bin/sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut parent = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env("IMMUNE_TEST_CHECK_ROOT", &mac.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let parent_reap = Reap(parent.id() as i32);
+        let end = Instant::now() + WAIT;
+        let pid = |name| loop {
+            if let Ok(text) = std::fs::read_to_string(mac.root.join(name))
+                && let Ok(pid) = text.parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(Instant::now() < end, "missing {name}");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let check = pid("check-pid");
+        let check_reap = Reap(-check);
+        let tool = started.then(|| {
+            std::fs::write(mac.root.join("start"), "").unwrap();
+            pid("tool-pid")
+        });
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        std::mem::forget(parent_reap);
+        if !started {
+            std::fs::write(mac.root.join("start"), "").unwrap();
+        }
+        for pid in std::iter::once(check).chain(tool) {
+            // SAFETY: signal 0 only asks whether the invented process is still present.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < end, "check or tool outlived the watcher");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        std::mem::forget(check_reap);
+        assert!(!mac.root.join("store/feeds/fetch.lock").exists() || started);
+        assert!(!mac.store().exists());
+    }
 }
 
 // What the status answers first: whether this Mac is watched and quiet. What is not covered
