@@ -308,21 +308,23 @@ fn walk_code(
 /// writes for the owner, so a change there says nothing about an application. And whoever can
 /// write there can rewrite the store itself, which is not guarded against yet (`AGENTS.md`).
 ///
-/// A folder an earlier reading holds, `held`, is opened for as long as it is there, whether or
-/// not an application read now matches it. Otherwise removing an application, or moving it out
-/// of the places bundles are looked for, would stop the folder being opened while this reading
-/// stayed full, and the lifecycle would retract it as looked for and not found: code that is
-/// still on disk, and may still be run, would read as gone, and a change to it as nothing. Such
-/// a folder keeps the version its application last had, since nothing says it has another, and
-/// the reading's note names it. A held folder that is no longer there was looked for, and goes.
+/// A folder the store holds or held, `held`, is opened whenever it is there, whether or not an
+/// application read now matches it. Otherwise removing an application, or moving it out of the
+/// places bundles are looked for, would stop the folder being opened while this reading stayed
+/// full, and the lifecycle would retract it as looked for and not found: code that is still on
+/// disk, and may still be run, would read as gone, and a change to it as nothing. Such a folder
+/// keeps the version its application last had, since nothing says it has another, and the
+/// reading's note names it. So a folder is retracted only while it is not there. One that comes
+/// back is compared with the digest it had when it went (`changed_in_place`). Folders are
+/// matched by the key a Mac's volumes compare names by (`spelling::key`).
 fn app_support(
     roots: &Roots,
     machine: &str,
     bundles: &Kind,
-    held: &BTreeMap<String, Vec<String>>,
+    held: &BTreeMap<String, Held>,
 ) -> Kind {
     let mut kind = Kind::new(APP_SUPPORT, APP_SUPPORT_CANNOT);
-    // Each name of an application not signed by Apple, lowercased, with its version.
+    // Each name of an application not signed by Apple, by its key, with its version.
     let mut names: BTreeMap<String, Option<String>> = BTreeMap::new();
     for t in &bundles.things {
         let fact = |p: &str| t.facts.iter().find(|(q, _)| *q == p).map(|(_, o)| o);
@@ -360,25 +362,33 @@ fn app_support(
     let (mut matched, mut files, mut kept) = (0, 0, Vec::new());
     for entry in entries {
         let text = entry.to_string_lossy().into_owned();
-        let name = text.to_lowercase();
-        let (versions, unmatched): (Vec<String>, bool) = match (names.get(&name), held.get(&name)) {
+        let key = crate::spelling::key(&text);
+        let before = held.get(&key);
+        let (versions, unmatched): (Vec<String>, bool) = match (names.get(&key), before) {
             (Some(version), _) => (version.iter().cloned().collect(), false),
-            (None, Some(versions)) => (versions.clone(), true),
+            (None, Some(h)) => (h.versions.clone(), true),
             (None, None) => continue,
         };
         let path = base.join(&entry);
-        if own.as_ref() == Some(&same_place(&path)) {
-            continue;
-        }
-        let shown = format!("{APP_SUPPORT_PLACE}/{text}");
+        // A folder held before that is now a link or a file is there and is not opened: never
+        // taken for a folder that went. Asked before anything that follows a link.
         if !real_folder(&path) {
-            // A folder held before that is now a link or a file is there and is not opened:
-            // never taken for a folder that went.
-            if held.contains_key(&name) {
-                kind.failed.push((shown, NOT_A_FOLDER.to_string()));
+            if before.is_some() {
+                kind.failed.push((
+                    format!("{APP_SUPPORT_PLACE}/{text}"),
+                    NOT_A_FOLDER.to_string(),
+                ));
             }
             continue;
         }
+        if own.as_ref() == Some(&same_place(&path)) {
+            continue;
+        }
+        // A folder the store holds under another spelling of its name, in case or Unicode form,
+        // keeps the store's: on a volume that ignores both, as a Mac's do by default, it is the
+        // same folder, so a change to it is a change and not one folder gone and another new.
+        let spelled = before.map_or_else(|| text.clone(), |h| h.name.clone());
+        let shown = format!("{APP_SUPPORT_PLACE}/{spelled}");
         if unmatched {
             kept.push(shown.clone());
         } else {
@@ -421,33 +431,56 @@ const NOT_A_FOLDER: &str =
 /// How the note begins that names the folders opened because an earlier reading held them.
 const KEPT: &str = "still compared, since an earlier reading held them and they are there, though no application read now matches them: ";
 
-/// The folders of code the store holds on this Mac from earlier readings, by the name they are
-/// matched by, lowercased (`app_support_name`), each with the versions in force for it.
-fn held_folders(
-    conn: &Connection,
-    machine: &str,
-) -> rusqlite::Result<BTreeMap<String, Vec<String>>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// A folder of code the store holds, or held, on this Mac.
+struct Held {
+    /// Its name as the store spells it in its id.
+    name: String,
+    /// The versions it was held at: those in force, or for a folder the store no longer holds,
+    /// those retracted with it.
+    versions: Vec<String>,
+}
+
+/// Every folder of code the store holds or held on this Mac, by the name it is matched by
+/// (`app_support_name`). Two spellings of one name, which only a volume that tells case or
+/// Unicode form apart could give, are one: the one whose id sorts last. A folder the store no longer holds is opened again once it is back:
+/// otherwise a folder that missed one reading, renamed aside for a run or removed and made
+/// again, would never be compared again while it is on disk.
+fn held_folders(conn: &Connection, machine: &str) -> rusqlite::Result<BTreeMap<String, Held>> {
     let mut stmt = conn.prepare(
-        "SELECT subject, predicate, object FROM assertion
-         WHERE layer = 'live' AND reader = ?1 AND scope = ?2 AND kind = ?3",
+        "SELECT subject, predicate, object, layer = 'live', retracted_by FROM assertion
+         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3
+         ORDER BY id",
     )?;
-    let prefix = format!("file:{machine}/");
+    type Row = (String, String, String, bool, Option<String>);
+    let mut by_subject: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for row in stmt.query_map(params![READER, machine, APP_SUPPORT], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     })? {
-        let (subject, predicate, object) = row?;
-        let Some(name) = subject.strip_prefix(&prefix).and_then(app_support_name) else {
+        let row: Row = row?;
+        by_subject.entry(row.0.clone()).or_default().push(row);
+    }
+    let prefix = format!("file:{machine}/");
+    let mut out: BTreeMap<String, Held> = BTreeMap::new();
+    for (subject, rows) in by_subject {
+        let Some(name) = subject.strip_prefix(&prefix).and_then(app_support_folder) else {
             continue;
         };
-        let versions = out.entry(name).or_default();
-        if predicate == "has_version" {
-            versions.push(object);
-        }
+        let live = rows.iter().any(|r| r.3);
+        // What went with the folder when it was last retracted: the run that retracted its
+        // latest assertion.
+        let gone_by = rows.last().and_then(|r| r.4.clone());
+        let versions = rows
+            .iter()
+            .filter(|r| r.1 == "has_version" && if live { r.3 } else { r.4 == gone_by })
+            .map(|r| r.2.clone())
+            .collect();
+        out.insert(
+            crate::spelling::key(name),
+            Held {
+                name: name.to_string(),
+                versions,
+            },
+        );
     }
     Ok(out)
 }
@@ -594,25 +627,28 @@ const BUNDLE_PLACES: [&str; 2] = ["/Applications", "Applications"];
 const APP_SUPPORT_PLACE: &str = "Library/Application Support";
 
 /// The names an application is matched by with the folder of code it keeps outside its bundle,
-/// lowercased: its bundle identifier, the last part of its id `subject`, and its folder's name
-/// without `.app`, the last part of where it is installed, `shown`.
+/// each by the key a Mac's volumes compare names by (`spelling::key`), so that a folder named in
+/// another case or Unicode form is still its folder: its bundle identifier, the last part of its
+/// id `subject`, and its folder's name without `.app`, the last part of where it is installed,
+/// `shown`.
 pub fn app_names(subject: &str, shown: &str) -> [String; 2] {
     let identifier = subject.rsplit_once("/macos-app/").map_or("", |(_, n)| n);
     let folder = shown.rsplit('/').next().unwrap_or_default();
     let stem = folder.strip_suffix(".app").unwrap_or(folder);
-    [identifier.to_lowercase(), stem.to_lowercase()]
+    [crate::spelling::key(identifier), crate::spelling::key(stem)]
 }
 
-/// The name of the application a folder of code kept outside a bundle is matched by, lowercased,
-/// from the folder's path as ids name it (`app_support`); `None` for any other path.
-pub fn app_support_name(rel: &str) -> Option<String> {
+/// The name of a folder of code kept outside a bundle, from the folder's path as ids name it
+/// (`app_support`), as written; `None` for any other path.
+fn app_support_folder(rel: &str) -> Option<&str> {
     let inside = rel.strip_prefix(APP_SUPPORT_PLACE)?.strip_prefix('/')?;
-    Some(
-        inside
-            .split_once('/')
-            .map_or(inside, |(name, _)| name)
-            .to_lowercase(),
-    )
+    Some(inside.split_once('/').map_or(inside, |(name, _)| name))
+}
+
+/// The name an application is matched by with a folder of code kept outside a bundle, by the
+/// key `app_names` gives, from the folder's path as ids name it; `None` for any other path.
+pub fn app_support_name(rel: &str) -> Option<String> {
+    app_support_folder(rel).map(crate::spelling::key)
 }
 
 /// The formula a keg is of, from the keg's path as ids name it: `<name>` of
@@ -998,18 +1034,43 @@ pub type InPlace = (String, String, String, Option<String>);
 
 /// The changes of one run that a finding rule looks for: content that changed while the
 /// version stayed. Each is a `changed` event of this reader on `has_seal` or `signed_by` of a
-/// bundle, or on `has_digest` of a keg or a global package, whose subject has no `has_version`
-/// event in the same run. A first reading has no `changed` events, so it adds nothing here.
+/// bundle, or on `has_digest` of a keg, a global package or a folder of code, whose subject has
+/// no `has_version` event in the same run. A first reading has no `changed` events, so it adds
+/// nothing here. A folder of code that comes back after it was retracted is `added`: it is one
+/// when its digest is not the one it had when it went and its versions are the ones it went with,
+/// so code changed while it was away, or while it was renamed aside, is not taken for new.
 /// Returns kind, subject, predicate and new value, in the order of the journal.
 pub fn changed_in_place(conn: &Connection, run_id: &str) -> rusqlite::Result<Vec<InPlace>> {
     conn.prepare(
         "SELECT j.kind, j.subject, j.predicate, j.new_value FROM journal j
-         WHERE j.run_id = ?1 AND j.reader = ?2 AND j.entry = 'changed'
-           AND ((j.kind = ?3 AND j.predicate IN ('has_seal', 'signed_by'))
-                OR (j.kind IN (?4, ?5, ?6) AND j.predicate = 'has_digest'))
-           AND NOT EXISTS (SELECT 1 FROM journal v
-                           WHERE v.run_id = j.run_id AND v.reader = j.reader
-                             AND v.subject = j.subject AND v.predicate = 'has_version')
+         WHERE j.run_id = ?1 AND j.reader = ?2
+           AND ((j.entry = 'changed'
+                 AND ((j.kind = ?3 AND j.predicate IN ('has_seal', 'signed_by'))
+                      OR (j.kind IN (?4, ?5, ?6) AND j.predicate = 'has_digest'))
+                 AND NOT EXISTS (SELECT 1 FROM journal v
+                                 WHERE v.run_id = j.run_id AND v.reader = j.reader
+                                   AND v.subject = j.subject AND v.predicate = 'has_version'))
+                OR (j.entry = 'added' AND j.kind = ?6 AND j.predicate = 'has_digest'
+                    AND j.new_value != (SELECT r.object FROM assertion r
+                                        WHERE r.subject = j.subject AND r.reader = j.reader
+                                          AND r.kind = j.kind AND r.predicate = 'has_digest'
+                                          AND r.layer = 'retracted'
+                                        ORDER BY r.id DESC LIMIT 1)
+                    AND (SELECT v.new_value FROM journal v
+                         WHERE v.run_id = j.run_id AND v.reader = j.reader
+                           AND v.subject = j.subject AND v.predicate = 'has_version')
+                        IS (SELECT group_concat(object, ', ') FROM (
+                              SELECT DISTINCT r.object FROM assertion r
+                              WHERE r.subject = j.subject AND r.reader = j.reader
+                                AND r.kind = j.kind AND r.predicate = 'has_version'
+                                AND r.layer = 'retracted'
+                                AND r.retracted_by = (SELECT g.retracted_by FROM assertion g
+                                                      WHERE g.subject = j.subject
+                                                        AND g.reader = j.reader
+                                                        AND g.kind = j.kind
+                                                        AND g.layer = 'retracted'
+                                                      ORDER BY g.id DESC LIMIT 1)
+                              ORDER BY r.object))))
          ORDER BY j.seq",
     )?
     .query_map(

@@ -667,6 +667,9 @@ fn an_application_that_went_while_its_code_folder_stayed_is_held_and_a_change_th
             "start();\n",
         );
         e.run();
+        // Updated once: the folder keeps the version it is at now, not an earlier one.
+        e.app("Editor.app", "org.example.editor", "3.1");
+        e.run();
         let bundle = e.0.join("system/Applications/Editor.app");
         if how == "removed" {
             std::fs::remove_dir_all(&bundle).unwrap();
@@ -749,44 +752,177 @@ fn an_application_whose_bundle_and_code_folder_both_went_is_gone() {
 }
 
 /// A folder of code held from an earlier reading that is now a link is there and is not opened:
-/// the reading is not full and says why, so the application is not answered `gone`.
+/// the reading is not full and says why, so the application is not answered `gone`. So is a link
+/// to the folder that holds the store, which the reading otherwise leaves out.
 #[test]
 fn a_held_code_folder_replaced_by_a_link_is_not_taken_for_gone() {
-    let e = Estate::new("program-folder-link");
-    e.app("Editor.app", "org.example.editor", "3.0");
-    e.put("home/Elsewhere/Editor/main.js", "start();\n");
-    e.put(
-        "home/Library/Application Support/Editor/main.js",
-        "start();\n",
-    );
-    e.run();
-    std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
-    std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
-    std::os::unix::fs::symlink(
-        e.home().join("Elsewhere/Editor"),
-        e.home().join("Library/Application Support/Editor"),
-    )
-    .unwrap();
-    e.run();
-    let k = e.program("org.example.editor");
-    assert_ne!(k.presence(), v1::Presence::Gone);
-    let code = code_reading(&k);
-    assert_eq!(code.completeness(), v1::Completeness::Partial);
-    assert!(
-        code.reason_text.as_deref().is_some_and(
-            |r| r.contains("Editor (held from an earlier reading and no longer a folder")
-        ),
-        "{:?}",
-        code.reason_text
-    );
+    for to in ["elsewhere", "the store's folder"] {
+        let e = Estate::new("program-folder-link");
+        e.app("Editor.app", "org.example.editor", "3.0");
+        e.put("home/Elsewhere/Editor/main.js", "start();\n");
+        e.put(
+            "home/Library/Application Support/Editor/main.js",
+            "start();\n",
+        );
+        e.run();
+        std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+        std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
+        let target = if to == "elsewhere" {
+            e.home().join("Elsewhere/Editor")
+        } else {
+            e.store().parent().unwrap().to_path_buf()
+        };
+        std::os::unix::fs::symlink(target, e.home().join("Library/Application Support/Editor"))
+            .unwrap();
+        e.run();
+        let k = e.program("org.example.editor");
+        assert_ne!(k.presence(), v1::Presence::Gone, "{to}");
+        let code = code_reading(&k);
+        assert_eq!(code.completeness(), v1::Completeness::Partial, "{to}");
+        assert!(
+            code.reason_text.as_deref().is_some_and(
+                |r| r.contains("Editor (held from an earlier reading and no longer a folder")
+            ),
+            "{to}: {:?}",
+            code.reason_text
+        );
+    }
 }
 
-/// On an ordinary Mac nothing changes: an application installed, updated with its code, or
-/// removed with its folder reads exactly as before, with the reading of applications' code full,
-/// no folder named as held without a matching application, and no finding.
+/// The findings of an answer, by rule.
+fn rules_of(k: &v1::Known) -> Vec<&str> {
+    k.findings
+        .iter()
+        .map(|f| f.rule.as_deref().unwrap_or_default())
+        .collect()
+}
+
+/// The promise against false calm, for a folder of code that missed a reading: it is opened
+/// again once it is back, compared with what it was when it went, and its application is never
+/// answered `gone` while it is on disk. A folder renamed aside for one run and back is held, and
+/// unchanged, so it raises nothing; a change to it after raises the finding. A folder removed
+/// with its application and made again is held, and is not the code it was, so it raises the
+/// finding; so does a change to it after.
+#[test]
+fn a_code_folder_that_comes_back_is_held_and_compared_with_what_it_was_when_it_went() {
+    for how in ["renamed aside", "made again"] {
+        let e = Estate::new("program-folder-back");
+        e.app("Editor.app", "org.example.editor", "3.0");
+        let main = "home/Library/Application Support/Editor/main.js";
+        e.put(main, "start();\n");
+        e.run();
+        // Updated once: the folder is compared at the version it went with, not an earlier one.
+        e.app("Editor.app", "org.example.editor", "3.1");
+        e.run();
+        let folder = e.home().join("Library/Application Support/Editor");
+        let aside = e.home().join("Library/Application Support/Editor-aside");
+        std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+        if how == "renamed aside" {
+            e.run();
+            assert_eq!(e.program(EDITOR).presence(), v1::Presence::Held);
+            std::fs::rename(&folder, &aside).unwrap();
+            e.run();
+            assert_eq!(e.program(EDITOR).presence(), v1::Presence::Gone);
+            std::fs::rename(&aside, &folder).unwrap();
+        } else {
+            std::fs::remove_dir_all(&folder).unwrap();
+            e.run();
+            assert_eq!(e.program(EDITOR).presence(), v1::Presence::Gone);
+            e.put(main, "start();\n");
+        }
+        e.run();
+        let back = e.program(EDITOR);
+        assert_eq!(back.presence(), v1::Presence::Held, "{how}");
+        let expected: &[&str] = if how == "renamed aside" {
+            &[]
+        } else {
+            &["integrity.app-code-outside"]
+        };
+        assert_eq!(rules_of(&back), expected, "{how}");
+        append(&e, main, "steal();\n");
+        e.run();
+        for what in EDITOR_ASKED {
+            let k = e.program(what);
+            assert_eq!(k.presence(), v1::Presence::Held, "{how} {what}");
+            assert_eq!(rules_of(&k), ["integrity.app-code-outside"], "{how} {what}");
+            assert_eq!(
+                code_reading(&k).completeness(),
+                v1::Completeness::Full,
+                "{how} {what}"
+            );
+        }
+    }
+}
+
+/// The promise against false calm, for a folder of code renamed to another Unicode form of its
+/// name: on a Mac's volume it is the same folder, so it stays held under the name the store gives
+/// it, and a change made with the rename raises the finding.
+#[test]
+fn a_held_code_folder_renamed_to_another_unicode_form_stays_held_and_its_change_is_found() {
+    let e = Estate::new("program-folder-nfd");
+    let nfc = "Caf\u{e9}";
+    let nfd = "Cafe\u{301}";
+    e.app(&format!("{nfc}.app"), "org.example.cafe", "1.0");
+    let main = format!("home/Library/Application Support/{nfc}/main.js");
+    e.put(&main, "start();\n");
+    e.run();
+    std::fs::remove_dir_all(e.0.join(format!("system/Applications/{nfc}.app"))).unwrap();
+    e.run();
+    let support = e.home().join("Library/Application Support");
+    std::fs::rename(support.join(nfc), support.join(nfd)).unwrap();
+    append(
+        &e,
+        &format!("home/Library/Application Support/{nfd}/main.js"),
+        "steal();\n",
+    );
+    e.run();
+    for what in [
+        "org.example.cafe".to_string(),
+        format!("~/Library/Application Support/{nfd}"),
+        format!("~/Library/Application Support/{nfc}"),
+    ] {
+        let k = e.program(&what);
+        assert_eq!(k.presence(), v1::Presence::Held, "{what}");
+        assert_eq!(
+            thing(&k),
+            "component:machine:mac/macos-app/org.example.cafe",
+            "{what}"
+        );
+        assert_eq!(rules_of(&k), ["integrity.app-code-outside"], "{what}");
+    }
+}
+
+/// An application and its folder of code named in two Unicode forms of one name are one
+/// program, as they are one name on a Mac's volume: the folder is read as its, a change to it is
+/// found in the application's answer, and once the bundle is removed the folder still holds it.
+#[test]
+fn an_application_and_its_folder_named_in_two_unicode_forms_are_one_program() {
+    let (nfc, nfd) = ("Caf\u{e9}", "Cafe\u{301}");
+    for (app, folder) in [(nfc, nfd), (nfd, nfc)] {
+        let e = Estate::new("program-folder-forms");
+        e.app(&format!("{app}.app"), "org.example.cafe", "1.0");
+        let main = format!("home/Library/Application Support/{folder}/main.js");
+        e.put(&main, "start();\n");
+        e.run();
+        append(&e, &main, "steal();\n");
+        e.run();
+        let id = "component:machine:mac/macos-app/org.example.cafe";
+        let k = e.program(id);
+        assert_eq!(k.same_as.len(), 1, "{app:?}: {:?}", k.same_as);
+        assert_eq!(rules_of(&k), ["integrity.app-code-outside"], "{app:?}");
+        std::fs::remove_dir_all(e.0.join(format!("system/Applications/{app}.app"))).unwrap();
+        e.run();
+        assert_eq!(e.program(id).presence(), v1::Presence::Held, "{app:?}");
+    }
+}
+
+/// On an ordinary Mac nothing changes: an application installed, updated with its code, removed
+/// with its folder, or removed with it and installed again at another version reads exactly as
+/// before, with the reading of applications' code full, no folder named as held without a
+/// matching application, and no finding.
 #[test]
 fn an_application_installed_updated_or_removed_with_its_folder_reads_as_before() {
-    for case in ["installed", "updated", "removed"] {
+    for case in ["installed", "updated", "removed", "installed again"] {
         let e = Estate::new(&format!("program-folder-ordinary-{case}"));
         e.app("Editor.app", "org.example.editor", "3.0");
         e.put(
@@ -803,10 +939,18 @@ fn an_application_installed_updated_or_removed_with_its_folder_reads_as_before()
                 );
                 e.app("Editor.app", "org.example.editor", "3.1");
             }
-            "removed" => {
+            "removed" | "installed again" => {
                 std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
                 std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor"))
                     .unwrap();
+                if case == "installed again" {
+                    e.run();
+                    e.app("Editor.app", "org.example.editor", "4.0");
+                    e.put(
+                        "home/Library/Application Support/Editor/main.js",
+                        "start();\n",
+                    );
+                }
             }
             _ => {}
         }

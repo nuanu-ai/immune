@@ -382,9 +382,9 @@ fn units(
         );
     }
     // A folder of code is a unit whether its reading holds it or no longer does: the reading opens
-    // a folder it holds for as long as the folder is there, so one it no longer holds was looked
-    // for and was not there, and its application's presence says so. No folder of code lies in
-    // another unit or holds one, so it is the same unit now and before.
+    // every folder the store holds or held whenever it is there, so one it no longer holds was
+    // looked for and was not there, and its application's presence says so. No folder of code
+    // lies in another unit or holds one, so it is the same unit now and before.
     for folder in code_folders(conn, this)? {
         let Some((_, path)) = known::place_of(&folder) else {
             continue;
