@@ -13,8 +13,9 @@
 //! a rule's text or the store's free text. One fixed script, `src/happens.js`, written beside
 //! the pages, loads it every ten seconds and redraws the numbers in place; the header says how
 //! fresh they are, or "not updating: no watcher is running" once the file is a minute old. It is
-//! the page's only script, and it adds no text but its own words and numbers. Without it the
-//! section is complete as made, and says when it was made.
+//! the page's only script, and it adds no text but its own words and numbers and, in a pop-up
+//! over a technique's square, what the square carries as data. Without it the section is
+//! complete as made, and says when it was made.
 //!
 //! No false calm, the project's first invariant. Nothing is drawn as watching unless the event
 //! level's latest state is `running`: while it is not, one named line says so in place of the
@@ -23,7 +24,8 @@
 //! drawn unless one of them matched. "0 lost" is said only when coverage over the day is full.
 //! No square is in a state colour.
 //!
-//! The list of techniques is MITRE's, `rules/attack/macos.json` with its NOTICE, compiled in.
+//! The list of techniques is MITRE's, `rules/attack/macos.json` with its NOTICE, compiled in,
+//! each with the first sentence of MITRE's description of it, which the pop-up shows.
 //! Which techniques a rule covers is the rule's own `attack.t…` tags (`src/sigma.rs`), a
 //! sub-technique counted as its parent. Every string taken from a rule is data: escaped, in an
 //! element of its own.
@@ -60,6 +62,8 @@ pub struct Attack {
     pub tactics: Vec<Tactic>,
     /// Every technique's name, by its id.
     pub names: BTreeMap<String, String>,
+    /// Every technique's first sentence of MITRE's description, by its id.
+    pub about: BTreeMap<String, String>,
 }
 
 pub struct Tactic {
@@ -74,6 +78,15 @@ pub fn attack() -> &'static Attack {
     READ.get_or_init(|| {
         let v: Value = serde_json::from_str(ATTACK).expect("rules/attack/macos.json is JSON");
         let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        // One field of every technique, by its id.
+        let by_id = |field: &str| -> BTreeMap<String, String> {
+            v["techniques"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|t| (text(&t["id"]), text(&t[field])))
+                .collect()
+        };
         Attack {
             release: text(&v["release"]),
             tactics: v["tactics"]
@@ -90,12 +103,8 @@ pub fn attack() -> &'static Attack {
                         .collect(),
                 })
                 .collect(),
-            names: v["techniques"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|t| (text(&t["id"]), text(&t["name"])))
-                .collect(),
+            names: by_id("name"),
+            about: by_id("description"),
         }
     })
 }
@@ -707,6 +716,26 @@ fn shown_said(rows: &[Row]) -> String {
     shown
 }
 
+/// One technique's square. Its id, name and state are its title, which a browser shows without
+/// the script, and its accessible name; the same and MITRE's first sentence of what the
+/// technique is are data the script's pop-up sets as text. `now`: its finding needs the person
+/// now.
+fn square(
+    out: &mut String,
+    class: &str,
+    (tech, name, about): (&str, &str, &str),
+    said: &str,
+    now: bool,
+) -> Out {
+    let (tech, name, about, said) = (esc(tech), esc(name), esc(about), esc(said));
+    write!(
+        out,
+        "<span class=\"m {class}\" title=\"{tech} {name}: {said}\" role=\"img\" aria-label=\"{tech} {name}: {said}\" data-t=\"{tech}\" data-n=\"{name}\" data-d=\"{about}\" data-s=\"{said}\"{}></span>",
+        if now { " data-now" } else { "" }
+    )?;
+    Ok(())
+}
+
 /// The grid of techniques, drawn only while the level runs: a legend, a row for each tactic
 /// with a square for each technique watched now or that a rule matched or raised a finding
 /// for, and what the squares are, with MITRE's notice. A technique whose rules do not watch
@@ -790,17 +819,10 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
                 }
                 _ => (s.class().to_string(), s.said().to_string()),
             };
-            let now = if *s == Square::Finding && urgent.contains(tech) {
-                " data-now"
-            } else {
-                ""
-            };
-            write!(
-                out,
-                "<span class=\"m {class}\" title=\"{} {}: {said}\"{now}></span>",
-                esc(tech),
-                esc(name),
-            )?;
+            // A technique of a finding that needs the person now is always drawn as a finding.
+            let now = urgent.contains(tech);
+            let about = attack.about.get(*tech).map_or("", String::as_str);
+            square(out, &class, (tech, name, about), &said, now)?;
         }
         out.push_str("</span></div>\n");
     }
@@ -1354,6 +1376,11 @@ print(JSON.stringify(out));
 "#,
             live.map_or("null".to_string(), |v| v.to_string()),
         );
+        run_js(&stand_in)
+    }
+
+    /// Runs a script in JavaScriptCore's shell and returns the JSON it prints.
+    fn run_js(stand_in: &str) -> Value {
         static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "immune-happens-{}-{}.js",
@@ -1365,8 +1392,9 @@ print(JSON.stringify(out));
         let _ = std::fs::remove_file(&path);
         assert!(
             out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            "{}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
         );
         serde_json::from_slice(&out.stdout).unwrap()
     }
@@ -1461,6 +1489,148 @@ print(JSON.stringify(out));
         assert_eq!(
             live(None, 5),
             serde_json::json!({ "written_at_seconds": 5, "state": "none" })
+        );
+    }
+
+    #[test]
+    fn every_technique_has_one_sentence_of_mitres_description_with_no_markup_left() {
+        // The pop-up says what a technique is in MITRE's words: one sentence for each technique
+        // the file lists, and none of the markup of MITRE's text, a citation, a link or a tag,
+        // which would read as noise. The ids, names and tactics are pinned by the test of the
+        // squares drawn.
+        let a = attack();
+        assert!(a.about.keys().eq(a.names.keys()));
+        for (id, s) in &a.about {
+            let ends = s
+                .char_indices()
+                .filter(|(i, c)| {
+                    ".!?".contains(*c) && s[i + 1..].chars().next().is_none_or(char::is_whitespace)
+                })
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            assert_eq!(ends, [s.len() - 1], "{id}: {s}");
+            assert!(s.starts_with(char::is_uppercase), "{id}: {s}");
+            assert_eq!(
+                s.split_whitespace().collect::<Vec<_>>().join(" "),
+                *s,
+                "{id}"
+            );
+            for markup in ["(Citation", "](", "<", ">", "`", "http"] {
+                assert!(!s.contains(markup), "{id}: {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_square_carries_its_technique_and_state_as_escaped_data_and_a_description_stays_text() {
+        // The pop-up reads a square's data and sets it as text. What the page carries is
+        // escaped, so a description with characters that matter in HTML is never markup; the
+        // title and the accessible name say the id, the name and the state without the script.
+        let mut out = String::new();
+        let about = "Adversaries may <script>alert(\"x\")</script> & 'run'.";
+        square(
+            &mut out,
+            "hit s2",
+            ("T1059", "Command & Scripting", about),
+            "a rule for it matched this week, 3 matches",
+            false,
+        )
+        .unwrap();
+        let said = "T1059 Command &amp; Scripting: a rule for it matched this week, 3 matches";
+        assert_eq!(
+            out,
+            format!(
+                "<span class=\"m hit s2\" title=\"{said}\" role=\"img\" aria-label=\"{said}\" data-t=\"T1059\" data-n=\"Command &amp; Scripting\" data-d=\"Adversaries may &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;run&#39;.\" data-s=\"a rule for it matched this week, 3 matches\"></span>"
+            )
+        );
+        out.clear();
+        square(&mut out, "look", ("T1", "N", "D."), "s", true).unwrap();
+        assert!(out.ends_with("data-s=\"s\" data-now></span>"), "{out}");
+    }
+
+    #[test]
+    fn the_pop_up_sets_a_squares_data_as_text_never_over_the_square_and_inside_the_page() {
+        // At phone width, a square at the right edge and one at the bottom of the window: the
+        // pop-up shows its three lines as text, lies below the square or above it and never
+        // over it, and stays inside the page's width. The square's title is taken off so no
+        // second tooltip shows; a mouse leaving hides the pop-up, a touch leaves it up.
+        let stand_in = format!(
+            r#"var window = globalThis;
+window.innerHeight = 800; window.scrollX = 0; window.scrollY = 100;
+function el() {{
+  var e = {{ a: {{}}, on: {{}}, style: {{}}, kids: [], hidden: false, textContent: "",
+    offsetWidth: 320, offsetHeight: 80,
+    appendChild: function (c) {{ this.kids.push(c); }},
+    getAttribute: function (n) {{ return n in this.a ? this.a[n] : null; }},
+    setAttribute: function (n, v) {{ this.a[n] = String(v); }},
+    removeAttribute: function (n) {{ delete this.a[n]; }}, remove: function () {{}},
+    matches: function (sel) {{ return sel === ".m[data-t]" && "data-t" in this.a; }},
+    querySelector: function () {{ return null; }},
+    querySelectorAll: function () {{ return []; }},
+    addEventListener: function (t, f) {{ this.on[t] = f; }} }};
+  Object.defineProperty(e, "innerHTML", {{ set: function () {{ throw "innerHTML"; }} }});
+  return e;
+}}
+function sq(left, top) {{
+  var s = el();
+  s.a = {{ title: "T1 N: s", "data-t": "T1059", "data-n": "Command and Scripting Interpreter",
+    "data-d": "Adversaries may <b>run</b> & stop.", "data-s": "watched, quiet" }};
+  s.getBoundingClientRect = function () {{
+    return {{ left: left, top: top, right: left + 12, bottom: top + 12 }};
+  }};
+  return s;
+}}
+var squares = [sq(360, 200), sq(8, 760)];
+var grid = el();
+grid.querySelectorAll = function () {{ return squares; }};
+var sec = el();
+sec.querySelector = function (s) {{ return s === ".tactics" ? grid : null; }};
+var document = el();
+document.getElementById = function () {{ return sec; }};
+document.createElement = function () {{ return el(); }};
+document.body = el();
+document.head = {{ appendChild: function (s) {{ s.onerror(); }} }};
+document.documentElement = {{ clientWidth: 375 }};
+function setInterval() {{}}
+{SCRIPT}
+var tip = document.body.kids[0];
+var out = [];
+squares.forEach(function (s) {{
+  grid.on.pointerover({{ target: s, pointerType: "mouse" }});
+  out.push({{ square: s.getBoundingClientRect(), left: parseFloat(tip.style.left) - window.scrollX,
+    top: parseFloat(tip.style.top) - window.scrollY, hidden: tip.hidden, title: s.getAttribute("title"),
+    lines: tip.kids.map(function (k) {{ return k.textContent; }}) }});
+}});
+grid.on.pointerout({{ target: squares[1], pointerType: "touch" }});
+var touch = tip.hidden;
+grid.on.pointerout({{ target: squares[1], pointerType: "mouse" }});
+print(JSON.stringify({{ shown: out, touch_hidden: touch, mouse_hidden: tip.hidden }}));
+"#
+        );
+        let v = run_js(&stand_in);
+        let (w, h) = (320.0, 80.0);
+        for s in v["shown"].as_array().unwrap() {
+            let f = |k: &str| s[k].as_f64().unwrap();
+            let sq = |k: &str| s["square"][k].as_f64().unwrap();
+            assert_eq!(s["hidden"], false, "{s}");
+            assert_eq!(s["title"], Value::Null, "{s}");
+            assert_eq!(
+                s["lines"],
+                serde_json::json!([
+                    "T1059 Command and Scripting Interpreter",
+                    "Adversaries may <b>run</b> & stop.",
+                    "watched, quiet"
+                ])
+            );
+            assert!(f("left") >= 0.0 && f("left") + w <= 375.0, "{s}");
+            let apart = f("top") >= sq("bottom") || f("top") + h <= sq("top");
+            assert!(apart, "{s}");
+        }
+        // The square near the window's bottom has its pop-up above it.
+        assert!(v["shown"][1]["top"].as_f64().unwrap() < 760.0, "{v}");
+        assert_eq!(
+            (&v["touch_hidden"], &v["mouse_hidden"]),
+            (&false.into(), &true.into())
         );
     }
 }

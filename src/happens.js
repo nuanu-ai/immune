@@ -5,8 +5,9 @@
 // every ten seconds, as a script because a browser refuses to fetch a local file, and redraws
 // the section's numbers in place: the day's count and its bars, the week's matches, what was
 // lost (its line shown only while something was), the file events checked, and each rule's
-// count, found by its id; every title stays as the page wrote it. Without the file, or with
-// scripting off, the section is the page as it was made, and says when.
+// count, found by its id; every rule's title stays as the page wrote it. Without the file, or with
+// scripting off, the section is the page as it was made, and says when. It also shows what a
+// technique's square is about, in a pop-up (`tips`).
 (function () {
   "use strict";
   var EVERY = 10000; // milliseconds between loads
@@ -153,6 +154,87 @@
     document.head.appendChild(s);
   }
 
+  // The grid of techniques: one pop-up for every square, shown while a square is pointed at or
+  // has the keyboard's focus, with the technique's id and name, MITRE's first sentence of what
+  // it is, and its state, read from the square's data- attributes and set as text. It goes
+  // below the square, or above when there is no room below, never over it, and stays inside the
+  // page's width. A square's title, which says the same with the script off, is taken off when
+  // the square is pointed at, so the browser draws no second tooltip. The grid is one tab stop,
+  // and the arrow keys move along it. Listened for on the grid, so a square drawn again works.
+  function tips() {
+    var grid = sec.querySelector(".tactics");
+    var squares = grid ? grid.querySelectorAll(".m[data-t]") : [];
+    if (!squares.length) return;
+    var EDGE = 8; // the least space between the pop-up and the page's edge, in pixels
+    var GAP = 6; // between the pop-up and its square
+    var tip = document.createElement("div");
+    tip.className = "tip";
+    tip.id = "technique-tip";
+    tip.setAttribute("role", "tooltip");
+    tip.hidden = true;
+    var lines = ["tt", "td", "ts"].map(function (name) {
+      var line = document.createElement("span");
+      line.className = name;
+      tip.appendChild(line);
+      return line;
+    });
+    document.body.appendChild(tip);
+    for (var i = 0; i < squares.length; i++) squares[i].tabIndex = i ? -1 : 0;
+
+    function square(e) {
+      var t = e.target;
+      return t && t.matches && t.matches(".m[data-t]") ? t : null;
+    }
+    function show(sq) {
+      sq.removeAttribute("title");
+      sq.setAttribute("aria-describedby", tip.id);
+      lines[0].textContent = sq.getAttribute("data-t") + " " + sq.getAttribute("data-n");
+      lines[1].textContent = sq.getAttribute("data-d");
+      lines[2].textContent = sq.getAttribute("data-s");
+      tip.hidden = false;
+      var r = sq.getBoundingClientRect();
+      var w = tip.offsetWidth;
+      var h = tip.offsetHeight;
+      var left = Math.max(EDGE, Math.min(r.left, document.documentElement.clientWidth - w - EDGE));
+      var below = r.bottom + GAP + h <= window.innerHeight || r.top - GAP - h < 0;
+      tip.style.left = left + window.scrollX + "px";
+      tip.style.top = (below ? r.bottom + GAP : r.top - GAP - h) + window.scrollY + "px";
+    }
+    function hide() {
+      tip.hidden = true;
+    }
+    grid.addEventListener("pointerover", function (e) {
+      var sq = square(e);
+      if (sq) show(sq);
+    });
+    // A touch leaves the pop-up up until the next touch elsewhere.
+    grid.addEventListener("pointerout", function (e) {
+      if (square(e) && e.pointerType !== "touch") hide();
+    });
+    document.addEventListener("pointerdown", function (e) {
+      if (!square(e)) hide();
+    });
+    grid.addEventListener("focusin", function (e) {
+      var sq = square(e);
+      if (sq) show(sq);
+    });
+    grid.addEventListener("focusout", hide);
+    grid.addEventListener("keydown", function (e) {
+      var sq = square(e);
+      if (!sq) return;
+      if (e.key === "Escape") return hide();
+      var step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      var all = grid.querySelectorAll(".m[data-t]");
+      var next = step && all[Array.prototype.indexOf.call(all, sq) + step];
+      if (!next) return;
+      e.preventDefault();
+      sq.tabIndex = -1;
+      next.tabIndex = 0;
+      next.focus();
+    });
+  }
+
+  tips();
   load();
   setInterval(load, EVERY);
   setInterval(tell, 1000);

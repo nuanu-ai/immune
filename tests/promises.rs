@@ -13555,6 +13555,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     );
     assert!(
         s.contains("class=\"m look\" title=\"T1027 Obfuscated Files or Information: a rule for it raised a finding\"")
+            && s.contains("data-t=\"T1027\" data-n=\"Obfuscated Files or Information\" data-d=\"Adversaries may attempt to make an executable or file difficult to discover or analyze by encrypting, encoding, or otherwise obfuscating its contents on the system or in transit.\" data-s=\"a rule for it raised a finding\"></span>")
             && s.contains("class=\"m calm\"")
             && !s.contains("class=\"m would\"")
             && !s.contains("<p class=\"first\"><strong>"),
