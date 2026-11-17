@@ -2351,7 +2351,7 @@ pub fn read(
             Some(Cause::NotGiven),
         ),
         Found::Failed(why) => ("none", Some(why.clone()), Some(Cause::Failed)),
-        Found::Read(log) => covered(log.state, &tally_since(tx, now - DAY)?),
+        Found::Read(log) => covered(log.state, &tally_since(tx, Since::At(now - DAY))?),
     };
     tx.execute(
         "DELETE FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
@@ -2383,8 +2383,8 @@ pub fn read(
     {
         let (completeness, reason, cause) = files_covered(
             &log.collects,
-            &tally_since(tx, now - DAY)?,
-            &file_tally_since(tx, now - DAY)?,
+            &tally_since(tx, Since::At(now - DAY))?,
+            &file_tally_since(tx, Since::At(now - DAY))?,
         );
         crate::store::put_coverage(
             tx,
@@ -3613,13 +3613,16 @@ impl Level {
         self.files.last_day.gaps().is_empty() && self.last_day.shared_whole()
     }
 
-    /// The rules judged all the log held over the last day: the level runs, and no program
-    /// start, nor a file event where they are collected, was lost, could not be read or was
-    /// deleted before it was read. `rules.judged` is `all` exactly when this holds.
-    pub fn judged_whole(&self) -> bool {
-        self.state == RUNNING
-            && self.last_day.whole()
-            && (!self.files_watched() || self.files_whole())
+    /// A program start, or a file event where they are collected, was lost, could not be read
+    /// or was deleted before it was read, in a reading the store received since the latest
+    /// finished full check, its own reading included, or in any reading kept when none has
+    /// finished (`Since::Check`). That check read again everything installed and every place
+    /// where something is set to run, so a loss read before it is behind it. While this holds
+    /// of a running level, this Mac is watched in part; `rules.judged` keeps its own span, the
+    /// last day, and lines that could not be read are a failed reading for the day.
+    pub fn lost_since_check(&self) -> bool {
+        !self.since_check.whole()
+            || (self.files_watched() && !self.files.since_check.gaps().is_empty())
     }
 }
 
@@ -3699,14 +3702,14 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
     let Some(((state, read_at), written, said_by, said, reason, version)) = row else {
         return Ok(None);
     };
-    // The latest full check's own reading counts as since it.
+    // The latest full check's own reading counts as since it, and every one after it.
     let check = crate::status::latest_finished(conn)?.map_or(0, |r| r.started_at);
     let (collected, why) = collected(conn)?;
     let files = Files {
         collected,
         why,
-        since_check: file_tally_since(conn, check)?,
-        last_day: file_tally_since(conn, now - DAY)?,
+        since_check: file_tally_since(conn, Since::Check(check))?,
+        last_day: file_tally_since(conn, Since::At(now - DAY))?,
     };
     Ok(Some(Level {
         files,
@@ -3719,8 +3722,8 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         said: said.map(|s| crate::secrets::Kept::Said.read(&s)),
         reason,
         version,
-        since_check: tally_since(conn, check)?,
-        last_day: tally_since(conn, now - DAY)?,
+        since_check: tally_since(conn, Since::Check(check))?,
+        last_day: tally_since(conn, Since::At(now - DAY))?,
         matches_last_day: matches_since(conn, now - DAY)?,
         matches_last_week: matches_since(conn, now - KEEP_MATCHES)?,
         starts_by_hour: starts_by_hour(conn, now)?,
@@ -3758,15 +3761,45 @@ fn matches_since(conn: &Connection, from: i64) -> rusqlite::Result<BTreeMap<Stri
         .collect()
 }
 
-/// The counts of every reading at or after `from`.
-fn tally_since(conn: &Connection, from: i64) -> rusqlite::Result<Tally> {
+/// Which readings a span counts.
+#[derive(Clone, Copy)]
+enum Since {
+    /// Those stamped at or after a time: the last day.
+    At(i64),
+    /// Those the store received from a full check's own reading on, which is stamped with the
+    /// check's start, the time given. They are told by the order of the rows, which a clock set
+    /// back cannot rewind: a reading stamped before the check's start that came after it counts.
+    /// The earliest row with that stamp is taken, so one stamped alike earlier only counts more.
+    /// Every row kept when none has it: no full check has finished, it did not read the log, or
+    /// its row was deleted. The rows' order survives `VACUUM`, which copies them in order.
+    Check(i64),
+}
+
+impl Since {
+    /// The condition on the rows of `table`, with its one parameter.
+    fn rows(self, table: &str) -> (String, i64) {
+        match self {
+            Since::At(from) => ("at >= ?1".to_string(), from),
+            Since::Check(start) => (
+                format!("rowid >= COALESCE((SELECT MIN(rowid) FROM {table} WHERE at = ?1), 0)"),
+                start,
+            ),
+        }
+    }
+}
+
+/// The counts of every reading `since` counts.
+fn tally_since(conn: &Connection, since: Since) -> rusqlite::Result<Tally> {
+    let (rows, at) = since.rows("event_count");
     conn.query_row(
-        "SELECT COALESCE(SUM(starts), 0), COALESCE(SUM(lost), 0),
-                COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0),
-                COALESCE(SUM(other), 0), COALESCE(SUM(removed_cap), 0),
-                COALESCE(SUM(removed_unread), 0)
-         FROM event_count WHERE at >= ?1",
-        [from],
+        &format!(
+            "SELECT COALESCE(SUM(starts), 0), COALESCE(SUM(lost), 0),
+                    COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0),
+                    COALESCE(SUM(other), 0), COALESCE(SUM(removed_cap), 0),
+                    COALESCE(SUM(removed_unread), 0)
+             FROM event_count WHERE {rows}"
+        ),
+        [at],
         |r| {
             Ok(Tally {
                 starts: r.get(0)?,
@@ -3781,13 +3814,16 @@ fn tally_since(conn: &Connection, from: i64) -> rusqlite::Result<Tally> {
     )
 }
 
-/// The counts of file events of every reading at or after `from`.
-fn file_tally_since(conn: &Connection, from: i64) -> rusqlite::Result<FileTally> {
+/// The counts of file events of every reading `since` counts.
+fn file_tally_since(conn: &Connection, since: Since) -> rusqlite::Result<FileTally> {
+    let (rows, at) = since.rows("event_file_count");
     conn.query_row(
-        "SELECT COALESCE(SUM(files), 0), COALESCE(SUM(lost), 0),
-                COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0)
-         FROM event_file_count WHERE at >= ?1",
-        [from],
+        &format!(
+            "SELECT COALESCE(SUM(files), 0), COALESCE(SUM(lost), 0),
+                    COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0)
+             FROM event_file_count WHERE {rows}"
+        ),
+        [at],
         |r| {
             Ok(FileTally {
                 files: r.get(0)?,
@@ -5158,6 +5194,104 @@ mod tests {
     }
 
     #[test]
+    fn a_loss_holds_this_mac_in_part_until_a_full_check_read_it_again_whatever_the_clock_says() {
+        // No false calm, and no state a person cannot wait out. A loss stands while the store
+        // received it from the latest finished full check's own reading on, or at any time when
+        // none has finished: a check whose reading came after the loss read again what the
+        // unseen moment could have left. The order of the rows decides, never their stamps, so a
+        // clock set back cannot put a later loss before the check. A check that runs, failed or
+        // was killed clears nothing. The day still says the loss: `rules.judged` and the caveats
+        // keep their span. A check's own reading is stamped with its start, as a run writes it.
+        let dir = crate::common::Scratch::new("events-since-check");
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
+        let now = 1_791_000_000;
+        let sql = |q: &str, p: &[i64]| {
+            conn.execute(q, rusqlite::params_from_iter(p)).unwrap();
+        };
+        sql(
+            "INSERT INTO event_level (id, read_at, state) VALUES (1, ?1, 'running')",
+            &[now],
+        );
+        sql("INSERT INTO event_files (id, collected) VALUES (1, 0)", &[]);
+        let restart = |at: i64| {
+            sql(
+                "INSERT INTO event_count VALUES (?1, 1, 0, ?2, 0, 0, 0, 0)",
+                &[at, 1],
+            )
+        };
+        let read = |at: i64, files_lost: i64| {
+            sql(
+                "INSERT INTO event_count VALUES (?1, 1, 0, 0, 0, 0, 0, 0)",
+                &[at],
+            );
+            sql(
+                "INSERT INTO event_file_count VALUES (?1, 1, ?2, 0, 0)",
+                &[at, files_lost],
+            );
+        };
+        let note = |at: i64, run: &str, entry: &str| {
+            crate::store::journal_note(&conn, at, run, entry, "").unwrap()
+        };
+        // Whether a loss stands since the check, whether `rules.judged` is `part`, and how many
+        // caveats the day says.
+        let state = || {
+            let l = level(&conn, now).unwrap().unwrap();
+            let part = crate::status::rules_now(Some(&l)).judged
+                == crate::contract::v1::Judged::Part as i32;
+            (l.lost_since_check(), part, words(&l).caveats.len())
+        };
+        // A restart read more than a day ago, and no full check has finished: the day is whole,
+        // this Mac is not.
+        restart(now - DAY - HOUR);
+        assert_eq!(state(), (true, false, 0));
+        // A check killed and one running, both begun after it, clear nothing, though a watcher
+        // read the log in the second the running one began.
+        note(now - 3 * HOUR, "killed", "run_started");
+        note(now - 2 * HOUR, "running", "run_started");
+        read(now - 2 * HOUR, 0);
+        assert_eq!(state(), (true, false, 0));
+        // A restart a watcher read in the second a check began, before the check's own reading:
+        // it counts as since that check, as its stamp says.
+        note(now - 90 * 60, "within", "run_started");
+        restart(now - 90 * 60);
+        read(now - 90 * 60, 0);
+        note(now - 90 * 60 + 60, "within", "run_finished");
+        assert_eq!(state(), (true, true, 1));
+        // A finished check whose reading came after the restarts clears this Mac's state, one
+        // a watcher read while that check downloaded included; the day's judgement and its
+        // caveat stay.
+        note(now - HOUR, "after", "run_started");
+        restart(now - HOUR + 10);
+        read(now - HOUR, 0);
+        note(now - HOUR + 60, "after", "run_finished");
+        assert_eq!(state(), (false, true, 1));
+        // A restart read after it by a clock set back ten minutes, stamped before it began,
+        // holds this Mac in part all the same, also after the store is vacuumed.
+        sql("DELETE FROM event_count WHERE at = ?1", &[now - DAY - HOUR]);
+        restart(now - HOUR - 600);
+        conn.execute_batch("VACUUM").unwrap();
+        assert_eq!(state(), (true, true, 1));
+        note(now - HOUR + 100, "back", "run_started");
+        read(now - HOUR + 100, 0);
+        note(now - HOUR + 160, "back", "run_finished");
+        assert_eq!(state(), (false, true, 1));
+        // A file event lost after it counts only where file events are collected, and then
+        // holds it again, also once a later check has started.
+        read(now - HOUR + 200, 1);
+        assert_eq!(state(), (false, true, 1));
+        sql("UPDATE event_files SET collected = 1", &[]);
+        note(now - HOUR + 300, "later", "run_started");
+        assert_eq!(state(), (true, true, 1));
+        // Once that check has read and finished, the file event lost before it is behind it;
+        // one lost after it, stamped before it began, is not.
+        read(now - HOUR + 300, 0);
+        note(now - HOUR + 360, "later", "run_finished");
+        assert_eq!(state(), (false, true, 1));
+        read(now - HOUR + 250, 1);
+        assert_eq!(state(), (true, true, 1));
+    }
+
+    #[test]
     fn a_busy_mac_is_read_many_times_faster_than_it_starts_programs() {
         // The watcher reads at every sample, every thirty seconds, and a full run reads what
         // accumulated since the last one, under the lock, each start evaluated against every
@@ -5502,7 +5636,7 @@ mod tests {
         assert_eq!(h.counts.len(), HOURS);
         assert_eq!(
             h.counts.iter().sum::<i64>(),
-            tally_since(&conn, now - DAY).unwrap().starts
+            tally_since(&conn, Since::At(now - DAY)).unwrap().starts
         );
         assert_eq!((h.counts[0], h.counts[1]), (8, 3));
         assert_eq!((h.counts[21], h.counts[22], h.counts[23]), (11, 0, 11));

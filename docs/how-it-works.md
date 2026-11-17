@@ -233,7 +233,7 @@ Verdicts are not signed, as answers are not. Anyone who can run `immune verdict`
 
 `immune status --json` answers this first. What needs a look (`needs_a_look`) is open findings only. Apart from it come:
 
-- this Mac: watched, watched in part when a reading of its own places failed, or not checked; whether a watcher runs; and each kind of thing watched, with its count and how (`live` within seconds, `hourly`, or `sampled`);
+- this Mac: watched, watched in part when a reading of its own places failed, the collector records nothing, or it lost events since the latest finished full check began, or not checked; whether a watcher runs; and each kind of thing watched, with its count and how (`live` within seconds, `hourly`, or `sampled`);
 - what is not covered, as above;
 - known vulnerabilities in the projects' packages (`vulnerabilities`), which are never counted in what needs a look;
 - the collector's state (`event_level`).
