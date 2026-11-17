@@ -1,6 +1,6 @@
 # Every change reaches main through a pull request that passed ./check here.
 #
-# ./check runs in three parts side by side, each a part of ./check called by name: `lint app`
+# ./check runs in three parts side by side, each a part of ./check called by name: `lint`
 # and the two halves of the test binaries, `tests 1/2` and `tests 2/2`. Run one after another
 # they took about ten minutes on this runner; the slowest part takes about four and a half.
 # Runner minutes cost a public repository nothing. The job named `check`, which the branch
@@ -33,16 +33,12 @@ jobs:
       # Every part reports its own result, so one failure does not hide another.
       fail-fast: false
       matrix:
-        part: [lint app, tests 1/2, tests 2/2]
+        part: [lint, tests 1/2, tests 2/2]
     # Apple Silicon (M1, 3 cores, 7 GB), macOS 26. A label that names its version, so the
     # macOS under the check changes only in a commit here.
     runs-on: macos-26
     timeout-minutes: 45
     env:
-      # The Xcode whose Swift (6.3) runs `swift format lint --strict` and the app's tests, the
-      # same Swift as the Command Line Tools 26.6 a contributor installs. Chosen without sudo:
-      # xcode-select -p, swift and xcrun all follow DEVELOPER_DIR.
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,13 +47,10 @@ jobs:
 
       - name: Tools
         run: |
-          if [ ! -d "$DEVELOPER_DIR" ]; then
-            echo "::error::$DEVELOPER_DIR is not on this image; choose an Xcode it has in .github/workflows/check.yml"
-            exit 1
-          fi
           sw_vers
+          # The C compiler and linker that cargo uses, and that build the bundled SQLite, are
+          # the image's selected Xcode's.
           xcode-select -p
-          swift --version
           # The Rust that rust-toolchain.toml names, with rustfmt and clippy, from rustup,
           # which the image has.
           rustup toolchain install
@@ -74,7 +67,8 @@ jobs:
   check:
     needs: part
     if: always()
-    runs-on: macos-26
+    # It only compares a result, so it does not wait for a macOS runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Every part passed
