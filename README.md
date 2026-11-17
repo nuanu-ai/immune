@@ -1,17 +1,14 @@
 # Immune
 
-Immune watches one Mac for signs of attack and tells you, or your AI coding agent, what it found and what it could not see. It is for a person who builds software with AI agents on their own Mac and has no security team behind them.
+Immune is a detection core for one Mac. It watches the Mac for signs of attack, keeps what it found and what it could not see, and answers when it is asked. It notifies no one by itself. You, your AI coding agent or another program ask it with a command, and an app or a layer that responds to a finding is built on those commands. It is for a person who builds software with AI agents on their own Mac and has no security team behind them.
 
-Immune is the detection core of [Artificial Immunity](https://immunity.bot), a project of [Nuanu AI Lab](https://nuanu.ai). This repository holds the core and its commands; a menu-bar app for a person is built outside it, on the same commands.
+Immune is the detection core of [Artificial Immunity](https://immunity.bot), a project of [Nuanu AI Lab](https://nuanu.ai). This repository holds the core and its commands. A menu-bar app for a person is built outside it, on the same commands.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/panel-dark.png">
-    <img src="docs/img/panel-light.png" width="320" alt="The menu-bar panel, watched live: one finding that needs you now, one to look at, an answer given through an agent with Take back, and what is watched">
-  </picture>
+  <img src="docs/img/page-dark.png" width="760" alt="The top of the page immune view writes: five findings that need the person now and two to look at, each with the thing it is about, what happened to it and the verdict a response layer gave">
 </p>
 
-The picture is drawn by the program from an invented Mac.
+The picture is the top of the page `immune view` writes, here for an invented Mac.
 
 Immune finds what you have on the Mac: projects and their dependencies, installed apps and packages, the places where persistence lives, the servers your SSH configuration knows. It matches dependencies against published vulnerability data from OSV and CISA, and checks program starts and new files against published rules for macOS from SigmaHQ and Elastic. Each finding says how bad it would be and how sure Immune is, as two separate values, and every answer says what Immune could not see. There is no model inside, and nothing about your Mac is sent anywhere.
 
