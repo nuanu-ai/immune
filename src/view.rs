@@ -2270,6 +2270,16 @@ dl.facts dd .w { font: 12px/20px var(--font); }
 .m.look { background: var(--look); box-shadow: inset 0 0 0 1.5px var(--look-ink); }
 .m.look[data-now] { background: var(--now); box-shadow: none; }
 .covers > .meta { margin: 12px 12px 0; }
+/* The pop-up over a technique's square (src/happens.js): its id and name, MITRE's first sentence
+   of what it is, and its state. */
+.m:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.tip { position: absolute; z-index: 1; max-width: min(320px, calc(100vw - 32px)); padding: 8px 12px; background: var(--bg);
+  border: 1px solid var(--sep); border-radius: var(--radius-row); box-shadow: 0 1px 2px rgba(0, 0, 0, .10);
+  font: var(--caption); color: var(--t1); pointer-events: none; }
+.tip span { display: block; overflow-wrap: anywhere; }
+.tip .tt { font-weight: 600; }
+.tip .td { margin-top: 4px; }
+.tip .ts { margin-top: 4px; color: var(--t2); }
 
 /* You can fix. */
 .fixg { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 32px; row-gap: 24px; padding: 16px 12px 0; }

@@ -1,4 +1,5 @@
-ATT&CK techniques for macOS, made on 12 November 2026 from MITRE's ATT&CK data in STIX 2.1,
+ATT&CK techniques for macOS, made on 12 November 2026 (the descriptions on 17 November 2026)
+from MITRE's ATT&CK data in STIX 2.1,
 https://github.com/mitre-attack/attack-stix-data, release v20.1 (ATT&CK version 20.1 of
 5 November 2026), file enterprise-attack/enterprise-attack-20.1.json, whose SHA-256 is
 539a843a7b53ed9749740b2123dddae3726b1a4831841c32aca740b011b910b5.
@@ -7,9 +8,15 @@ https://github.com/mitre-attack/attack-stix-data, release v20.1 (ATT&CK version 
 deprecated and that is for macOS, by its ATT&CK id and name, with a sub-technique folded into
 its parent, so a parent is kept when it or one of its sub-techniques names macOS among its
 platforms; and the tactics of Enterprise ATT&CK's matrix, in the matrix's order, each with
-the kept techniques that serve it. Ids and names are as MITRE publishes them. The program
-compiles the file in to draw which techniques the shipped rules cover; nothing fetches it at
-run time.
+the kept techniques that serve it. Ids and names are as MITRE publishes them. Each kept
+technique also has, as `description`, the first sentence of MITRE's description of it (the
+parent's own), up to the first full stop, question or exclamation mark that is followed by
+whitespace or ends the text. Only markup was taken out of it, before the sentence was cut:
+the citation markers `(Citation: …)` removed, each markdown link `[text](url)` reduced to its
+text, the `<code>` and `</code>` tags and the backticks dropped, and runs of whitespace
+collapsed to one space, with none at either end. No word was added, changed or cut. The
+program compiles the file in to draw which techniques the shipped rules cover, and shows the
+sentence when a technique's square is pointed at; nothing fetches it at run time.
 
 ATT&CK is MITRE's, reproduced here under MITRE's licence. Its text, as the release carries
 it in LICENSE.txt, follows.
