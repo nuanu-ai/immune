@@ -3613,13 +3613,15 @@ impl Level {
         self.files.last_day.gaps().is_empty() && self.last_day.shared_whole()
     }
 
-    /// The rules judged all the log held over the last day: the level runs, and no program
-    /// start, nor a file event where they are collected, was lost, could not be read or was
-    /// deleted before it was read. `rules.judged` is `all` exactly when this holds.
-    pub fn judged_whole(&self) -> bool {
-        self.state == RUNNING
-            && self.last_day.whole()
-            && (!self.files_watched() || self.files_whole())
+    /// A program start, or a file event where they are collected, was lost, could not be read
+    /// or was deleted before it was read, in a reading made since the latest finished full
+    /// check began, or in any reading kept when none has finished. That check read again
+    /// everything installed and every place where something is set to run, so a loss read
+    /// before it began is behind it. While this holds, this Mac is watched in part;
+    /// `rules.judged` keeps its own span, the last day.
+    pub fn lost_since_check(&self) -> bool {
+        !self.since_check.whole()
+            || (self.files_watched() && !self.files.since_check.gaps().is_empty())
     }
 }
 
@@ -5155,6 +5157,84 @@ mod tests {
         assert_eq!(l.matches_last_day[sw_vers], 2);
         assert_eq!(l.matches_last_week[sw_vers], 4);
         assert_eq!(hours, 4);
+    }
+
+    #[test]
+    fn a_loss_holds_this_mac_in_part_until_a_full_check_that_began_after_it_has_finished() {
+        // No false calm, and no state a person cannot wait out. A loss stands while it was read
+        // at or after the start of the latest full check that finished, or at any time when none
+        // has: a check that began after the loss was read and finished read again what the
+        // unseen moment could have left. A check that runs, failed or was killed clears nothing.
+        // The day still says the loss: `rules.judged` and the caveats keep their span.
+        let dir = crate::common::Scratch::new("events-since-check");
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
+        let now = 1_791_000_000;
+        let sql = |q: &str, p: &[i64]| {
+            conn.execute(q, rusqlite::params_from_iter(p)).unwrap();
+        };
+        sql(
+            "INSERT INTO event_level (id, read_at, state) VALUES (1, ?1, 'running')",
+            &[now],
+        );
+        sql("INSERT INTO event_files (id, collected) VALUES (1, 0)", &[]);
+        let restart = |at: i64| {
+            sql(
+                "INSERT INTO event_count VALUES (?1, 1, 0, ?2, 0, 0, 0, 0)",
+                &[at, 1],
+            )
+        };
+        let read = |at: i64, files_lost: i64| {
+            sql(
+                "INSERT INTO event_count VALUES (?1, 1, 0, 0, 0, 0, 0, 0)",
+                &[at],
+            );
+            sql(
+                "INSERT INTO event_file_count VALUES (?1, 1, ?2, 0, 0)",
+                &[at, files_lost],
+            );
+        };
+        let note = |at: i64, run: &str, entry: &str| {
+            crate::store::journal_note(&conn, at, run, entry, "").unwrap()
+        };
+        // Whether a loss stands since the check, whether `rules.judged` is `part`, and how many
+        // caveats the day says.
+        let state = || {
+            let l = level(&conn, now).unwrap().unwrap();
+            let part = crate::status::rules_now(Some(&l)).judged
+                == crate::contract::v1::Judged::Part as i32;
+            (l.lost_since_check(), part, words(&l).caveats.len())
+        };
+        // A restart read more than a day ago, and no full check has finished: the day is whole,
+        // this Mac is not.
+        restart(now - DAY - HOUR);
+        assert_eq!(state(), (true, false, 0));
+        // A check killed and one running, both begun after it, clear nothing.
+        note(now - 3 * HOUR, "killed", "run_started");
+        note(now - 2 * HOUR, "running", "run_started");
+        read(now - 2 * HOUR + 1, 0);
+        assert_eq!(state(), (true, false, 0));
+        // A restart read while a check ran, after it began and before it finished: the
+        // finished check does not clear it.
+        note(now - 2 * HOUR, "within", "run_started");
+        restart(now - 2 * HOUR + 30);
+        note(now - 2 * HOUR + 60, "within", "run_finished");
+        assert_eq!(state(), (true, true, 1));
+        // A finished check that began after both restarts were read clears this Mac's state;
+        // the day's judgement and its caveat stay.
+        note(now - HOUR, "after", "run_started");
+        read(now - HOUR + 30, 0);
+        note(now - HOUR + 60, "after", "run_finished");
+        assert_eq!(state(), (false, true, 1));
+        // A file event lost after it began counts only where file events are collected, and
+        // then holds it again, also once a later check has started.
+        read(now - HOUR + 90, 1);
+        assert_eq!(state(), (false, true, 1));
+        sql("UPDATE event_files SET collected = 1", &[]);
+        note(now - HOUR + 120, "later", "run_started");
+        assert_eq!(state(), (true, true, 1));
+        // Once that check has finished, the file event lost before it began is behind it.
+        note(now - HOUR + 150, "later", "run_finished");
+        assert_eq!(state(), (false, true, 1));
     }
 
     #[test]

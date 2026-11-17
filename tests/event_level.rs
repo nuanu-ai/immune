@@ -4747,11 +4747,11 @@ fn shaped(rows: &Value, keys: &[&str]) -> Value {
 const MATCHED: [&str; 6] = ["id_text", "title_text", "level", "source", "set", "matches"];
 
 #[test]
-fn a_collector_that_lost_part_of_the_day_leaves_this_mac_watched_in_part_for_as_long_as_rules_judge_part()
+fn a_collector_that_lost_part_of_what_it_was_to_record_leaves_this_mac_watched_in_part_until_a_later_full_check()
  {
     // No false calm: a collector that runs and lost what it was to record, for any cause, has
-    // this Mac read in part, the same as the rules' own judgement says, never `watched`. A day
-    // read whole is `watched`.
+    // this Mac read in part, never `watched`, until a full check that began after the loss
+    // was read has finished. A day read whole is `watched`.
     let h = "exec-20261004T00.jsonl";
     let state = |tag: &str, log: &str, notes: Option<&str>| -> (Value, Value) {
         let dir = Dir::new(tag);
@@ -4824,4 +4824,21 @@ fn a_collector_that_lost_part_of_the_day_leaves_this_mac_watched_in_part_for_as_
             "{tag}"
         );
     }
+    // The next full check read again what the restart could have left: this Mac is watched,
+    // while the day still says the restart and the rules still judged it in part.
+    let dir = Dir::new("lost-then-checked");
+    dir.install();
+    dir.append(h, &(exec(1) + &exec(2) + &exec(1)));
+    dir.run();
+    dir.run_apart();
+    let r = dir.status();
+    assert_eq!(
+        (&r["this_mac"]["state"], &r["rules"]["judged"]),
+        (&"watched".into(), &"part".into()),
+        "{r:#}"
+    );
+    assert_eq!(
+        r["event_level"]["in_words"]["caveats"][0]["kind"],
+        "restarts"
+    );
 }

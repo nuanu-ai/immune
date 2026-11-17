@@ -276,9 +276,10 @@ enum ThisMacState {
   // Its places are read, and none that is there failed to be read.
   THIS_MAC_STATE_WATCHED = 2;
   // A place of its own is there and was not read whole: a reading of it failed; or the event
-  // level is installed and records no program start (refused, failing or silent); or it runs and
-  // lost part of what it was to record over the last day, for as long as `rules.judged` is
-  // `part`. `not_covered` or `rules.judged_note` says which.
+  // level is installed and records no program start (refused, failing or silent); or it lost
+  // part of what it was to record in a reading made since the latest finished full check
+  // began, or at any time when none has finished. `not_covered`, or the counts `since_check` of
+  // `event_level`, say which.
   THIS_MAC_STATE_WATCHED_IN_PART = 3;
 }
 
