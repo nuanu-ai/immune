@@ -757,23 +757,19 @@ fn a_full_run_holding_the_store_is_waited_for_and_both_finish() {
 #[test]
 fn an_hourly_full_run_is_not_lost_to_a_long_reading_of_the_watcher() {
     // The app's timer starts a full run every hour; a watcher's reading of many changed
-    // files can hold the run lock longer than the 2 s a run waits for another run. While a
-    // watcher runs, a full run waits that out. The test holds the lock as such a reading.
+    // files can hold the run lock longer than the 2 s a command waits for it. A full run waits
+    // that out. The test holds the lock as such a reading.
     let mac = Mac::new("long");
     mac.run();
     let mut w = mac.watch().started();
     let folder = std::fs::File::open(mac.root.join("store")).unwrap();
     folder.lock().unwrap();
     let run = spawn(&mut mac.run_cmd());
-    // Past the 2 s a full run waits when no watcher runs, with a second to spare.
+    // Past the 2 s a command waits, with a second to spare.
     std::thread::sleep(Duration::from_secs(3));
     folder.unlock().unwrap();
     assert!(finish(run).status.success());
-    // With the watcher gone, the same holding stops a full run with "in progress".
     assert!(w.lines("problem").is_empty());
-    drop(w);
-    folder.lock().unwrap();
-    assert_eq!(within(&mut mac.run_cmd()).status.code(), Some(4));
 }
 
 #[test]

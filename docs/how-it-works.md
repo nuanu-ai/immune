@@ -41,7 +41,7 @@ A full check, `immune run`, runs every reader once and then every rule. The [bac
 - it samples the user's programs and their internet connections every 30 seconds (`--sample-every`);
 - it reads the collector's log every 10 seconds (`--events-every`), when the collector is installed.
 
-The watcher prints one JSON line per event. Only one watcher may hold a store, and a full check waits up to a minute for a watcher's reading to finish. The optional app reads the store through the commands. The core runs when the app is closed.
+The watcher prints one JSON line per event. Only one watcher may hold a store, and a full check waits up to a minute for a watcher's reading or a command that holds the store; one that still cannot take it fails as a run, never as another run in progress. The optional app reads the store through the commands. The core runs when the app is closed.
 
 ## Levels of access
 
