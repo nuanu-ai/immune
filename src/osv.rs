@@ -211,8 +211,8 @@ pub fn request(feed: &Feed, output: &Path, etag: Option<&str>) -> Vec<String> {
 /// The lock a full run holds on the feeds' folder from its first step, before its downloads,
 /// until it ends, so that two runs never write the same partial download. It is not the run
 /// lock: a download, which can take minutes, holds up no watcher's reading and no `immune
-/// status`. Only a full run takes it, so a status reads a check running from it
-/// (`fetch_in_progress`). `None` when another run holds it.
+/// status`. Only a full run takes it, so whoever holds the run lock meanwhile is never another
+/// full run. `None` when another run holds it.
 pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
     let dir = home.join(FOLDER);
     std::fs::create_dir_all(&dir)?;
@@ -220,16 +220,39 @@ pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
         std::fs::File::options()
             .create(true)
             .append(true)
-            .open(dir.join(FETCH_LOCK))?,
+            .open(dir.join("fetch.lock"))?,
     )
 }
 
-const FETCH_LOCK: &str = "fetch.lock";
+/// The lock a full run holds on a file named by its run id, taken under `lock_fetch` before its
+/// start is written and held until it ends, so that a status says a check is running only of the
+/// latest start in the store's journal (`check_in_progress`): a check killed before is never taken
+/// for the one waiting to write its start, nor a check of another store in the same folder for
+/// this store's. Every other such file is of a run that has ended, held by none, and is removed;
+/// one that cannot be is left, and says nothing.
+pub fn lock_check(home: &Path, run_id: &str) -> std::io::Result<std::fs::File> {
+    for entry in std::fs::read_dir(home.join(FOLDER))? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("check-"))
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let handle = std::fs::File::create(check_lock(home, run_id))?;
+    handle.lock()?;
+    Ok(handle)
+}
 
-/// Whether a full run is under way on the store in `home`: it holds the lock on the downloads.
-/// The kernel's lock goes with the process however it ends, so a run killed part way is not.
-pub fn fetch_in_progress(home: &Path) -> std::io::Result<bool> {
-    crate::store::held(&home.join(FOLDER).join(FETCH_LOCK))
+fn check_lock(home: &Path, run_id: &str) -> PathBuf {
+    home.join(FOLDER).join(format!("check-{run_id}.lock"))
+}
+
+/// Whether the full run that started as `run_id` on the store in `home` is under way. The
+/// kernel's lock goes with the process however it ends, so a run killed part way is not.
+pub fn check_in_progress(home: &Path, run_id: &str) -> std::io::Result<bool> {
+    crate::store::held(&check_lock(home, run_id))
 }
 
 /// Asks for a feed, or takes the archive given instead. Run before the run lock is taken, with

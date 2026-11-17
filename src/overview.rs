@@ -914,7 +914,7 @@ pub(crate) type Parts = Vec<(String, Style)>;
 /// been none.
 fn not_fresh(s: &v1::Status, screen: &Screen) -> Option<String> {
     let m = s.this_mac.as_ref().filter(|m| !m.fresh)?;
-    // A full run writes its start before anything else, so the latest start is the running one.
+    // The core says `running` only of the latest start, by that run's own lock.
     let running = s.last_run.as_ref().filter(|_| s.running);
     let why = match (m.checked_at, running) {
         (None, Some(l)) => format!(
@@ -2649,6 +2649,31 @@ mod tests {
         }
         s.running = false;
         assert!(status(&s, &Screen::pipe(), false).starts_with("No full check has finished yet"));
+    }
+
+    #[test]
+    fn the_first_lines_while_no_full_check_has_finished_are_yellow_on_a_screen_with_colour() {
+        let screen = Screen::terminal(200, true);
+        let mut s = status_of("x");
+        s.last_finished_run = None;
+        s.needs_a_look = Some(v1::NeedsALook::default());
+        let m = s.this_mac.as_mut().unwrap();
+        (m.checked_at, m.fresh) = (None, true);
+        for (running, said) in [
+            (true, "The first full check is running"),
+            (false, "No full check has finished yet"),
+        ] {
+            s.running = running;
+            for text in [
+                status(&s, &screen, false),
+                crate::after_run::run(&s, &screen),
+            ] {
+                assert!(
+                    text.starts_with(&format!("\u{1b}[1;33m{said}\u{1b}[0m")),
+                    "{text}"
+                );
+            }
+        }
     }
 
     #[test]
