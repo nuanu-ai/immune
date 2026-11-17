@@ -276,10 +276,10 @@ enum ThisMacState {
   // Its places are read, and none that is there failed to be read.
   THIS_MAC_STATE_WATCHED = 2;
   // A place of its own is there and was not read whole: a reading of it failed; or the event
-  // level is installed and records no program start (refused, failing or silent); or it lost
-  // part of what it was to record in a reading made since the latest finished full check
-  // began, or at any time when none has finished. `not_covered`, or the counts `since_check` of
-  // `event_level`, say which.
+  // level is installed and records no program start (refused, failing or silent); or it runs and
+  // lost part of what it was to record in a reading since the latest finished full check, or at
+  // any time when none has finished; or it could not read some lines over the last day, a failed
+  // reading. `not_covered`, or the counts `since_check` of `event_level`, say which.
   THIS_MAC_STATE_WATCHED_IN_PART = 3;
 }
 
@@ -303,7 +303,8 @@ message EventLevel {
   // When it was last read, and when its log was last written to.
   int64 read_at = 3;
   optional int64 written_at = 4;
-  // Counts of the readings since the latest full check began, and over the last day.
+  // Counts of the readings the core received since the latest finished full check, its own
+  // reading included, whatever their times, and of those stamped in the last day.
   Span program_starts = 5;
   // Program starts missing from eslogger's numbering, and restarts of the numbering.
   Span lost = 6;
@@ -354,7 +355,7 @@ message EventLevel {
   repeated NoLongerArriving no_longer_arriving = 28;
 }
 
-// A count since the latest full check began, and over the last day.
+// A count since the latest finished full check, and over the last day.
 message Span {
   uint64 since_check = 1;
   uint64 last_day = 2;

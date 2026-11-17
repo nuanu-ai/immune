@@ -723,14 +723,15 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         level.reason = Some(failure.detail.clone());
     }
     // A collector that is installed and records nothing (refused, failing or silent), or that
-    // lost part of what it was to record (a gap in its numbering, a restart it cannot
+    // runs and lost part of what it was to record (a gap in its numbering, a restart it cannot
     // account for, lines it could not read, log files the cap or the tidy job deleted before
     // they were read), leaves a place of this Mac read in part, as a reading that failed does:
-    // never the calm of a Mac watched whole. A loss holds it until a full check that began after
-    // the loss was read has finished, which read again what the unseen moment could have left;
-    // the day's caveats and `rules.judged` still say the loss. Its reading's coverage names the
-    // cause `not_given`, which the test of a failed reading does not count, so it is said here.
-    // Not installed is a limit the person can lift, and `not_covered` says it.
+    // never the calm of a Mac watched whole. A loss holds it until a full check that read this
+    // Mac after the loss was read has finished, which read again what the unseen moment could
+    // have left; the day's caveats and `rules.judged` still say the loss. Such coverage names
+    // the cause `not_given`, which the test of a failed reading does not count, so it is said
+    // here. Lines it could not read are a failed reading, which holds it for the day. Not
+    // installed is a limit the person can lift, and `not_covered` says it.
     if this_mac.state == "watched"
         && (events_failed.is_some()
             || full_check_failed
@@ -741,7 +742,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
                     crate::events::SILENT,
                 ]
                 .contains(&l.state.as_str())
-                    || l.lost_since_check()
+                    || (l.state == crate::events::RUNNING && l.lost_since_check())
             }))
     {
         this_mac.state = "watched_in_part";

@@ -4841,4 +4841,22 @@ fn a_collector_that_lost_part_of_what_it_was_to_record_leaves_this_mac_watched_i
         r["event_level"]["in_words"]["caveats"][0]["kind"],
         "restarts"
     );
+    // Removed after a loss, it is a limit the person can lift, as before any loss: the loss
+    // no longer holds this Mac in part.
+    dir.uninstall();
+    dir.run_apart();
+    assert_eq!(dir.status()["this_mac"]["state"], "watched");
+    // Lines it could not read are a failed reading: they hold this Mac in part for the day,
+    // through a later check, and the text says program starts are why.
+    let dir = Dir::new("unreadable-then-checked");
+    dir.install();
+    dir.append(h, &(exec(1) + "not a message\n" + &exec(2)));
+    dir.run();
+    dir.run_apart();
+    assert_eq!(dir.status()["this_mac"]["state"], "watched_in_part");
+    let text = dir.immune(&["status"]);
+    assert!(
+        text.contains("in part: some program starts not watched in full"),
+        "{text}"
+    );
 }

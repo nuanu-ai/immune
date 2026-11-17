@@ -3145,7 +3145,8 @@ pub struct EventLevel {
     pub read_at: i64,
     #[prost(int64, optional, tag = "4")]
     pub written_at: ::core::option::Option<i64>,
-    /// Counts of the readings since the latest full check began, and over the last day.
+    /// Counts of the readings the core received since the latest finished full check, its own
+    /// reading included, whatever their times, and of those stamped in the last day.
     #[prost(message, optional, tag = "5")]
     pub program_starts: ::core::option::Option<Span>,
     /// Program starts missing from eslogger's numbering, and restarts of the numbering.
@@ -3219,7 +3220,7 @@ pub struct EventLevel {
     #[prost(message, repeated, tag = "28")]
     pub no_longer_arriving: ::prost::alloc::vec::Vec<NoLongerArriving>,
 }
-/// A count since the latest full check began, and over the last day.
+/// A count since the latest finished full check, and over the last day.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -4116,10 +4117,10 @@ pub enum ThisMacState {
     #[serde(rename = "watched")]
     Watched = 2,
     /// A place of its own is there and was not read whole: a reading of it failed; or the event
-    /// level is installed and records no program start (refused, failing or silent); or it lost
-    /// part of what it was to record in a reading made since the latest finished full check
-    /// began, or at any time when none has finished. `not_covered`, or the counts `since_check` of
-    /// `event_level`, say which.
+    /// level is installed and records no program start (refused, failing or silent); or it runs and
+    /// lost part of what it was to record in a reading since the latest finished full check, or at
+    /// any time when none has finished; or it could not read some lines over the last day, a failed
+    /// reading. `not_covered`, or the counts `since_check` of `event_level`, say which.
     #[serde(rename = "watched_in_part")]
     WatchedInPart = 3,
 }

@@ -384,7 +384,8 @@ pub(crate) fn watching_parts(s: &v1::Status, screen: &Screen) -> Vec<(String, St
 
 /// "in part", and what is not watched in full, from the message: the kinds of place whose
 /// reading was not whole, and program starts when the event level is installed and records
-/// none, or lost some since the latest full check began, as the core holds this Mac in part.
+/// none, or runs and lost some since the latest full check, or could not read some of its lines
+/// over the last day, a failed reading: as the core holds this Mac in part.
 fn in_part(s: &v1::Status) -> String {
     let full = v1::Completeness::Full as i32;
     let mut what: Vec<String> = s
@@ -405,10 +406,11 @@ fn in_part(s: &v1::Status) -> String {
             &l.files_removed_unread,
         ]
         .into_iter()
-        .any(|n| n.as_ref().is_some_and(|n| n.since_check > 0));
+        .any(|n| n.as_ref().is_some_and(|n| n.since_check > 0))
+            || l.unreadable_lines.as_ref().is_some_and(|n| n.last_day > 0);
         if installed && !running {
             what.push("program starts".to_string());
-        } else if lost {
+        } else if running && lost {
             what.push("some program starts".to_string());
         }
     }
@@ -3172,8 +3174,8 @@ mod tests {
             watching.trim_end(),
             "  Watching      in part: authentication module and some program starts not watched in full; no watcher runs now: changes are seen at each check",
         );
-        // Losses of the last day that a full check begun after them has cleared are not why
-        // this Mac is in part; one since it, of any kind, is.
+        // Losses of the last day that a later full check cleared are not why this Mac is in
+        // part; one since it, of any kind, is, and lines that could not be read that day are.
         let losses: [fn(&mut v1::EventLevel) -> &mut Option<v1::Span>; 5] = [
             |l| &mut l.lost,
             |l| &mut l.unknown_losses,
@@ -3181,28 +3183,38 @@ mod tests {
             |l| &mut l.files_removed_by_cap,
             |l| &mut l.files_removed_unread,
         ];
-        let losing = |loss: Option<usize>| {
+        let losing = |loss: Option<usize>, unreadable_day: u64| {
             let mut s = s.clone();
             for (i, field) in losses.iter().enumerate() {
                 *field(s.event_level.as_mut().unwrap()) = Some(v1::Span {
                     since_check: u64::from(Some(i) == loss),
-                    last_day: 1,
+                    last_day: if i == 2 { unreadable_day } else { 1 },
                 });
             }
             visible(&line(&status(&s, &screen, false), "Watching"))
         };
-        let cleared = losing(None);
+        let cleared = losing(None, 0);
         assert!(
             cleared.contains("in part: authentication module not watched in full;"),
             "{cleared}"
         );
-        for i in 0..losses.len() {
-            let held = losing(Some(i));
+        for held in (0..losses.len())
+            .map(|i| losing(Some(i), 0))
+            .chain([losing(None, 1)])
+        {
             assert!(
                 held.contains("and some program starts not watched in full"),
                 "{held}"
             );
         }
+        // A collector removed after a loss watches nothing: the loss is not named.
+        let mut gone = s.clone();
+        gone.event_level.as_mut().unwrap().state = v1::CollectorState::NotInstalled as i32;
+        let gone = visible(&line(&status(&gone, &screen, false), "Watching"));
+        assert!(
+            gone.contains("in part: authentication module not watched in full;"),
+            "{gone}"
+        );
         assert!(
             visible(&text).lines().any(|l| l.starts_with("→ immune on ")
                 && l.ends_with("   keeps watching between checks")),

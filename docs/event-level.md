@@ -114,7 +114,7 @@ Every loss is counted, and a loss of unknown size is never counted as zero.
 
 Coverage of program starts is judged over the last day. After any loss, unreadable line, or log file deleted early or unread, it is partial. The status gives each of these as a caveat with its count: `restarts`, `lost`, `unreadable`, `deleted_early`, `deleted_unread`.
 
-A loss keeps `this_mac.state` at `watched_in_part` only while it was read since the latest finished full check began. A full check reads again everything installed and every place where something is set to run, so one that began after the loss was read and finished has read what the unseen moment could have left behind. The caveats and `rules.judged` keep the loss for the day.
+A loss keeps `this_mac.state` at `watched_in_part` only while it was read since the latest finished full check. A full check reads again everything installed and every place where something is set to run, so one that read this Mac after the loss was read and finished has read what the unseen moment could have left behind. Since the check is told by the order in which the store received the readings, not by their times, so a clock set back cannot put a later loss before it. Lines that could not be read are a failed reading and keep this Mac in part for the day. The caveats and `rules.judged` keep every loss for the day.
 
 ## The states it reports
 
