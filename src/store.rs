@@ -981,21 +981,22 @@ pub fn watch_in_progress(folder: &Path) -> std::io::Result<bool> {
     held(&folder.join(WATCH_LOCK))
 }
 
-/// How long a full run goes on waiting for the run lock while a watcher runs on the store.
-/// Measured on a store of 30,000 things: a watcher's reading holds the lock 0.03 s when one of
-/// 40 watched files changed, 0.3 s when all 40 did, and about 1 s and 8 s with 1,000 watched
-/// files. It leaves at least a second between readings, so a run waiting gets the lock.
-pub const WATCHER_WAIT: Duration = Duration::from_secs(60);
+/// How long a full run goes on waiting for the run lock. Measured on a store of 30,000 things:
+/// a watcher's reading holds the lock 0.03 s when one of 40 watched files changed, 0.3 s when
+/// all 40 did, and about 1 s and 8 s with 1,000 watched files. It leaves at least a second
+/// between readings, so a run waiting gets the lock.
+pub const CHECK_WAIT: Duration = Duration::from_secs(60);
 
-/// The run lock for a full run: as `lock_run`, and while a watcher runs on the store, which
-/// may be the one reading, up to `WATCHER_WAIT` more rather than give up.
-pub fn lock_run_past_watcher(folder: &Path) -> std::io::Result<Option<File>> {
+/// The run lock for a full run, which holds the lock on the downloads (`osv::lock_fetch`), so
+/// whoever holds the run lock is a reading or a command, never another full run, and nothing
+/// holding it waits for the downloads: it is waited out for up to `wait`, then `None`.
+pub fn lock_run_for_check(folder: &Path, wait: Duration) -> std::io::Result<Option<File>> {
     let start = Instant::now();
     loop {
         if let Some(lock) = lock_run(folder)? {
             return Ok(Some(lock));
         }
-        if !watch_in_progress(folder)? || start.elapsed() >= WATCHER_WAIT {
+        if start.elapsed() >= wait {
             return Ok(None);
         }
     }

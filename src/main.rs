@@ -1209,10 +1209,9 @@ fn now_secs() -> i64 {
 /// read, or that a newer build wrote, is a failure.
 fn status_answer(store: &Path, now: i64) -> Result<contract::v1::Status, Stop> {
     if !store.exists() {
-        let running =
-            osv::fetch_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
+        // No journal holds a start, so no check of this store is said to be running.
         let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-        return status::message(None, None, running, &path, now)
+        return status::message(None, None, false, &path, now)
             .map_err(|e| Stop::Store(e.to_string()));
     }
     status_read(store, now).map(|(_, m)| m)
@@ -1221,13 +1220,17 @@ fn status_answer(store: &Path, now: i64) -> Result<contract::v1::Status, Stop> {
 /// What the store holds and the contract's `Status` built from it, of one state of the store.
 fn status_read(store: &Path, now: i64) -> Result<(status::State, contract::v1::Status), Stop> {
     let unreadable = |e: Box<dyn Error>| Stop::Store(e.to_string());
-    let running = osv::fetch_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
     let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
     let conn = store::open_read_only(store).map_err(unreadable)?;
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| Stop::Store(e.to_string()))?;
     let st = status::state(&tx, &home(store), now).map_err(unreadable)?;
+    // Running is said only of the latest start this state of the store holds, by its own lock.
+    let running = match &st.last {
+        Some(l) => osv::check_in_progress(&home(store), &l.id).map_err(|e| unreadable(e.into()))?,
+        None => false,
+    };
     let m = status::message(Some(&tx), Some(&st), running, &path, now).map_err(unreadable)?;
     Ok((st, m))
 }
@@ -2359,6 +2362,14 @@ fn last_reading(dir: &Path, names: &[&str]) -> (String, bool) {
     seen.unwrap_or(("never read".to_string(), false))
 }
 
+/// The run lock for a full check, waiting up to `wait` for a reading or a command that holds the
+/// store. The check holds the downloads, so no other full check is running: one that cannot take
+/// the store is a failed run (`run_failed`), never another run in progress.
+fn take_store(home: &Path, wait: std::time::Duration) -> Result<std::fs::File, Box<dyn Error>> {
+    Ok(store::lock_run_for_check(home, wait)?
+        .ok_or("the store was held by a reading or a command longer than a check waits")?)
+}
+
 /// Runs every reader and returns the report line, and the watched places that changed or
 /// could not be read, as change, kind, path and why.
 fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
@@ -2381,19 +2392,19 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let _fetching = osv::lock_fetch(&home)
         .map_err(|e| format!("cannot write in the store's folder {}: {e}", home.display()))?
         .ok_or(Stop::RunInProgress)?;
+    let _check = osv::lock_check(&home, &run_id)?;
     // The check has started, downloads and all: its start is written now, under the run lock
     // for that write alone, so that a status says from the first minute when it started.
     {
-        let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
+        let _lock = take_store(&home, store::CHECK_WAIT)?;
         let conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
         store::journal_note(&conn, at, &run_id, "run_started", "")?;
     }
     let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
     let catalogue = get_catalogue(read_only.as_ref(), args)?;
     drop(read_only);
-    // Held until the run returns: a second run stops here and writes nothing. A watcher's
-    // reading, `immune watch`, is waited out.
-    let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
+    // Held until the run returns. Whoever holds it now is a reading or a command, waited out.
+    let _lock = take_store(&home, store::CHECK_WAIT)?;
     let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
 
     let tx = conn.transaction()?;
@@ -5182,6 +5193,34 @@ fn grouped(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_waits_out_whoever_holds_the_store_past_two_seconds_and_else_fails_as_a_run() {
+        // A reading or a verdict holds the run lock, no watcher among them. The check waits for
+        // it longer than a command waits; when it still cannot take the store, it is a failed
+        // run, never `run_in_progress`, which says another check is running when none is.
+        let dir = std::env::temp_dir().join(format!(
+            "immune-take-store-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = std::fs::File::open(&dir).unwrap();
+        held.lock().unwrap();
+        let failed = take_store(&dir, std::time::Duration::ZERO).unwrap_err();
+        assert!(failed.downcast_ref::<Stop>().is_none(), "{failed}");
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                drop(held);
+            });
+            assert!(take_store(&dir, std::time::Duration::from_secs(10)).is_ok());
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn what_is_kept_is_of_the_deepest_checkout_holding_a_file_and_never_of_one_no_longer_held() {
