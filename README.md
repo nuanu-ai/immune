@@ -5,10 +5,7 @@ Immune is a detection core for one Mac. It watches the Mac for signs of attack, 
 Immune is the detection core of [Artificial Immunity](https://immunity.bot), a project of [Nuanu AI Lab](https://nuanu.ai). This repository holds the core and its commands. A menu-bar app for a person is built outside it, on the same commands.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/page-dark.png">
-    <img src="docs/img/page-light.png" width="760" alt="The top of the page immune view writes: five findings that need the person now and two to look at, each with the thing it is about, what happened to it and the verdict a response layer gave">
-  </picture>
+  <img src="docs/img/page-dark.png" width="760" alt="The top of the page immune view writes: five findings that need the person now and two to look at, each with the thing it is about, what happened to it and the verdict a response layer gave">
 </p>
 
 The picture is the top of the page `immune view` writes, here for an invented Mac.
