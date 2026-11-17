@@ -33,7 +33,11 @@
 //!
 //! These commands act, so their order is the point. `on`:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
-//! - then the property list and the copy are staged under temporary names beside their places;
+//! - then the property list and the copy are staged under temporary names: the copy beside its
+//!   place in `bin`, the property list in the store's folder, so that nothing is ever staged in
+//!   `LaunchAgents`, which the watcher reads for startup items. Both are under the home folder, so
+//!   the rename into `LaunchAgents` is one step; a rename that fails, across volumes or
+//!   otherwise, fails the command with the error;
 //! - then the copy and then the property list are renamed into place, under the running job: the
 //!   process keeps the old binary's inode and launchd the configuration it loaded, so the job is
 //!   not stopped, and a file that cannot be replaced fails the command before anything is. The
@@ -187,6 +191,8 @@ struct Places {
     home: PathBuf,
     agents: PathBuf,
     plist: PathBuf,
+    /// The store's folder, where the property list is staged.
+    folder: PathBuf,
     bin: PathBuf,
     program: PathBuf,
     /// The store the job's watcher keeps, the default one under `home`.
@@ -300,6 +306,7 @@ fn refusals(launchctl: &Path, home: Option<&Path>) -> Result<(Places, bool), Fai
         bin: store_folder.join(BIN),
         program: store_folder.join(BIN).join(PROGRAM),
         store: store_folder.join(crate::STORE_FILE),
+        folder: store_folder,
         home,
     };
     if let Err(said) = launchctl_run(launchctl, &["print", &places.domain]) {
@@ -469,7 +476,7 @@ fn plutil(args: &[&str], path: &Path) -> Result<(), String> {
 /// into place.
 #[derive(Default)]
 struct Staged {
-    /// A folder inside `LaunchAgents` that holds the new property list.
+    /// A folder inside the store's folder that holds the new property list.
     folder: Option<PathBuf>,
     /// A new copy of the core inside `bin`.
     copy: Option<PathBuf>,
@@ -804,15 +811,13 @@ fn on(
         .mode(0o700)
         .create(&places.agents)
         .map_err(|e| not_staged(&places.agents, e.to_string()))?;
+    fs::create_dir_all(&places.folder).map_err(|e| not_staged(&places.folder, e.to_string()))?;
     let folder =
-        stage_folder(&places.agents).map_err(|e| not_staged(&places.agents, e.to_string()))?;
+        stage_folder(&places.folder).map_err(|e| not_staged(&places.folder, e.to_string()))?;
     staged.folder = Some(folder.clone());
     let new_plist = folder.join(format!("{LABEL}.plist"));
     write_plist(&new_plist, &runs, &places.home).map_err(|e| not_staged(&new_plist, e))?;
     if !same && !in_place {
-        if let Some(store) = places.bin.parent() {
-            fs::create_dir_all(store).map_err(|e| not_staged(store, e.to_string()))?;
-        }
         match DirBuilder::new().mode(0o700).create(&places.bin) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists && places.bin.is_dir() => {}

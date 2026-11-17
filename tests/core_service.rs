@@ -173,6 +173,10 @@ case "$1:${{2-}}" in
         fi ;;
     enable:{job}) ;;
     bootstrap:{domain})
+        if [ -n "${{PAUSE_AT_BOOTSTRAP-}}" ]; then
+            : >"$TEST_LOGIN/paused"
+            while [ ! -f "$TEST_LOGIN/go" ]; do sleep 0.05; done
+        fi
         [ "$#" -eq 3 ] && [ ! -f "$TEST_LOGIN/loaded" ] && /usr/bin/plutil -lint -s "$3" &&
             {{ [ -n "${{BOOTSTRAP_LOADS_NOTHING-}}" ] || cp "$3" "$TEST_LOGIN/loaded"; }} ;;
     *) exit 2 ;;
@@ -249,7 +253,7 @@ esac"#
     }
 
     /// What `on` and `off` may change, as it stands: the property list, the installed
-    /// core with its inode, whether the job is loaded, and what is in the two folders.
+    /// core with its inode, whether the job is loaded, and what is in the three folders.
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             plist: fs::read(&self.plist).ok(),
@@ -258,6 +262,7 @@ esac"#
             loaded: fs::read(self.scratch.join("loaded")).ok(),
             agents: names(&self.agents),
             bin: names(&self.bin),
+            store: names(&self.store),
         }
     }
 }
@@ -270,6 +275,7 @@ struct Snapshot {
     loaded: Option<Vec<u8>>,
     agents: Vec<String>,
     bin: Vec<String>,
+    store: Vec<String>,
 }
 
 /// The names in a folder, sorted; none when it is not there.
@@ -681,6 +687,7 @@ fn a_property_list_that_cannot_be_replaced_stops_on_before_the_job_is_stopped() 
         (&after.plist, &after.loaded, &after.agents, &after.bin),
         (&before.plist, &before.loaded, &before.agents, &before.bin)
     );
+    assert_eq!(after.store, before.store);
 }
 
 #[test]
@@ -707,6 +714,52 @@ fn a_core_that_cannot_be_replaced_stops_on_with_nothing_touched() {
     );
     assert_eq!(login.snapshot(), before);
     assert_eq!(fs::metadata(&login.plist).unwrap().ino(), plist_inode);
+}
+
+/// Nothing `on` stages is ever in `LaunchAgents`, which the watcher reads for startup items: while
+/// launchd is asked to load the job the folder holds the job's property list alone, so neither a
+/// check then, as the job's first reading is, nor one after raises a finding about a staged file.
+#[test]
+fn nothing_on_stages_is_in_launch_agents_so_no_check_finds_it() {
+    let mut login = Login::new("core-service-staged");
+    let child = login
+        .command_in(
+            Path::new(CORE),
+            &login.home,
+            &["on", "--json"],
+            &[("PAUSE_AT_BOOTSTRAP", "1")],
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !login.scratch.join("paused").exists() {
+        assert!(
+            Instant::now() < until,
+            "on never asked launchd to load the job"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(names(&login.agents), [format!("{LABEL}.plist")]);
+    login.watcher = None;
+    login.make_store();
+    login.watcher = Some(login.hold_watcher("ready"));
+    fs::write(login.scratch.join("go"), "").unwrap();
+    assert!(service(&child.wait_with_output().unwrap()).loaded);
+    assert_eq!(names(&login.agents), [format!("{LABEL}.plist")]);
+    login.watcher = None;
+    login.make_store();
+    let findings = Command::new(CORE)
+        .args(["findings", "--json", "--store"])
+        .arg(login.store.join("store.db"))
+        .env_clear()
+        .env("HOME", &login.home)
+        .output()
+        .unwrap();
+    let findings = String::from_utf8(findings.stdout).unwrap();
+    assert!(findings.contains(r#""findings""#), "{findings}");
+    assert!(!findings.contains(&format!("/.{LABEL}.")), "{findings}");
 }
 
 #[test]
