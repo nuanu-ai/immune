@@ -240,10 +240,21 @@ fi
 # The account that may read the log: the one --reader names, with its name from the directory
 # service, or else the one that ran sudo. With --reader, SUDO_USER and SUDO_UID are not read:
 # an installer package runs this as root with neither, and its environment decides nothing.
+# The name goes into an access-control entry as text, so it is taken only when it is letters,
+# digits, dots, underscores and hyphens and does not start with a hyphen: a comma, a space or a
+# newline in it would change the entry, or add a second one.
+name_ok() {
+    case $1 in
+    '' | -* | *[!A-Za-z0-9._-]*)
+        fail "the account's name $1 may hold only letters, digits, dots, underscores and hyphens, and may not start with a hyphen"
+        ;;
+    esac
+}
 if [ -n "$reader" ]; then
     uid=$reader
     user=$(/usr/bin/id -un "$uid" 2>/dev/null) && [ -n "$user" ] ||
         fail "no account on this Mac has the uid $uid"
+    name_ok "$user"
     [ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
         fail "the uid $uid and the name $user do not name one account"
 else
@@ -252,6 +263,7 @@ else
     if [ -z "$user" ] || [ -z "$uid" ] || [ "$uid" = 0 ] || [ "$user" = root ]; then
         fail "run it with sudo from the account that will read the log, not from a root shell: sudo /bin/sh '$here/install'"
     fi
+    name_ok "$user"
     [ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
         fail "SUDO_USER and SUDO_UID do not name one account"
 fi
@@ -413,6 +425,8 @@ step /usr/sbin/chown root:wheel "$LIB/collects"
 step /bin/chmod 644 "$LIB/collects"
 # A record an earlier install wrote of what its filter kept: lines say it now.
 step /bin/rm -f "$LIB/keeps"
+# How much eslogger had said before this install starts it: only what it says after counts.
+errsize=$(/usr/bin/stat -f %z "$LOG/eslogger.err" 2>/dev/null) || errsize=0
 for l in $LABELS; do
     step /bin/launchctl bootstrap system "$DAEMONS/$l.plist"
     left=partly
@@ -423,7 +437,9 @@ left=
 # events are being written. The programs this script starts are program starts themselves,
 # and each look below creates and removes a file in the level's own folder, so a level that
 # works has written both within seconds; ten are given. Only what was written after this
-# install put its property lists in place counts, so an earlier install's log decides nothing.
+# install put its property lists in place counts, so an earlier install's log decides nothing,
+# and of eslogger.err only what was written after `errsize`. When tidy.sh has trimmed the file
+# since, nothing in it counts, and the result is not a refusal.
 mark="$DAEMONS/ai.nuanu.immune.eslogger.plist"
 # Whether a log file written since holds a line with one of the given texts.
 written() {
@@ -442,8 +458,8 @@ while [ "$n" -lt 20 ] && [ -z "$verdict" ]; do
         -e '"event":{"rename":{"destination":' || files=1
     if [ -n "$starts" ] && [ -n "$files" ]; then
         verdict=running
-    elif [ -z "$starts" ] && [ -n "$(/usr/bin/find "$LOG" -name eslogger.err -type f -newer "$mark" 2>/dev/null)" ] &&
-        /usr/bin/tail -c 4096 "$LOG/eslogger.err" | /usr/bin/grep -q ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED; then
+    elif [ -z "$starts" ] && [ -f "$LOG/eslogger.err" ] &&
+        /usr/bin/tail -c "+$((errsize + 1))" "$LOG/eslogger.err" | /usr/bin/grep -q ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED; then
         verdict=refused
     else
         n=$((n + 1))
@@ -465,8 +481,9 @@ starts_only)
 refused)
     echo "RESULT: INSTALLED, ONE STEP LEFT. The collector is installed and records nothing until then."
     echo "In System Settings, open Privacy & Security, then Full Disk Access, and turn on the switch"
-    echo "beside eslogger. macOS has already put it in the list, switched off. The collector starts"
-    echo "by itself within seconds, and the panel and \`immune status\` say so."
+    echo "beside eslogger. macOS has already put it in the list, switched off. If it is not there,"
+    echo "add it with \"+\": in the file dialog press Cmd-Shift-G and enter /usr/bin/eslogger. The"
+    echo "collector starts by itself within seconds, and the panel and \`immune status\` say so."
     ;;
 *)
     echo "RESULT: INSTALLED, NOT RECORDING YET. Nothing was written in ten seconds, and eslogger"

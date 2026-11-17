@@ -7,11 +7,7 @@
 # It stops the three launch daemons, deletes their property lists and the event level's
 # folder, and the folder above it when nothing else is in it. Run again, it finds nothing to
 # remove and says so. It stops with a reason and a non-zero exit when a step fails.
-#
-# The copy the install puts in the event level's folder deletes itself. A shell reads a script
-# as it runs it, so the whole body is one block, `{` to `}`, which the shell reads to its end
-# before it runs any of it, and the block ends with `exit`, so nothing after it is ever read.
-{
+
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
@@ -61,7 +57,8 @@ if [ -L "$LIB" ]; then
 fi
 if [ -d "$LIB" ]; then
     found=1
-    step /bin/rm -rf "$LIB"
+    /bin/rm -rf "$LIB" ||
+        fail "removing $LIB stopped partway. This script's copy there may be gone with it; scripts/event-level/uninstall in a checkout of Immune finishes the removal"
 fi
 if [ -d "$TOP" ] && [ ! -L "$TOP" ]; then
     /bin/rmdir "$TOP" 2>/dev/null || true
@@ -72,5 +69,3 @@ if [ "$found" -eq 1 ]; then
 else
     echo "Nothing was installed; nothing was removed."
 fi
-exit 0
-}
