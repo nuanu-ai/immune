@@ -2323,7 +2323,11 @@ fn a_scheduled_check_stops_with_its_tools_if_its_watcher_is_killed() {
         }
         std::mem::forget(check_reap);
         assert!(!mac.root.join("store/feeds/fetch.lock").exists() || started);
-        assert!(!mac.store().exists());
+        // A check that began its downloads wrote its start and nothing it would have read.
+        match started {
+            false => assert!(!mac.store().exists()),
+            true => assert_eq!(mac.rows("SELECT entry FROM journal"), ["run_started"]),
+        }
     }
 }
 

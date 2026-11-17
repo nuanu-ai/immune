@@ -922,7 +922,13 @@ const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// it goes when the process ends, however it ends, so a run that died never looks like one
 /// in progress. Two stores in one folder share it.
 pub fn lock_run(folder: &Path) -> std::io::Result<Option<File>> {
-    let handle = File::open(folder)?;
+    lock_waiting(File::open(folder)?)
+}
+
+/// Takes the kernel's lock on `handle`, waiting up to `LOCK_WAIT` for whoever holds it, or
+/// `None` when it is still held. The wait is also what lets `held` look at a lock without
+/// turning away a process that takes it at that moment.
+pub fn lock_waiting(handle: File) -> std::io::Result<Option<File>> {
     let start = Instant::now();
     loop {
         match handle.try_lock() {
@@ -936,10 +942,11 @@ pub fn lock_run(folder: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
-/// Whether a run holds the run lock on the store's folder now. It opens the folder only to
-/// read and holds the lock shared for a moment, which a run starting meanwhile waits out.
-pub fn run_in_progress(folder: &Path) -> std::io::Result<bool> {
-    let handle = match File::open(folder) {
+/// Whether a process holds the lock taken by `lock_waiting` on the file or folder at `path`
+/// now. It opens it only to read, creates nothing, and holds the lock shared for a moment,
+/// which a process taking it meanwhile waits out. Nothing at the path is no lock held.
+pub fn held(path: &Path) -> std::io::Result<bool> {
+    let handle = match File::open(path) {
         Ok(handle) => handle,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
@@ -961,37 +968,17 @@ pub const WATCH_LOCK: &str = "watch.lock";
 /// open, or `None` when another watcher holds it. The same kernel lock as the run lock: it
 /// goes when the process ends, however it ends, so a watcher that died never looks alive.
 pub fn lock_watch(folder: &Path) -> std::io::Result<Option<File>> {
-    let handle = File::options()
-        .create(true)
-        .append(true)
-        .open(folder.join(WATCH_LOCK))?;
-    let start = Instant::now();
-    loop {
-        match handle.try_lock() {
-            Ok(()) => return Ok(Some(handle)),
-            Err(TryLockError::WouldBlock) if start.elapsed() < LOCK_WAIT => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(TryLockError::WouldBlock) => return Ok(None),
-            Err(TryLockError::Error(e)) => return Err(e),
-        }
-    }
+    lock_waiting(
+        File::options()
+            .create(true)
+            .append(true)
+            .open(folder.join(WATCH_LOCK))?,
+    )
 }
 
-/// Whether a watcher holds its lock on the store's folder now. Opens the lock file only to
-/// read, creates nothing, and holds the lock shared for a moment, which a watcher starting
-/// meanwhile waits out.
+/// Whether a watcher holds its lock on the store's folder now (`held`).
 pub fn watch_in_progress(folder: &Path) -> std::io::Result<bool> {
-    let handle = match File::open(folder.join(WATCH_LOCK)) {
-        Ok(handle) => handle,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e),
-    };
-    match handle.try_lock_shared() {
-        Ok(()) => Ok(false),
-        Err(TryLockError::WouldBlock) => Ok(true),
-        Err(TryLockError::Error(e)) => Err(e),
-    }
+    held(&folder.join(WATCH_LOCK))
 }
 
 /// How long a full run goes on waiting for the run lock while a watcher runs on the store.

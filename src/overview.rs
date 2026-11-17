@@ -785,35 +785,40 @@ fn checked(screen: &Screen, s: &v1::Status) -> Option<String> {
         .map(|at| format!("checked {}", screen.time(at, s.answered_at)))
 }
 
-fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
+/// The headline of `immune status` and `immune run`, by one rule: calm only when fresh and
+/// nothing failed, and never of "the last check" when no full check has finished.
+pub(crate) fn answer(s: &v1::Status) -> (String, Style) {
     let fresh = s.this_mac.as_ref().is_some_and(|m| m.fresh);
+    let none_finished = s.this_mac.as_ref().is_none_or(|m| m.checked_at.is_none());
+    match s.needs_a_look.as_ref() {
+        None => (
+            "No run of this build has looked for findings yet".to_string(),
+            BOLD,
+        ),
+        Some(n) if n.total == 0 && none_finished => match s.running {
+            true => ("The first full check is running".to_string(), YELLOW.bold()),
+            false => ("No full check has finished yet".to_string(), YELLOW.bold()),
+        },
+        Some(n) if n.total == 0 && fresh && !failing(s) => {
+            ("✓ Nothing needs a look".to_string(), GREEN.bold())
+        }
+        Some(n) if n.total == 0 && fresh => (
+            "Nothing needs a look in what could be read".to_string(),
+            YELLOW.bold(),
+        ),
+        Some(n) if n.total == 0 => ("Nothing needed a look at the last check".to_string(), BOLD),
+        Some(n) => (
+            format!("✗ {}", needing(n.total, n.urgent_total)),
+            RED.bold(),
+        ),
+    }
+}
+
+fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     let right = checked(screen, s);
     let look = s.needs_a_look.as_ref();
-    match look {
-        None => out.extend(screen.headline(
-            "No run of this build has looked for findings yet",
-            BOLD,
-            right.as_deref(),
-        )),
-        Some(n) if n.total == 0 && fresh && !failing(s) => {
-            out.extend(screen.headline("✓ Nothing needs a look", GREEN.bold(), right.as_deref()))
-        }
-        Some(n) if n.total == 0 && fresh => out.extend(screen.headline(
-            "Nothing needs a look in what could be read",
-            YELLOW.bold(),
-            right.as_deref(),
-        )),
-        Some(n) if n.total == 0 => out.extend(screen.headline(
-            "Nothing needed a look at the last check",
-            BOLD,
-            right.as_deref(),
-        )),
-        Some(n) => out.extend(screen.headline(
-            &format!("✗ {}", needing(n.total, n.urgent_total)),
-            RED.bold(),
-            right.as_deref(),
-        )),
-    }
+    let (said, style) = answer(s);
+    out.extend(screen.headline(&said, style, right.as_deref()));
     // What needs the person: the rules, most urgent first.
     if let Some(n) = look.filter(|n| n.total > 0 && !n.by_rule.is_empty()) {
         out.push(String::new());
@@ -904,6 +909,29 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
 /// A value in parts, each part in its own style.
 pub(crate) type Parts = Vec<(String, Style)>;
 
+/// Why what the status says is not fresh, for both texts; `None` when it is fresh. While a full
+/// check runs and none has finished, that one is running and since when, never that there has
+/// been none.
+fn not_fresh(s: &v1::Status, screen: &Screen) -> Option<String> {
+    let m = s.this_mac.as_ref().filter(|m| !m.fresh)?;
+    // A full run writes its start before anything else, so the latest start is the running one.
+    let running = s.last_run.as_ref().filter(|_| s.running);
+    let why = match (m.checked_at, running) {
+        (None, Some(l)) => format!(
+            "a full check is running, started {}, and none has finished yet",
+            screen.time(l.started_at, s.answered_at)
+        ),
+        _ => m
+            .stale_reason
+            .as_deref()
+            .unwrap_or("the core does not say why")
+            .to_string(),
+    };
+    Some(format!(
+        "{why}; do not take it for calm until a check finishes"
+    ))
+}
+
 /// What a screen about the store says after its headline and what needs a look, the same for
 /// `immune status` and `immune run`, so that a run never says less than the status of the same
 /// store: a run that did not finish, freshness, how this Mac is watched, the event level,
@@ -935,19 +963,8 @@ pub(crate) fn context(
             )],
         ));
     }
-    if let Some(m) = s.this_mac.as_ref().filter(|m| !m.fresh) {
-        lines.push((
-            "Not fresh",
-            vec![(
-                format!(
-                    "{}; do not take it for calm until a check finishes",
-                    m.stale_reason
-                        .as_deref()
-                        .unwrap_or("the core does not say why")
-                ),
-                YELLOW,
-            )],
-        ));
+    if let Some(said) = not_fresh(s, screen) {
+        lines.push(("Not fresh", vec![(said, YELLOW)]));
     }
     lines.push(("Watching", clauses(watching_parts(s, screen))));
     let event_level = s.event_level.as_ref().and_then(event_level_short);
@@ -1475,17 +1492,8 @@ fn coverage_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
                 ),
                 style,
             ));
-            if !m.fresh {
-                lines.push((
-                    "Not fresh",
-                    format!(
-                        "{}; do not take it for calm until a check finishes",
-                        m.stale_reason
-                            .as_deref()
-                            .unwrap_or("the core does not say why")
-                    ),
-                    YELLOW,
-                ));
+            if let Some(said) = not_fresh(s, screen) {
+                lines.push(("Not fresh", said, YELLOW));
             }
             watched = m
                 .watched
@@ -2588,6 +2596,59 @@ mod tests {
             "{unknown}"
         );
         assert!(!stale.contains("✓") && !unknown.contains("✓"));
+    }
+
+    #[test]
+    fn a_status_with_a_check_running_and_none_finished_never_says_no_full_check() {
+        let mut s = status_of("x");
+        s.running = true;
+        s.last_finished_run = None;
+        s.this_mac.as_mut().unwrap().checked_at = None;
+        for coverage in [false, true] {
+            let text = status(&s, &Screen::pipe(), coverage);
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with("Not fresh"))
+                .unwrap_or_else(|| panic!("{text}"));
+            let started = Screen::pipe().time(NOW - 600, NOW);
+            assert!(
+                line.contains(&format!("a full check is running, started {started},")),
+                "{text}"
+            );
+            assert!(!text.to_lowercase().contains("no full check"), "{text}");
+        }
+        // A check that died is not running, and once one has finished, the core's reason is
+        // said as it is.
+        for (running, checked_at) in [(false, None), (true, Some(CHECKED))] {
+            s.running = running;
+            s.this_mac.as_mut().unwrap().checked_at = checked_at;
+            assert!(status(&s, &Screen::pipe(), false).contains("no full check has finished"));
+        }
+    }
+
+    #[test]
+    fn a_status_whose_first_check_is_running_and_found_nothing_never_says_nothing_needed_a_look() {
+        let mut s = status_of("x");
+        s.running = true;
+        s.last_finished_run = None;
+        s.needs_a_look = Some(v1::NeedsALook::default());
+        s.this_mac.as_mut().unwrap().checked_at = None;
+        for text in [
+            status(&s, &Screen::pipe(), false),
+            crate::after_run::run(&s, &Screen::pipe()),
+        ] {
+            assert!(
+                text.starts_with("The first full check is running"),
+                "{text}"
+            );
+            let lower = text.to_lowercase();
+            assert!(
+                !lower.contains("nothing need") && !text.contains('✓'),
+                "{text}"
+            );
+        }
+        s.running = false;
+        assert!(status(&s, &Screen::pipe(), false).starts_with("No full check has finished yet"));
     }
 
     #[test]

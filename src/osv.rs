@@ -208,22 +208,28 @@ pub fn request(feed: &Feed, output: &Path, etag: Option<&str>) -> Vec<String> {
     threats::curl_args(feed.url, feed.cap, feed.max_time, Some(output), etag)
 }
 
-/// The lock a run holds on the feeds' folder from before its downloads until it ends, so that
-/// two runs never write the same partial download. It is not the run lock: a download, which
-/// can take minutes, holds up no watcher's reading and no `immune status`. `None` when another
-/// run holds it.
+/// The lock a full run holds on the feeds' folder from its first step, before its downloads,
+/// until it ends, so that two runs never write the same partial download. It is not the run
+/// lock: a download, which can take minutes, holds up no watcher's reading and no `immune
+/// status`. Only a full run takes it, so a status reads a check running from it
+/// (`fetch_in_progress`). `None` when another run holds it.
 pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
     let dir = home.join(FOLDER);
     std::fs::create_dir_all(&dir)?;
-    let handle = std::fs::File::options()
-        .create(true)
-        .append(true)
-        .open(dir.join("fetch.lock"))?;
-    match handle.try_lock() {
-        Ok(()) => Ok(Some(handle)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(e),
-    }
+    crate::store::lock_waiting(
+        std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(dir.join(FETCH_LOCK))?,
+    )
+}
+
+const FETCH_LOCK: &str = "fetch.lock";
+
+/// Whether a full run is under way on the store in `home`: it holds the lock on the downloads.
+/// The kernel's lock goes with the process however it ends, so a run killed part way is not.
+pub fn fetch_in_progress(home: &Path) -> std::io::Result<bool> {
+    crate::store::held(&home.join(FOLDER).join(FETCH_LOCK))
 }
 
 /// Asks for a feed, or takes the archive given instead. Run before the run lock is taken, with

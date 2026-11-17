@@ -1210,7 +1210,7 @@ fn now_secs() -> i64 {
 fn status_answer(store: &Path, now: i64) -> Result<contract::v1::Status, Stop> {
     if !store.exists() {
         let running =
-            store::run_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
+            osv::fetch_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
         let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
         return status::message(None, None, running, &path, now)
             .map_err(|e| Stop::Store(e.to_string()));
@@ -1221,7 +1221,7 @@ fn status_answer(store: &Path, now: i64) -> Result<contract::v1::Status, Stop> {
 /// What the store holds and the contract's `Status` built from it, of one state of the store.
 fn status_read(store: &Path, now: i64) -> Result<(status::State, contract::v1::Status), Stop> {
     let unreadable = |e: Box<dyn Error>| Stop::Store(e.to_string());
-    let running = store::run_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
+    let running = osv::fetch_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
     let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
     let conn = store::open_read_only(store).map_err(unreadable)?;
     let tx = conn
@@ -2381,6 +2381,13 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let _fetching = osv::lock_fetch(&home)
         .map_err(|e| format!("cannot write in the store's folder {}: {e}", home.display()))?
         .ok_or(Stop::RunInProgress)?;
+    // The check has started, downloads and all: its start is written now, under the run lock
+    // for that write alone, so that a status says from the first minute when it started.
+    {
+        let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
+        let conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+        store::journal_note(&conn, at, &run_id, "run_started", "")?;
+    }
     let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
     let catalogue = get_catalogue(read_only.as_ref(), args)?;
     drop(read_only);
@@ -2388,7 +2395,6 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // reading, `immune watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
     let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
-    store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
     // The store keeps this Mac's id; its name now is kept beside it.
