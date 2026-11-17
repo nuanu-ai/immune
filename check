@@ -34,9 +34,6 @@ while [ $# -gt 0 ]; do
         *) cargo test ;;
       esac
       ;;
-    # The workflow on GitHub still names this part, which held the menu-bar app's checks until
-    # the app left the repository. It goes with the workflow's next edit.
-    app) ;;
     *)
       echo "usage: $0 [lint] [tests [N/M]]; with no argument, all of them" >&2
       exit 2
