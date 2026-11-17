@@ -254,7 +254,6 @@ pub fn run(s: &v1::Status, screen: &Screen) -> String {
     let took = check
         .and_then(|c| c.finished_at.map(|end| end - c.started_at))
         .map(|t| format!("took {}", duration(t)));
-    let fresh = s.this_mac.as_ref().is_some_and(|m| m.fresh);
     let look = s.needs_a_look.as_ref();
     // What this check raised: the findings first seen since it began, among those listed. The
     // message lists at most some of them and carries no count of those this check opened, so a
@@ -274,25 +273,8 @@ pub fn run(s: &v1::Status, screen: &Screen) -> String {
     } else {
         String::new()
     };
-    let (answer, style) = match look {
-        None => (
-            "No run of this build has looked for findings yet".to_string(),
-            BOLD,
-        ),
-        // The status's own rule: calm only when fresh and nothing failed.
-        Some(n) if n.total == 0 && fresh && !overview::failing(s) => {
-            ("✓ Nothing needs a look".to_string(), GREEN.bold())
-        }
-        Some(n) if n.total == 0 && fresh => (
-            "Nothing needs a look in what could be read".to_string(),
-            YELLOW.bold(),
-        ),
-        Some(n) if n.total == 0 => ("Nothing needed a look at the last check".to_string(), BOLD),
-        Some(n) => (
-            format!("✗ {}", overview::needing(n.total, n.urgent_total)),
-            RED.bold(),
-        ),
-    };
+    // The status's own headline, by its own rule.
+    let (answer, style) = overview::answer(s);
     let tail = if look.is_some_and(|n| n.total == 0) && !first {
         String::new()
     } else {
