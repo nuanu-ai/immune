@@ -2,7 +2,8 @@
 //! `scripts/event-level/`; its scripts are run here exactly as installed, as an ordinary
 //! process, fed invented lines in place of eslogger, with the paths the plists give them
 //! replaced by temporary ones through their arguments. Nothing here runs as root, runs
-//! eslogger or launchctl, or executes the install or uninstall script. The reader is the real
+//! eslogger or launchctl, or executes the install or uninstall script as it is: their code is
+//! run with stand-ins and temporary folders in place of the system's. The reader is the real
 //! binary reading a temporary system root laid out as the install lays out the real one, with
 //! lines as the root side's filter writes them and invented content.
 
@@ -3648,17 +3649,17 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     dir.nowhere_in_the_store(venv);
 }
 
-/// The installer's functions for the log's cap, between its `# BEGIN the log's cap` and
-/// `# END the log's cap` lines, run by /bin/sh after them with `script`: the installer's own
+/// The installer's functions for its arguments and the log's cap, between its
+/// `# BEGIN the arguments` and `# END the arguments` lines, run by /bin/sh after them with `script`: the installer's own
 /// code, without running the installer, which needs root and changes the system. Its exit
 /// code, stdout and stderr.
 fn cap_code(script: &str) -> (i32, String, String) {
     let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
     let from = install
-        .find("# BEGIN the log's cap\n")
+        .find("# BEGIN the arguments\n")
         .expect("the cap's code begins");
     let to = install
-        .find("# END the log's cap\n")
+        .find("# END the arguments\n")
         .expect("the cap's code ends");
     let code = format!("here='{SCRIPTS}'\n{}\n{script}\n", &install[from..to]);
     let out = Command::new("/bin/sh")
@@ -3678,16 +3679,11 @@ fn cap_code(script: &str) -> (i32, String, String) {
 /// launch daemon, with its own `fail` and its record of what it left, run by /bin/sh without
 /// root and without changing the system: `step` records each step and runs none but the
 /// stand-in for launchctl, and the first step that contains `fail_at` fails. `running` says
-/// whether a collector ran before. Its exit code, its stderr and the steps it took.
-fn install_steps(dir: &Dir, fail_at: &str, running: bool) -> (i32, String, String) {
-    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
-    let part = |from: &str, to: &str| {
-        let a = install.find(from).expect(from);
-        let b = a + install[a..].find(to).expect(to);
-        install[a..b].to_string()
-    };
-    let fail = part("left=\nfail() {", "# BEGIN the log's cap\n");
-    let steps = part(
+/// whether a collector ran before. `account` is shell code run before the steps that sets
+/// `user`, the account that may read the log. Its exit code, its stderr and the steps it took.
+fn install_steps(dir: &Dir, fail_at: &str, running: bool, account: &str) -> (i32, String, String) {
+    let fail = install_part("left=\nfail() {", "# BEGIN the arguments\n");
+    let steps = install_part(
         "# What can fail without touching the collector that runs now",
         "\n# The verdict",
     )
@@ -3700,8 +3696,9 @@ fn install_steps(dir: &Dir, fail_at: &str, running: bool) -> (i32, String, Strin
 TOP="$T/top"; LIB="$TOP/event-level"; RUN="$LIB/run"; LOG="$LIB/log"; FIFO="$RUN/events.fifo"
 DAEMONS="$T/daemons"; TIDY="$DAEMONS/ai.nuanu.immune.event-tidy.plist"; here="$T/here"
 LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
-SCRIPTS='collect.sh filter.jq tidy.sh'; HOOK=rotated.sh; user=someone; cap=2147483648
+SCRIPTS='collect.sh filter.jq tidy.sh'; HOOK=rotated.sh; cap=2147483648
 {fail}
+{account}
 step() {{
     echo "$*" >>"$T/log"
     case "$*" in *"$FAILAT"*) fail "this step failed, and the install stopped here: $*" ;; esac
@@ -3734,6 +3731,281 @@ echo "left=[$left]" >>"$T/log"
     )
 }
 
+/// The install's text from `from` to where `to` follows it.
+fn install_part(from: &str, to: &str) -> String {
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let a = install.find(from).expect(from);
+    let b = a + install[a..].find(to).expect(to);
+    install[a..b].to_string()
+}
+
+/// The account that may read the log, for the install's steps that do not choose it.
+const SOMEONE: &str = "user=someone";
+
+/// The install's arguments and its choice of the account that may read the log, as `account`
+/// for `install_steps`: run with `args`, with `sudo` as SUDO_USER and SUDO_UID in its
+/// environment, and a directory in place of /usr/bin/id that knows `person`, uid 501, and
+/// `other`, uid 502, and gives uid 503 the name `person`.
+fn chosen_account(args: &str, sudo: Option<(&str, &str)>) -> String {
+    let sudo = sudo.map_or(String::new(), |(u, i)| {
+        format!("export SUDO_USER='{u}' SUDO_UID='{i}'\n")
+    });
+    let parse = install_part("# BEGIN the arguments\n", "# END the arguments\n");
+    let choose = install_part("# The account that may read the log", "\nfor f in $SCRIPTS")
+        .replace("/usr/bin/id", "id_");
+    format!(
+        r#"{sudo}{parse}
+parse_args {args}
+id_() {{
+    case "$1 $2" in
+    "-un 501" | "-un 503") echo person ;;
+    "-un 502") echo other ;;
+    "-u person") echo 501 ;;
+    "-u other") echo 502 ;;
+    *) return 1 ;;
+    esac
+}}
+{choose}"#
+    )
+}
+
+#[test]
+fn with_a_reader_given_the_log_is_that_account_s_whoever_ran_sudo_and_without_one_the_sudo_account_s()
+ {
+    // An installer package runs the install as root with --reader and without sudo, and its
+    // environment decides nothing: SUDO_USER and SUDO_UID naming another account are not read.
+    // Without --reader the account that ran sudo reads the log, as it always has.
+    let dir = Dir::new("install-reader");
+    for (args, sudo, reader) in [
+        ("--reader 501", Some(("other", "502")), "person"),
+        ("--reader 501", Some(("other", "not a uid")), "person"),
+        ("--reader 501", None, "person"),
+        ("--log-gib 3 --reader 502", Some(("person", "501")), "other"),
+        ("", Some(("other", "502")), "other"),
+    ] {
+        let (code, err, log) =
+            install_steps(&dir, "nothing fails", false, &chosen_account(args, sudo));
+        assert_eq!((code, err.as_str()), (0, ""), "{args}: {log}");
+        let granted: Vec<&str> = log.lines().filter(|l| l.contains(" +a ")).collect();
+        assert_eq!(granted.len(), 3, "{args}: {log}");
+        assert!(
+            granted
+                .iter()
+                .all(|l| l.contains(&format!(" +a user:{reader} allow "))),
+            "{args}: {log}"
+        );
+    }
+}
+
+#[test]
+fn a_reader_that_is_not_a_person_s_own_account_is_refused_with_nothing_changed() {
+    // Root, an account macOS runs its own services as (below 500), nobody and its like (above
+    // 2147483647), what is not a uid, and a uid no account has, or whose name names another
+    // uid, are refused with the reason before any step. So is a run without --reader that sudo
+    // did not start, from root, or whose SUDO_USER and SUDO_UID disagree, as before.
+    const NOT_A_PERSON: &str =
+        "install: --reader takes the uid of a person's own account, from 500 to 2147483647";
+    let dir = Dir::new("install-reader-refused");
+    for (args, sudo, code, said) in [
+        ("--reader 0", None, 64, NOT_A_PERSON),
+        ("--reader 499", None, 64, NOT_A_PERSON),
+        ("--reader 2147483648", None, 64, NOT_A_PERSON),
+        ("--reader 4294967294", None, 64, NOT_A_PERSON),
+        ("--reader 99999999999999999999", None, 64, NOT_A_PERSON),
+        ("--reader 0501", None, 64, NOT_A_PERSON),
+        ("--reader -2", None, 64, NOT_A_PERSON),
+        ("--reader person", None, 64, NOT_A_PERSON),
+        ("--reader ''", None, 64, NOT_A_PERSON),
+        (
+            "--reader",
+            None,
+            64,
+            "install: --reader needs the uid of the account that will read the log",
+        ),
+        (
+            "--reader 500",
+            Some(("other", "502")),
+            1,
+            "install: no account on this Mac has the uid 500",
+        ),
+        (
+            "--reader 2147483647",
+            None,
+            1,
+            "install: no account on this Mac has the uid 2147483647",
+        ),
+        (
+            "--reader 503",
+            None,
+            1,
+            "install: the uid 503 and the name person do not name one account",
+        ),
+        ("", None, 1, "install: run it with sudo from the account"),
+        (
+            "",
+            Some(("root", "0")),
+            1,
+            "install: run it with sudo from the account",
+        ),
+        (
+            "",
+            Some(("other", "501")),
+            1,
+            "install: SUDO_USER and SUDO_UID do not name one account",
+        ),
+    ] {
+        let (got, err, log) =
+            install_steps(&dir, "nothing fails", false, &chosen_account(args, sudo));
+        assert_eq!(got, code, "{args}: {err}");
+        assert!(err.starts_with(said), "{args}: {err}");
+        assert!(log.is_empty(), "{args}: {log}");
+    }
+}
+
+#[test]
+fn the_install_leaves_its_removal_script_and_run_from_there_it_removes_everything_itself_included()
+{
+    // Removing the collector needs no checkout: the install copies the removal script into the
+    // collector's folder, root's and not writable by others. Run from there, it deletes that
+    // folder, itself in it, and still finishes and says what it did.
+    let dir = Dir::new("uninstall-in-place");
+    let t = dir.0.join("steps").display().to_string();
+    let (code, err, log) = install_steps(&dir, "nothing fails", false, SOMEONE);
+    assert_eq!((code, err.as_str()), (0, ""), "{log}");
+    assert!(
+        log.contains(&format!(
+            "/usr/bin/install -o root -g wheel -m 755 {t}/here/uninstall {t}/top/event-level/uninstall\n"
+        )),
+        "{log}"
+    );
+    let system = dir.0.join("system");
+    let top = system.join("top");
+    let lib = top.join("event-level");
+    let daemons = system.join("daemons");
+    let calls = system.join("launchctl");
+    std::fs::create_dir_all(lib.join("log")).unwrap();
+    std::fs::create_dir_all(lib.join("run")).unwrap();
+    std::fs::create_dir_all(&daemons).unwrap();
+    std::fs::write(
+        lib.join("log/exec-20260101T000000-20260101T000000.jsonl"),
+        "{}\n",
+    )
+    .unwrap();
+    for label in LABELS {
+        std::fs::copy(
+            Path::new(SCRIPTS).join(format!("{label}.plist")),
+            daemons.join(format!("{label}.plist")),
+        )
+        .unwrap();
+    }
+    let mut script = std::fs::read_to_string(Path::new(SCRIPTS).join("uninstall")).unwrap();
+    for (from, to) in [
+        (format!("LIB='{LIB}'"), format!("LIB='{}'", lib.display())),
+        (
+            "TOP='/Library/Application Support/ai.nuanu.immune'".to_string(),
+            format!("TOP='{}'", top.display()),
+        ),
+        (
+            "DAEMONS=/Library/LaunchDaemons".to_string(),
+            format!("DAEMONS='{}'", daemons.display()),
+        ),
+        ("/bin/launchctl".to_string(), "launchctl_".to_string()),
+        ("/usr/bin/id -u".to_string(), "id_".to_string()),
+        (
+            "export PATH\n".to_string(),
+            format!(
+                "export PATH\nid_() {{ echo 0; }}\nlaunchctl_() {{ echo \"$*\" >>'{}'; }}\n",
+                calls.display()
+            ),
+        ),
+    ] {
+        assert!(script.contains(&from), "{from}");
+        script = script.replace(&from, &to);
+    }
+    std::fs::write(lib.join("uninstall"), script).unwrap();
+    let out = Command::new("/bin/sh")
+        .arg(lib.join("uninstall"))
+        .env_clear()
+        .env("PATH", "/nonexistent")
+        .current_dir(&system)
+        .output()
+        .unwrap();
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success(), "{said}{:?}", out.stderr);
+    assert!(
+        said.ends_with(
+            "Removed. `immune status` says the event level is not installed after its next reading.\n"
+        ),
+        "{said}"
+    );
+    assert!(!top.exists());
+    assert_eq!(std::fs::read_dir(&daemons).unwrap().count(), 0);
+    let calls = std::fs::read_to_string(calls).unwrap();
+    for label in LABELS {
+        assert!(
+            calls.contains(&format!("bootout system/{label}\n")),
+            "{calls}"
+        );
+    }
+}
+
+#[test]
+fn an_install_macos_refuses_full_disk_access_says_it_is_installed_with_one_step_left() {
+    // The refusal is the last step a person takes, not a failed install: the result says the
+    // collector is installed and records nothing until the switch beside eslogger, which macOS
+    // has put in the list, is turned on. It exits 0, as every result does, and says how to
+    // remove the collector.
+    let dir = Dir::new("install-refused");
+    let lib = dir.0.join("lib");
+    let daemons = dir.0.join("daemons");
+    std::fs::create_dir_all(lib.join("log")).unwrap();
+    std::fs::create_dir_all(lib.join("run")).unwrap();
+    std::fs::create_dir_all(&daemons).unwrap();
+    let mark = daemons.join("ai.nuanu.immune.eslogger.plist");
+    std::fs::write(&mark, "").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&mark)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+    std::fs::write(
+        lib.join("log/eslogger.err"),
+        "ERROR: es_new_client: ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED\n",
+    )
+    .unwrap();
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let verdict = &install[install.find("\n# The verdict").unwrap()..];
+    let code = format!(
+        "LIB='{lib}'; LOG='{lib}/log'; RUN='{lib}/run'; DAEMONS='{daemons}'\n{verdict}",
+        lib = lib.display(),
+        daemons = daemons.display(),
+    );
+    let out = Command::new("/bin/sh")
+        .env_clear()
+        .env("PATH", "/nonexistent")
+        .args(["-c", &code])
+        .output()
+        .unwrap();
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    let words = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        words.starts_with(
+            "RESULT: INSTALLED, ONE STEP LEFT. The collector is installed and records nothing until then. In System Settings, open Privacy & Security, then Full Disk Access, and turn on the switch beside eslogger. macOS has already put it in the list, switched off."
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("REFUSED"), "{said}");
+    assert!(
+        said.ends_with(&format!(
+            "To remove the collector and its log: sudo /bin/sh \"{}/uninstall\"\n",
+            lib.display()
+        )),
+        "{said}"
+    );
+}
+
 #[test]
 fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_one_that_fails_before_changes_nothing()
  {
@@ -3753,7 +4025,7 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
         "chmod +a user:someone",
         "find ",
     ] {
-        let (code, err, log) = install_steps(&dir, before, true);
+        let (code, err, log) = install_steps(&dir, before, true, SOMEONE);
         assert_eq!(code, 1, "{before}: {err}");
         assert!(
             err.starts_with("install: this step failed, and the install stopped here: ")
@@ -3796,7 +4068,7 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
         ),
     ] {
         let step = step.replace("$T", &t);
-        let (code, err, log) = install_steps(&dir, &step, running);
+        let (code, err, log) = install_steps(&dir, &step, running, SOMEONE);
         assert_eq!(code, 1, "{step}: {err}");
         assert_eq!(
             err.lines().count(),
@@ -3812,7 +4084,7 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
         assert!(!log.contains("left=["), "{step}: {log}");
     }
     for running in [true, false] {
-        let (code, err, log) = install_steps(&dir, "nothing fails", running);
+        let (code, err, log) = install_steps(&dir, "nothing fails", running, SOMEONE);
         assert_eq!((code, err.as_str()), (0, ""), "{log}");
         assert!(log.ends_with("left=[]\n"), "{log}");
         assert_eq!(log.contains("bootout"), running, "{log}");
@@ -4127,7 +4399,7 @@ fn a_cap_that_is_not_a_whole_number_of_gib_from_one_is_refused_before_anything_i
         assert_eq!((code, out.trim()), (0, given), "{err}");
     }
     let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
-    let main = &install[install.find("# END the log's cap\n").unwrap()..];
+    let main = &install[install.find("# END the arguments\n").unwrap()..];
     let parsed = main
         .find("parse_args \"$@\"")
         .expect("the install reads its arguments");

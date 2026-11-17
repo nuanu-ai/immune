@@ -6,10 +6,19 @@ It needs macOS 15 or later, because it uses `/usr/bin/jq`, and an administrator 
 
 ```sh
 sudo /bin/sh scripts/event-level/install      # or with --log-gib <n>, the log's cap in GiB
-sudo /bin/sh scripts/event-level/uninstall    # removes it, logs included
 ```
 
-Then `/usr/bin/eslogger` needs Full Disk Access, which the user grants in System Settings, Privacy & Security, Full Disk Access. Without it `eslogger` stops at once and nothing is recorded.
+The installer copies the removal script into the collector's folder, so removing the collector, logs included, needs no checkout:
+
+```sh
+sudo /bin/sh "/Library/Application Support/ai.nuanu.immune/event-level/uninstall"
+```
+
+`scripts/event-level/uninstall` in a checkout does the same.
+
+An installer package runs the installer as root, without `sudo`, and names the account that will read the log by its uid: `/bin/sh install --reader <uid>`. The uid is that of a person's own account, from 500 to 2147483647; below 500 are root and the accounts macOS runs its own services as. The installer reads the account's name from the directory service, and with `--reader` it does not read `SUDO_USER` or `SUDO_UID`. Without `--reader`, the account that ran `sudo` reads the log. A uid outside that range, or one that is not a number, is refused with the usage and exit code 64. A uid no account has is refused with exit code 1. Neither refusal changes anything.
+
+Then `/usr/bin/eslogger` needs Full Disk Access. Without it `eslogger` stops at once and nothing is recorded. When macOS refuses it, it adds eslogger to the list in System Settings, Privacy & Security, Full Disk Access, switched off, and the person turns the switch on.
 
 ## What runs as root
 
@@ -23,11 +32,11 @@ Three launch daemons, and nothing else:
 
 Only programs that macOS ships run as root, by absolute path. No compiled code of Immune's runs as root: the root side is a `jq` program and three short shell scripts, and Immune's own reader runs as the user, without rights. A security tool is a target itself, and code of its own running as root would be one more thing an attacker could aim at.
 
-The installer copies the scripts into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. Before it writes anything it checks that `/`, `/Library`, `/Library/Application Support`, `/Library/LaunchDaemons` and its own folder can be changed by no account other than root, and stops if one can. Once it is installed, nothing is executed from a place the user's account can change. The installer itself runs as root whatever the checkout it is in holds, so run it from a checkout you trust. The collector acts on no process, file or connection: it only records.
+The installer copies the scripts, the removal script among them, into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. Before it writes anything it checks that `/`, `/Library`, `/Library/Application Support`, `/Library/LaunchDaemons` and its own folder can be changed by no account other than root, and stops if one can. Once it is installed, nothing is executed from a place the user's account can change. The installer itself runs as root whatever the checkout it is in holds, so run it from a checkout you trust. The collector acts on no process, file or connection: it only records.
 
-The installer is idempotent. Run again, it stops what it started, puts every file back and starts it again, keeping the logs. It makes the folders and the pipe and sets who may read the log before it stops the collector that runs. If a step fails after that, it says what it left: the collector stopped, or partly started, so that nothing is recorded until the installer runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent. It ends with one line: `RESULT: RUNNING`, `RESULT: RUNNING IN PART` (program starts are recorded, and no file event came in the ten seconds it waited), `RESULT: REFUSED` (Full Disk Access is missing) or `RESULT: INSTALLED, NOT RECORDING YET`.
+The installer is idempotent. Run again, it stops what it started, puts every file back and starts it again, keeping the logs. It makes the folders and the pipe and sets who may read the log before it stops the collector that runs. If a step fails after that, it says what it left: the collector stopped, or partly started, so that nothing is recorded until the installer runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent. It ends with one line: `RESULT: RUNNING`, `RESULT: RUNNING IN PART` (program starts are recorded, and no file event came in the ten seconds it waited), `RESULT: INSTALLED, ONE STEP LEFT` (everything is in place and Full Disk Access is missing) or `RESULT: INSTALLED, NOT RECORDING YET`. A last line gives the command that removes the collector.
 
-After `RESULT: RUNNING IN PART`, `immune status` says whether file events are collected once `immune run` has read the log. After `RESULT: REFUSED`, allowing Full Disk Access is enough: the collector starts by itself within seconds. `RESULT: INSTALLED, NOT RECORDING YET` means that nothing was written in ten seconds and `eslogger` printed no refusal; `immune status` gives the level's state after `immune run`.
+After `RESULT: RUNNING IN PART`, `immune status` says whether file events are collected once `immune run` has read the log. After `RESULT: INSTALLED, ONE STEP LEFT`, nothing is recorded until the switch beside eslogger in System Settings, Privacy & Security, Full Disk Access is turned on; macOS has already put it in the list, switched off. The collector then starts by itself within seconds. `RESULT: INSTALLED, NOT RECORDING YET` means that nothing was written in ten seconds and `eslogger` printed no refusal; `immune status` gives the level's state after `immune run`.
 
 ## What is recorded, and what never is
 
@@ -60,7 +69,7 @@ A file event the filter cannot make out, or whose path `eslogger` marks as trunc
 
 ## Who can read the log
 
-The log folder and its files belong to root with mode 700 and 600. An access-control entry lets the account that ran the installer through `sudo` list the folder and read the files, and no other account. The installer refuses to run from a root shell, since it needs that account.
+The log folder and its files belong to root with mode 700 and 600. An access-control entry lets one account list the folder and read the files: the one `--reader` names, or else the one that ran the installer through `sudo`. No other account can. Without `--reader` the installer refuses to run from a root shell, since it needs that account.
 
 The log holds the arguments of every program started on the Mac, by every account, root included, for up to a day, as `eslogger` gave them: a password or a token typed on a command line is in it as it was typed. Nothing on the root side cuts it, since that would put a matcher of secrets to work as root on text an attacker writes. Any program running as the installing account can read the log, as it can read the arguments of running programs with `/bin/ps`. What the log adds is starts too short to see that way, a day of history, and one file that holds it all. The installer does not exclude the log from backups, so a backup of `/Library/Application Support` holds it too. `immune matches`, run as that account, prints the command line of every program start that matched a rule, whoever started it, with the secrets it recognises cut out ([reference.md](reference.md#secrets-in-what-immune-keeps-and-prints)). On a Mac with one person that is the person's own data. On a shared Mac it is other people's too; the installer says before it starts that it records the program starts of every account.
 

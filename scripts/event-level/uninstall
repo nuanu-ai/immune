@@ -1,10 +1,17 @@
 #!/bin/sh
-# Removes everything the event level's install put on this Mac, the logs included:
+# Removes everything the event level's install put on this Mac, the logs included, this script's
+# copy among it:
+#   sudo /bin/sh "/Library/Application Support/ai.nuanu.immune/event-level/uninstall"
+# or, from a checkout:
 #   sudo /bin/sh scripts/event-level/uninstall
 # It stops the three launch daemons, deletes their property lists and the event level's
 # folder, and the folder above it when nothing else is in it. Run again, it finds nothing to
 # remove and says so. It stops with a reason and a non-zero exit when a step fails.
-
+#
+# The copy the install puts in the event level's folder deletes itself. A shell reads a script
+# as it runs it, so the whole body is one block, `{` to `}`, which the shell reads to its end
+# before it runs any of it, and the block ends with `exit`, so nothing after it is ever read.
+{
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
@@ -65,3 +72,5 @@ if [ "$found" -eq 1 ]; then
 else
     echo "Nothing was installed; nothing was removed."
 fi
+exit 0
+}

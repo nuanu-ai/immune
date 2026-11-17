@@ -2,8 +2,12 @@
 # Installs the event level of Immune. The owner runs it once, with his administrator
 # password:
 #   sudo /bin/sh scripts/event-level/install [--log-gib <n>]
-# and removes everything it installs, logs included, with:
-#   sudo /bin/sh scripts/event-level/uninstall
+# or an installer package runs it as root for the person at the Mac's screen, naming that
+# person's account by its uid:
+#   /bin/sh install --reader <uid> [--log-gib <n>]
+# It copies the removal script beside what it installs, and that removes everything it
+# installs, logs included:
+#   sudo /bin/sh "/Library/Application Support/ai.nuanu.immune/event-level/uninstall"
 #
 # Apple's eslogger, run by launchd as root, records every program start on this Mac, and
 # every file created or renamed. Apple's jq keeps of each only what the reader uses, so a
@@ -20,8 +24,9 @@
 # ours is executed from a place the owner's account can change once it is installed. This
 # script itself runs as root what the checkout it is in holds, so it is run from a checkout the
 # owner trusts. It only collects: it acts on no process, file or connection. The log is
-# readable by root and by the account that ran this through sudo, and by no other account: an
-# access-control entry for that one account, narrower than a group.
+# readable by root and by one account, the one --reader names or else the one that ran this
+# through sudo, and by no other account: an access-control entry for that one account, narrower
+# than a group.
 #
 # It is idempotent: run again, it stops what it started before, puts every file back and
 # starts it again, keeping the logs. Run over an earlier installation, it is the upgrade: the
@@ -64,7 +69,7 @@ fail() {
     exit 1
 }
 
-# BEGIN the log's cap
+# BEGIN the arguments
 # The cap of the log is set here and nowhere else: written in bytes into the tidy job's launch
 # daemon, which belongs to root, and read back from there. No file or setting a program
 # running as the user can change sets it: a cap such a program could shrink would let it empty
@@ -75,9 +80,11 @@ fail() {
 GIB=1073741824
 CEILING_GIB=1048576
 usage() {
-    echo "usage: sudo /bin/sh $here/install [--log-gib <n>]"
+    echo "usage: sudo /bin/sh $here/install [--log-gib <n>] [--reader <uid>]"
     echo "  --log-gib <n>  the most the log holds, in whole GiB from 1 to $CEILING_GIB;"
     echo "                 without it, the cap of the collector installed here, or 2 GiB"
+    echo "  --reader <uid> the account that may read the log, by its uid, from $FIRST_UID to"
+    echo "                 $LAST_UID; without it, the account that ran sudo"
 }
 # A number of GiB as --log-gib takes it: digits only, no leading zero, at most the ceiling.
 gib_ok() {
@@ -181,9 +188,23 @@ refuse() {
     usage >&2
     exit 64
 }
-# The arguments: sets `given` to the GiB given, or refuses them with the usage.
+# The uids --reader takes: a person's own account. Below 500 are root and the accounts macOS
+# runs its own services as, which the login window hides; above 2147483647 are nobody (-2) and
+# its like, read as unsigned.
+FIRST_UID=500
+LAST_UID=2147483647
+# A uid as --reader takes it: digits only, no leading zero, from the first to the last.
+uid_ok() {
+    case $1 in
+    '' | *[!0-9]* | 0*) return 1 ;;
+    esac
+    [ "${#1}" -le 10 ] && [ "$1" -ge "$FIRST_UID" ] && [ "$1" -le "$LAST_UID" ]
+}
+# The arguments: sets `given` to the GiB given and `reader` to the uid given, or refuses them
+# with the usage.
 parse_args() {
     given=
+    reader=
     while [ "$#" -gt 0 ]; do
         case $1 in
         --log-gib)
@@ -192,11 +213,17 @@ parse_args() {
             given=$2
             shift 2
             ;;
+        --reader)
+            [ "$#" -ge 2 ] || refuse "--reader needs the uid of the account that will read the log"
+            uid_ok "$2" || refuse "--reader takes the uid of a person's own account, from $FIRST_UID to $LAST_UID, and $2 is not"
+            reader=$2
+            shift 2
+            ;;
         *) refuse "$1 is not an argument this script takes" ;;
         esac
     done
 }
-# END the log's cap
+# END the arguments
 
 # The arguments are refused before anything is looked at or changed.
 parse_args "$@"
@@ -210,16 +237,26 @@ if [ "$(/usr/bin/id -u)" -ne 0 ]; then
     echo "install: it must run as root. Run: sudo /bin/sh '$here/install'" >&2
     exit 1
 fi
-# The account that may read the log: the one that ran sudo.
-user=${SUDO_USER:-}
-uid=${SUDO_UID:-}
-if [ -z "$user" ] || [ -z "$uid" ] || [ "$uid" = 0 ] || [ "$user" = root ]; then
-    fail "run it with sudo from the account that will read the log, not from a root shell: sudo /bin/sh '$here/install'"
+# The account that may read the log: the one --reader names, with its name from the directory
+# service, or else the one that ran sudo. With --reader, SUDO_USER and SUDO_UID are not read:
+# an installer package runs this as root with neither, and its environment decides nothing.
+if [ -n "$reader" ]; then
+    uid=$reader
+    user=$(/usr/bin/id -un "$uid" 2>/dev/null) && [ -n "$user" ] ||
+        fail "no account on this Mac has the uid $uid"
+    [ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
+        fail "the uid $uid and the name $user do not name one account"
+else
+    user=${SUDO_USER:-}
+    uid=${SUDO_UID:-}
+    if [ -z "$user" ] || [ -z "$uid" ] || [ "$uid" = 0 ] || [ "$user" = root ]; then
+        fail "run it with sudo from the account that will read the log, not from a root shell: sudo /bin/sh '$here/install'"
+    fi
+    [ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
+        fail "SUDO_USER and SUDO_UID do not name one account"
 fi
-[ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
-    fail "SUDO_USER and SUDO_UID do not name one account"
 
-for f in $SCRIPTS $HOOK; do
+for f in $SCRIPTS $HOOK uninstall; do
     [ -f "$here/$f" ] || fail "$here/$f is missing"
 done
 for l in $LABELS; do
@@ -274,7 +311,8 @@ cat <<EOF
 This installs the event level, and changes nothing else on this Mac:
   $LIB
       root, 755: collect.sh, filter.jq, tidy.sh (root, 644) and rotated.sh (root, 755);
-      collects, the arguments eslogger is started with (root, 644)
+      collects, the arguments eslogger is started with (root, 644); uninstall, which
+      removes all of this (root, 755)
   $RUN
       root, 700: events.fifo, the pipe from eslogger to the filter (root, 600)
   $LOG
@@ -357,6 +395,8 @@ for f in $SCRIPTS; do
     step /usr/bin/install -o root -g wheel -m 644 "$here/$f" "$LIB/$f"
 done
 step /usr/bin/install -o root -g wheel -m 755 "$here/$HOOK" "$LIB/$HOOK"
+# The removal script, so that removing the collector needs no checkout.
+step /usr/bin/install -o root -g wheel -m 755 "$here/uninstall" "$LIB/uninstall"
 
 for l in $LABELS; do
     step /usr/bin/install -o root -g wheel -m 644 "$here/$l.plist" "$DAEMONS/$l.plist"
@@ -423,12 +463,14 @@ starts_only)
     echo "\`immune status\` says whether file events are collected after \`immune run\`."
     ;;
 refused)
-    echo "RESULT: REFUSED. macOS does not give eslogger Full Disk Access, so nothing is recorded."
-    echo "Grant it to /usr/bin/eslogger in System Settings > Privacy & Security > Full Disk"
-    echo "Access; it starts by itself within seconds, and the panel and \`immune status\` say so."
+    echo "RESULT: INSTALLED, ONE STEP LEFT. The collector is installed and records nothing until then."
+    echo "In System Settings, open Privacy & Security, then Full Disk Access, and turn on the switch"
+    echo "beside eslogger. macOS has already put it in the list, switched off. The collector starts"
+    echo "by itself within seconds, and the panel and \`immune status\` say so."
     ;;
 *)
     echo "RESULT: INSTALLED, NOT RECORDING YET. Nothing was written in ten seconds, and eslogger"
     echo "printed no refusal. \`immune status\` says what the level's state is after \`immune run\`."
     ;;
 esac
+echo "To remove the collector and its log: sudo /bin/sh \"$LIB/uninstall\""
