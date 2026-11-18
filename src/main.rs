@@ -2855,10 +2855,8 @@ type CheckoutWalk = (Option<Vec<checkouts::Checkout>>, Option<&'static str>);
 /// (`checkouts::given`), and a walk of a folder outside the home folder meets the home by its
 /// real path.
 fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Error>> {
-    let home = &args.home;
-    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.clone());
-    let given = (args.checkouts_root.as_ref()).map(|r| checkouts::given(r, home, &real_home));
-    let root = given.as_ref().unwrap_or(home);
+    let start = checkouts::start(args.checkouts_root.as_deref(), &args.home);
+    let root = &start.root;
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let reading = Reading {
         reader: checkouts::READER,
@@ -2885,31 +2883,24 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
         ));
     }
     run.readers += 1;
-    let walk_home = if root.starts_with(home) {
-        home
-    } else {
-        &real_home
-    };
-    let mut walk = checkouts::walk(root, walk_home);
+    let mut walk = checkouts::walk(root, &start.home);
     // A checkout the store holds that the walk did not meet is kept as it was, nothing inside
-    // it read, outside the walk's root, and otherwise as looking again says.
+    // it read, outside the walk's root, and otherwise as looking again says. One the walk met
+    // comes back gone, as one the disk names as a checkout the walk met: it is held already.
     let prefix = format!("checkout:{machine}/");
-    let met: BTreeSet<String> = walk.checkouts.iter().map(|c| c.rel.clone()).collect();
     let (mut kept, mut unknown) = (Vec::new(), Vec::new());
     for rel in store::live_subjects(run.tx, checkouts::READER)?
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
-        .filter(|rel| !met.contains(rel))
     {
-        let path = walk_home.join(&rel);
+        let path = start.home.join(&rel);
         let Ok(under) = path.strip_prefix(root) else {
             kept.push(rel);
             continue;
         };
-        match walk.look_again(under, root, walk_home, &real_home) {
-            checkouts::Again::Found(path) => walk.checkouts.push(checkouts::Checkout { rel, path }),
+        match walk.look_again(under, &start) {
             checkouts::Again::Gone => {}
-            checkouts::Again::Moved => kept.push(rel),
+            checkouts::Again::Kept => kept.push(rel),
             checkouts::Again::NotTold => {
                 unknown.push(rel.clone());
                 kept.push(rel);
@@ -2946,7 +2937,7 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
-    not_looked_into(run, checkouts::READER, &walk.guarded, walk_home)?;
+    not_looked_into(run, checkouts::READER, &walk.guarded, &start.home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
     let failure = unlisted
@@ -3812,7 +3803,8 @@ fn read_watched(
     }
     // A checkout the store holds that is still there in another form, as a link where its
     // folder was: it is not gone, and its hooks are not looked at through the link.
-    for rel in checkouts::moved(run.tx, &machine, &args.home, &rels)? {
+    let start = checkouts::start(args.checkouts_root.as_deref(), &args.home);
+    for rel in checkouts::moved(run.tx, &machine, &start)? {
         let scope = format!("checkout:{machine}/{rel}");
         if !wanted(&scope, watched::HOOK_KIND) {
             continue;

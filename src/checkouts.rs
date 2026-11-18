@@ -20,41 +20,56 @@ pub const ONLY_GIVEN: &str = "only the given folder was walked";
 /// What is said of a checkout the store holds that is still there in another form.
 pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
 
-/// The checkouts the store holds on `machine`, by their paths as ids name them, that are not
-/// among `found` and are still there in another form, as looking again from the home folder
-/// finds (`look`). One outside the home folder is not looked at.
+/// The checkouts the store holds on `machine`, by their paths as ids name them, that are still
+/// there in another form, as looking again from where the walk started finds (`look`). One
+/// outside the walk's root is not looked at. A checkout a reader found is a folder, so it is
+/// never among them.
 pub fn moved(
     conn: &rusqlite::Connection,
     machine: &str,
-    home: &Path,
-    found: &[String],
+    start: &Start,
 ) -> rusqlite::Result<Vec<String>> {
     let prefix = format!("checkout:{machine}/");
     Ok(crate::store::live_subjects(conn, READER)?
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
         .filter(|rel| {
-            let path = home.join(rel);
-            !found.contains(rel)
-                && path
-                    .strip_prefix(home)
-                    .is_ok_and(|under| matches!(look(home, under, home), Some(Again::Moved)))
+            let path = start.home.join(rel);
+            path.strip_prefix(&start.root).is_ok_and(|under| {
+                matches!(look(&start.root, under, &start.home), Some(Again::Kept))
+            })
         })
         .collect())
 }
 
-/// The folder a walk was given, made real, so that no id names a checkout through a link,
-/// `..` or the working folder. The person gave this folder, so following it is asked for.
-/// Inside the home folder made real (`real_home`) it is named under `home` as written, as ids
-/// are. A folder that cannot be made real stays as given, and the walk says it is not a folder.
-pub fn given(root: &Path, home: &Path, real_home: &Path) -> PathBuf {
-    let Ok(real) = std::fs::canonicalize(root) else {
-        return root.to_path_buf();
+/// Where a walk starts, and the home folder as it meets it there.
+pub struct Start {
+    pub root: PathBuf,
+    /// The home folder as written when the walk starts in it, and made real otherwise: ids
+    /// are named relative to it.
+    pub home: PathBuf,
+    /// The home folder made real, as the disk spells it.
+    pub real_home: PathBuf,
+}
+
+/// Where a walk of the folder `given`, or of the home folder, starts. A folder given is made
+/// real, so that no id names a checkout through a link, `..` or the working folder: the
+/// person gave it, so following it is asked for. One that cannot be made real stays as given,
+/// and the walk says it is not a folder.
+pub fn start(given: Option<&Path>, home: &Path) -> Start {
+    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let root = given.map_or_else(
+        || home.to_path_buf(),
+        |g| std::fs::canonicalize(g).unwrap_or_else(|_| g.to_path_buf()),
+    );
+    let home = match root.starts_with(home) {
+        true => home.to_path_buf(),
+        false => real_home.clone(),
     };
-    // The home folder itself comes back with a trailing separator, which a `Path` ignores.
-    match real.strip_prefix(real_home) {
-        Ok(rest) => home.join(rest),
-        Err(_) => real,
+    Start {
+        root,
+        home,
+        real_home,
     }
 }
 
@@ -64,7 +79,7 @@ pub fn given(root: &Path, home: &Path, real_home: &Path) -> PathBuf {
 /// permission for under `home` that the walk was not given. Then, one part at a time, it is
 /// gone where a part is missing or a part above it is no longer a folder, a link included,
 /// since that path is no longer there; something other than a folder at its own place is it
-/// in another form. `None` when every part is a folder.
+/// in another form, kept. `None` when every part is a folder.
 fn look(root: &Path, under: &Path, home: &Path) -> Option<Again> {
     if let Some(g) = guarded::folder_of(&root.join(under), home)
         && !root.starts_with(&g)
@@ -77,7 +92,7 @@ fn look(root: &Path, under: &Path, home: &Path) -> Option<Again> {
         at.push(part);
         match std::fs::symlink_metadata(&at) {
             Ok(m) if m.is_dir() => {}
-            Ok(_) if parts.peek().is_none() => return Some(Again::Moved),
+            Ok(_) if parts.peek().is_none() => return Some(Again::Kept),
             Ok(_) => return Some(Again::Gone),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Again::Gone),
             Err(_) => return Some(Again::NotTold),
@@ -149,36 +164,34 @@ pub struct Walk {
 }
 
 impl Walk {
-    /// A checkout the store holds, at `under` below this walk's `root`, that the walk
-    /// did not meet, with the `home` the walk was given: as looking again finds (`look`), then
-    /// as it is where it was, as an agent's working folder is (`still_there`). A folder there
-    /// that the disk spells otherwise, as a volume that ignores case lets it, and that the walk
-    /// met under the disk's name (named under `real_home`, the home made real) is gone: it is
-    /// held under that name.
-    pub fn look_again(&self, under: &Path, root: &Path, home: &Path, real_home: &Path) -> Again {
-        if let Some(again) = look(root, under, home) {
+    /// Whether a checkout the store holds, at `under` below the walk's root, that the walk did
+    /// not meet is still there: as looking again finds (`look`), then as it is where it was,
+    /// as an agent's working folder is (`still_there`). It is never read from here: one the
+    /// walk does not reach is kept as it was. A folder there that the disk spells otherwise,
+    /// as a volume that ignores case lets it, and that the walk met under the disk's name is
+    /// gone: it is held under that name.
+    pub fn look_again(&self, under: &Path, start: &Start) -> Again {
+        if let Some(again) = look(&start.root, under, &start.home) {
             return again;
         }
-        let path = root.join(under);
+        let path = start.root.join(under);
         match still_there(&path) {
             Some(true) => {}
             Some(false) => return Again::Gone,
             None => return Again::NotTold,
         }
-        match std::fs::canonicalize(&path).map(|real| self::rel(real_home, &real)) {
+        match std::fs::canonicalize(&path).map(|real| rel(&start.real_home, &real)) {
             Ok(named) if self.checkouts.iter().any(|c| c.rel == named) => Again::Gone,
-            _ => Again::Found(path),
+            _ => Again::Kept,
         }
     }
 }
 
 /// What looking again at a known checkout found.
 pub enum Again {
-    /// It is there, at this path, as the walk names the paths it meets.
-    Found(PathBuf),
     Gone,
-    /// Something other than a folder is where it was.
-    Moved,
+    /// It is there, as it was or in another form: kept as it was, nothing in it read.
+    Kept,
     /// The disk could not say.
     NotTold,
     /// It is in this folder macOS asks permission for, which was not entered.
@@ -237,11 +250,10 @@ fn subfolders(dir: &Path, in_home: bool) -> Option<Listed> {
     })
 }
 
-/// Walks `root` to a fixed depth. When the root is the home folder, the home folder itself
-/// is not taken for a checkout: a home folder under git is a store of settings, and taking
-/// it would hide every checkout inside it.
+/// Walks `root` to a fixed depth. The home folder, met from whatever root, is never taken for
+/// a checkout: a home folder under git is a store of settings, and taking it would hide every
+/// checkout inside it. Its own folders that hold media, applications or settings are pruned.
 pub fn walk(root: &Path, home: &Path) -> Walk {
-    let is_home = root == home;
     let mut checkouts = Vec::new();
     let mut unlisted = Vec::new();
     let mut guarded = Vec::new();
@@ -249,7 +261,7 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
     let mut seen = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
-        let top = depth == 0 && is_home;
+        let top = dir == home;
         if !top && std::fs::symlink_metadata(dir.join(".git")).is_ok() {
             checkouts.push(Checkout {
                 rel: rel(home, &dir),
