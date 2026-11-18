@@ -2008,7 +2008,6 @@ fn walk_gap(count: Count, latest: &[Latest], this: Option<&str>) -> Vec<String> 
     covered::in_projects(count)
         .then(|| covered::projects_gap(latest, this))
         .flatten()
-        .map(str::to_string)
         .into_iter()
         .collect()
 }
@@ -2197,7 +2196,8 @@ pub fn this_mac(
     out.push_str("</section>\n");
     also(conn, &mut out)?;
 
-    ways(conn, &mut out, this)?;
+    let gap = covered::ways_gap(&st.coverage, this);
+    ways(conn, &mut out, this, gap.as_deref())?;
 
     out.push_str("<section id=\"projects\">\n<h2>Projects</h2>\n<p class=\"muted\">Folders of code kept with git on this Mac, with how many of their dependencies are known from the files that list them.</p>\n");
     // Folders the walk did not enter: the list is not every project on this Mac.
@@ -2272,8 +2272,9 @@ const HOME_WAYS: &str = "Files and folders in your home folder where a developer
 /// Every known way a project runs code by itself, from the table in `autorun`: the file, what
 /// runs it, whether the tool asks first, whether it is read, and in how many projects here it
 /// is; then, in a section of their own, the places of the home folder, and whether this Mac
-/// holds each. None is left out, present or not.
-fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
+/// holds each. None is left out, present or not. While not every project was looked into
+/// (`gap`, from `covered::ways_gap`), a way no project is known to hold is not counted as none.
+fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&str>) -> Out {
     use crate::autorun::{self, Part, Scope};
     // Which subjects hold a way: checkouts of this Mac by the start of their id, or this Mac
     // itself for the home folder.
@@ -2326,6 +2327,12 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
                 "This version reads {read} of the {known} known {unit}."
             ))
         )?;
+        let gap = gap.filter(|_| !home);
+        if let Some(why) = gap {
+            let said =
+                format!("Not every project was looked at, so these counts may be short: {why}.");
+            coverage_of_list(out, Some(&said), false, "");
+        }
         out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
         view::thead(out, &["File", "What runs it", "Asks first", "Read", column]);
         for (p, way) in autorun::ways().filter(|(p, _)| (p.scope == Scope::Home) == home) {
@@ -2344,7 +2351,10 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
             };
             let here = match p.scope {
                 Scope::NamedBy(_) => "Not looked for".to_string(),
-                Scope::Checkout | Scope::System => grouped(holding(&p.name(), false)?),
+                Scope::Checkout | Scope::System => match holding(&p.name(), false)? {
+                    0 if gap.is_some() => "Not known".to_string(),
+                    n => grouped(n),
+                },
                 Scope::Home if holding(&p.name(), true)? > 0 => "Yes".to_string(),
                 Scope::Home => "No".to_string(),
             };
@@ -3097,7 +3107,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mut page = String::new();
-        ways(&conn, &mut page, None).unwrap();
+        ways(&conn, &mut page, None, None).unwrap();
         let registered: Vec<String> = conn
             .prepare("SELECT name FROM coverage_kind")
             .unwrap()

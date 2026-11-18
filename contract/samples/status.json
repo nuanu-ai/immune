@@ -1198,7 +1198,7 @@
       "holds_on": "every_mac",
       "id": "project-autorun",
       "kind": "ways a project runs code by itself that are not read",
-      "meaning": "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
+      "meaning": "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some. Why: the projects on this Mac were not all found, as the reading of checkouts under the home folder was not full.",
       "scope": "projects",
       "since_at": 1794845558,
       "title": "This version reads 14 of the 41 known ways a project can make code run by itself.",
