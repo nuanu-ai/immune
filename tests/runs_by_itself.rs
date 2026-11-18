@@ -1291,6 +1291,10 @@ fn git_hooks_respect_path_permissions_and_read_regular_targets_with_a_cap() {
         e.found(),
         [pair("watched.git-hook", "~/dev/tree/tools/pre-push")]
     );
+    assert_eq!(
+        e.rows("SELECT completeness, reason FROM coverage WHERE scope = 'file:machine:mac/dev/tree/tools/pre-push' AND kind = 'content of a watched file' ORDER BY id DESC LIMIT 1"),
+        ["none|over the size cap of 8 MiB"]
+    );
 
     put(
         &e.home().join("Documents/hidden/pre-commit"),
