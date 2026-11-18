@@ -4924,11 +4924,12 @@ fn match_dependencies(run: &Run) -> Result<usize, Box<dyn Error>> {
     Ok(opened)
 }
 
-/// One sentence about the vulnerability data for the report line, with what matching found.
+/// One sentence about the vulnerability data for the report line, with what matching found. It
+/// speaks for the projects found: whether those are all of them is the status's to say.
 fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Totals) -> String {
     let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
     let mut matched = format!(
-        "matched against the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock: {} in packages they use",
+        "matched against the package-lock.json, pnpm-lock.yaml and Cargo.lock of the projects found: {} in packages they use",
         things(
             t.records as i64,
             "known vulnerability",

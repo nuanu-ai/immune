@@ -18,6 +18,7 @@ package immune.v1;
 
 import "immune/v1/common.proto";
 import "immune/v1/findings.proto";
+import "immune/v1/known.proto";
 
 // The answer to `immune vulnerabilities`: the "affects" answers, the most severe first.
 message Vulnerabilities {
@@ -143,6 +144,32 @@ message VulnerabilityTotals {
   // and no place not wholly read. With none, nothing was compared, and the text never says that
   // no known vulnerability affects the projects. Since 1.18.0.
   uint64 projects_compared = 19;
+  // Whether every place this version looks for projects in was looked into: while not, every
+  // count here speaks only for the projects found. Absent from an older core, and then read as
+  // not known, never as `all`. Since 1.21.0.
+  ProjectsFound projects_found = 20;
+}
+
+// Whether the projects found are every project in the places this version looks for them in.
+// While not, what is said of the projects as a whole (none, zero, a count) speaks only for the
+// projects found.
+message ProjectsFound {
+  // Every place this version looks for projects in was looked into at the latest check, and no
+  // folder macOS protects was met there and left out. It does not claim every project on this
+  // Mac: what this version does not look in by design, such as hidden folders, is a limit of
+  // the version, named in the reference.
+  bool all = 1;
+  // Why not, in the core's words. Absent when `all`.
+  optional string why = 2;
+  // What kind of gap it is, `unspecified` when `all`: `failed`, a reading that finds projects
+  // failed, or has no reading of this Mac, such as a walk that could not list a folder;
+  // `not_given`, a place the check was not given or does not enter, such as a folder macOS
+  // protects. It is the class the status's own item for the same gap carries. A value the reader
+  // does not know is read as `failed`.
+  Cause cause = 3;
+  // Folders macOS protects that a reading met and left out, as a person names them, such as
+  // `Documents`, or `the disk <name>` with the name the Mac gives. Whole.
+  repeated string folders_text = 4;
 }
 
 // Whether a feed's data is current now.
@@ -207,6 +234,10 @@ message Vulnerability {
   // As in `Vulnerabilities`.
   string declared_note = 10;
   repeated NotComputed not_computed = 11;
+  // As in `VulnerabilityTotals`: while not `all`, the answers speak only for the projects found.
+  // Absent when there is no store, and from an older core, and then read as not known. Since
+  // 1.21.0.
+  ProjectsFound projects_found = 12;
 }
 
 // Whether the data holds a record of an id. `UNSPECIFIED`, or a value the reader does not know,

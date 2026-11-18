@@ -1353,8 +1353,18 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
             .collect();
         let mut matched = String::new();
         if let Some(v) = &s.vulnerabilities {
+            let (found, scope) = crate::covered::Found::of(v.projects_found.as_ref());
+            let of = match found {
+                crate::covered::Found::All => {
+                    "the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock".to_string()
+                }
+                f => format!(
+                    "the package-lock.json, pnpm-lock.yaml and Cargo.lock of {}",
+                    f.projects()
+                ),
+            };
             matched = format!(
-                "; matched against the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock: {} in packages they use",
+                "; matched against {of}: {} in packages they use",
                 count(
                     v.affected_records,
                     "known vulnerability",
@@ -1372,6 +1382,10 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
                 v.projects_not_read,
                 v.projects_without_lockfile,
             ));
+            // The one line of scope, after the count.
+            if let Some(line) = scope {
+                matched.push_str(&format!(". {}", line.trim_end_matches('.')));
+            }
         }
         parts.push(("OSV data", format!("{}{matched}", clauses.join("; "))));
     }

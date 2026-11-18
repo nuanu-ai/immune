@@ -143,8 +143,9 @@ message Catalogue {
   // What a finding the response layer's `suspicious` verdict raises says.
   VerdictWords verdict_rule = 3;
   // Every cause of what is not covered, with its words. In the words `{n}` is the count, `{what}`
-  // what it is, as a list of the catalogue's own words, `{date}` a time, and `{reasons}` why, in
-  // the core's words. A name taken from the Mac is never in them: it is in `examples_text`.
+  // what it is, as a list of the catalogue's own words, `{date}` a time, `{reasons}` why, in the
+  // core's words, and `{projects}` the projects it speaks for, such as `your projects` or `the
+  // projects found` (`ProjectsFound`); `{projects}` since 1.21.0. A name taken from the Mac is never in them: it is in `examples_text`.
   repeated CauseWords not_covered = 4;
   // The levels, from least to worst.
   repeated string severities = 5;

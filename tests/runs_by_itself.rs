@@ -715,7 +715,7 @@ fn no_way_is_said_absent_from_projects_while_the_sessions_that_lead_to_projects_
     mode(&sessions, 0o000);
     e.go(None, &sessions);
     mode(&sessions, 0o755);
-    let why = "the projects on this Mac were not all found, as the reading of checkouts in agent working folders was not full";
+    let why = "the reading of checkouts in agent working folders was not full";
     assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
     assert_eq!(way_here(&e, ".npmrc"), "Not known");
     e.go(None, &sessions);
@@ -739,7 +739,7 @@ fn no_way_is_said_absent_from_projects_while_one_session_file_could_not_be_read(
     mode(&file, 0o000);
     e.go(None, &sessions);
     mode(&file, 0o644);
-    let why = "the projects on this Mac were not all found, as the reading of checkouts in agent working folders was not full";
+    let why = "the reading of checkouts in agent working folders was not full";
     assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
     assert_eq!(way_here(&e, ".envrc"), "Not known");
     e.go(None, &sessions);
@@ -1568,9 +1568,7 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
     e.run_in(&e.home().join("dev"));
     assert_eq!(
         item(&e.status())["meaning"],
-        partial(
-            "the projects on this Mac were not all found, as the reading of checkouts under the home folder was not full"
-        )
+        partial("only the given folder was walked")
     );
     std::fs::create_dir_all(e.home().join("Documents")).unwrap();
     e.full();
