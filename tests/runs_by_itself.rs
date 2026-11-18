@@ -15,6 +15,7 @@ const TASKS_KIND: &str = "editor tasks set to run when a checkout's folder is op
 const PNPM_KIND: &str =
     ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself";
 const OTHERS_KIND: &str = "other ways a checkout runs code by itself";
+const PRESENT_KIND: &str = "ways a checkout runs code by itself, as present in each";
 const LIST_KIND: &str = "indicator list given as a file";
 const UNMATCHED_KIND: &str = "indicators against what this build does not match them with";
 const AUTOSTART_KIND: &str = "launch agents and daemons";
@@ -487,9 +488,285 @@ fn other_ways_a_project_runs_code_by_itself_are_named_where_they_are_present() {
     for c in ["dev/a", "dev/b", "dev/c"] {
         std::fs::remove_dir_all(e.home().join(c)).unwrap();
     }
-    e.run();
+    // Only a walk of the whole home folder finds that projects are gone.
+    e.full();
     assert_eq!(e.coverage(OTHERS_KIND), "full|");
     assert!(e.lacks(OTHERS_KIND).is_empty());
+}
+
+/// What `immune project` answers of a project here: the ways it holds, and the presence reading
+/// and the reading of ways not read, each as completeness, cause and reason.
+fn ways_held(e: &Estate, rel: &str) -> (Vec<String>, [String; 2]) {
+    let known = e.contract(&["project", &format!("checkout:machine:mac/{rel}")]);
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let ways = known["facts"].as_array().unwrap().iter();
+    let ways = ways
+        .filter(|f| f["predicate"] == "holds_autorun_point")
+        .map(|f| text(&f["object_text"]))
+        .collect();
+    let reading = |kind: &str| {
+        let mut all = known["coverage"].as_array().unwrap().iter();
+        let c = all.find(|c| c["kind"] == kind).unwrap();
+        [&c["completeness"], &c["cause"], &c["reason_text"]]
+            .map(text)
+            .join("|")
+    };
+    (ways, [reading(PRESENT_KIND), reading(OTHERS_KIND)])
+}
+
+#[test]
+fn a_project_a_run_did_not_look_into_keeps_the_ways_it_holds_and_the_readings_say_why() {
+    let e = Estate::new("ways-skipped");
+    let shop = e.checkout("dev/shop");
+    e.checkout("work/cli");
+    put(&shop.join(".npmrc"), "ignore-scripts=false\n");
+    e.run();
+    let not_read = "none|no_reader|not read: .npmrc in 1 checkout".to_string();
+    let held = |present: &str| {
+        (
+            vec![".npmrc".to_string()],
+            [present.to_string(), not_read.clone()],
+        )
+    };
+    assert_eq!(ways_held(&e, "dev/shop"), held("full||"));
+    for (root, why) in [
+        (
+            "missing",
+            "failed|the checkout walk could not open its root folder",
+        ),
+        ("work", "not_given|known checkouts were not looked into"),
+    ] {
+        e.run_in(&e.home().join(root));
+        assert_eq!(
+            ways_held(&e, "dev/shop"),
+            held(&format!("partial|{why}")),
+            "{root}"
+        );
+    }
+    let removed = "SELECT subject FROM journal WHERE entry = 'removed'
+                     AND predicate = 'holds_autorun_point'";
+    assert!(e.rows(removed).is_empty());
+    std::fs::remove_file(shop.join(".npmrc")).unwrap();
+    e.run();
+    let whole = || ["full||".to_string(), "full||".to_string()];
+    assert_eq!(ways_held(&e, "dev/shop"), (Vec::new(), whole()));
+    assert_eq!(e.rows(removed), ["checkout:machine:mac/dev/shop"]);
+}
+
+#[test]
+fn ways_not_read_are_not_said_to_be_absent_from_projects_a_run_did_not_look_into() {
+    let e = Estate::new("others-skipped");
+    e.checkout("dev/shop");
+    e.checkout("work/cli");
+    e.run();
+    let whole = || ["full||".to_string(), "full||".to_string()];
+    assert_eq!(ways_held(&e, "dev/shop"), (Vec::new(), whole()));
+    e.run_in(&e.home().join("work"));
+    let skipped = "partial|not_given|known checkouts were not looked into".to_string();
+    assert_eq!(
+        ways_held(&e, "dev/shop"),
+        (Vec::new(), [skipped.clone(), skipped])
+    );
+    // No checkout looked into: the home folder still was, the ways in checkouts were not.
+    e.run_in(&e.home().join("missing"));
+    let why = "failed|the checkout walk could not open its root folder";
+    assert_eq!(
+        ways_held(&e, "dev/shop"),
+        (
+            Vec::new(),
+            [format!("partial|{why}"), format!("none|{why}")]
+        )
+    );
+}
+
+#[test]
+fn a_skipped_project_leaves_the_home_folders_places_whole_and_a_file_not_read_a_failure() {
+    let e = Estate::new("skipped-and-failed");
+    e.checkout("dev/shop");
+    e.checkout("work/cli");
+    e.run();
+    let cause = |kind: &str| {
+        e.rows(&format!(
+            "SELECT completeness, cause FROM coverage WHERE scope = 'machine:mac'
+               AND kind = '{}' ORDER BY id DESC LIMIT 1",
+            kind.replace('\'', "''")
+        ))
+        .concat()
+    };
+    put(&e.home().join("work/cli/.vscode/tasks.json"), "{not json");
+    e.run_in(&e.home().join("work"));
+    assert_eq!(cause(TASKS_KIND), "none|failed");
+    let home = "~/.claude/settings.json, the part that runs by itself";
+    assert_eq!(cause(home), "full|");
+}
+
+#[test]
+fn a_place_in_the_home_folder_is_never_counted_as_a_way_present_in_projects() {
+    let e = Estate::new("home-not-projects");
+    e.checkout("dev/shop");
+    put(&e.home().join(".codex/config.toml"), "model = \"x\"\n");
+    e.full();
+    assert_eq!(e.coverage(OTHERS_KIND), "full|");
+}
+
+/// What the status's item on the ways a project runs code by itself that are not read means.
+fn ways_meaning(e: &Estate) -> String {
+    let status = e.status();
+    let mut items = status["not_covered"].as_array().unwrap().iter();
+    let item = items.find(|u| u["id"] == "project-autorun").unwrap();
+    item["meaning"].as_str().unwrap().to_string()
+}
+
+const NONE_WHOLE: &str = "None of the others is present in your projects now.";
+/// What the status adds, before why, while not every project was looked into.
+const NOT_EVERY: &str =
+    "Not every project was looked at, so the projects not looked at may hold some.";
+const NONE_PART: &str = "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some.";
+
+#[test]
+fn the_status_says_no_way_not_read_is_in_projects_only_when_every_known_project_was_looked_into() {
+    let e = Estate::new("ways-said");
+    e.checkout("dev/shop");
+    let tool = e.home().join(".config/tool");
+    put(&tool.join(".git/HEAD"), "ref: refs/heads/main\n");
+    let sessions = e.0.join("sessions");
+    session(&e, "tool", &tool);
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    // A walk that could not open its root folder, after a whole one.
+    e.run_with(&e.home().join("missing"), &sessions);
+    let why = "the checkout walk could not open its root folder";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    // Sessions that could not be read: the project only they lead to was not looked into.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |m| std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(m));
+    mode(0o000).unwrap();
+    e.go(None, &sessions);
+    mode(0o755).unwrap();
+    let why = "known checkouts were not looked into";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+}
+
+/// The cells of the page's table of ways a project runs code by itself, as file and projects.
+fn ways_here(e: &Estate) -> Vec<(String, String)> {
+    let page = e.this_mac_page();
+    let section = section(&page, "ways-code-runs");
+    let cell = |c: &str| c[c.find('>').unwrap() + 1..c.find("</td>").unwrap()].to_string();
+    let row = |r: &str| {
+        let cells: Vec<String> = r.split("<td").skip(1).map(cell).collect();
+        (cells[0].clone(), cells[4].clone())
+    };
+    section.split("<tr>").skip(2).map(row).collect()
+}
+
+#[test]
+fn the_page_counts_no_project_as_holding_none_of_a_way_when_not_every_project_was_looked_into() {
+    let e = Estate::new("ways-page");
+    put(
+        &e.checkout("dev/shop").join(".npmrc"),
+        "ignore-scripts=false\n",
+    );
+    e.run_in(&e.home().join("missing"));
+    let page = e.this_mac_page();
+    let ways = section(&page, "ways-code-runs");
+    assert!(
+        ways.contains("the checkout walk could not open its root folder"),
+        "{ways}"
+    );
+    assert!(ways_here(&e).iter().all(|(_, n)| n != "0"));
+    // The places of the home folder do not rest on projects.
+    let home = section(&page, "home-code-runs");
+    assert!(!home.contains("Not every project"), "{home}");
+    e.full();
+    let page = e.this_mac_page();
+    assert!(!page.contains("Not every project"), "{page}");
+    let here = ways_here(&e);
+    assert!(here.contains(&(".npmrc".to_string(), "1".to_string())));
+    assert!(here.contains(&("bunfig.toml".to_string(), "0".to_string())));
+}
+
+/// What the page's table says of one way in projects here.
+fn way_here(e: &Estate, file: &str) -> String {
+    let here = ways_here(e).into_iter().find(|(f, _)| f == file);
+    here.unwrap().1
+}
+
+fn mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+const ONE_NOT_READ: &str = "1 of the others are present in your projects and are not read, so a change in them would go unseen.";
+
+#[test]
+fn no_way_is_said_absent_from_projects_while_the_sessions_that_lead_to_projects_could_not_be_read()
+{
+    let e = Estate::new("finder-failed");
+    e.checkout("dev/shop");
+    let tool = e.0.join("elsewhere/tool");
+    put(&tool.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&tool.join(".npmrc"), "ignore-scripts=false\n");
+    let sessions = e.0.join("sessions");
+    session(&e, "tool", &tool);
+    mode(&sessions, 0o000);
+    e.go(None, &sessions);
+    mode(&sessions, 0o755);
+    let why = "the reading of checkouts in agent working folders was not full";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    assert_eq!(way_here(&e, ".npmrc"), "Not known");
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), ONE_NOT_READ);
+    assert_eq!(way_here(&e, ".npmrc"), "1");
+}
+
+#[test]
+fn no_way_is_said_absent_from_projects_while_one_session_file_could_not_be_read() {
+    let e = Estate::new("finder-partial");
+    let shop = e.checkout("dev/shop");
+    let sessions = e.0.join("sessions");
+    session(&e, "shop", &shop);
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    let other = e.0.join("elsewhere/other");
+    put(&other.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&other.join(".envrc"), "use flake\n");
+    session(&e, "other", &other);
+    let file = sessions.join("other/session.jsonl");
+    mode(&file, 0o000);
+    e.go(None, &sessions);
+    mode(&file, 0o644);
+    let why = "the reading of checkouts in agent working folders was not full";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    assert_eq!(way_here(&e, ".envrc"), "Not known");
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), ONE_NOT_READ);
+    assert_eq!(way_here(&e, ".envrc"), "1");
+}
+
+#[test]
+fn a_count_of_ways_not_read_says_there_may_be_more_while_not_every_project_was_looked_into() {
+    let e = Estate::new("maybe-more");
+    put(
+        &e.checkout("dev/shop").join(".npmrc"),
+        "ignore-scripts=false\n",
+    );
+    e.full();
+    put(&e.checkout("dev/new").join("bunfig.toml"), "preload = []\n");
+    e.run_in(&e.home().join("missing"));
+    let why = "the checkout walk could not open its root folder";
+    assert_eq!(
+        ways_meaning(&e),
+        format!("{ONE_NOT_READ} {NOT_EVERY} Why: {why}.")
+    );
+    e.full();
+    assert_eq!(
+        ways_meaning(&e),
+        "2 of the others are present in your projects and are not read, so a change in them would go unseen."
+    );
 }
 
 /// A project's `package.json` with these scripts.
@@ -1491,7 +1768,7 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
         package(&c, "");
     }
     put(&e.checkout("dev/c").join("bunfig.toml"), "preload = []\n");
-    e.run();
+    e.full();
     let page = e.this_mac_page();
     let start = page.find("<section id=\"ways-code-runs\">").unwrap();
     let section = &page[start..start + page[start..].find("</section>").unwrap()];
@@ -1571,13 +1848,19 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
         "None of the others is present in your projects now."
     );
     // A walk of a given folder, or one that left out a folder macOS protects, says what it
-    // looked at and that the rest was not.
-    let partial = "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.";
+    // looked at, that the rest was not, and why.
+    let partial = |why: &str| format!("{NONE_PART} Why: {why}.");
     e.run_in(&e.home().join("dev"));
-    assert_eq!(item(&e.status())["meaning"], partial);
+    assert_eq!(
+        item(&e.status())["meaning"],
+        partial("only the given folder was walked")
+    );
     std::fs::create_dir_all(e.home().join("Documents")).unwrap();
     e.full();
-    assert_eq!(item(&e.status())["meaning"], partial);
+    assert_eq!(
+        item(&e.status())["meaning"],
+        partial("projects inside folders macOS protects were not looked into")
+    );
 }
 
 /// The kinds the summary's table of what is watched says none of: each row whose state is
@@ -4814,11 +5097,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "removed 4; ",
                 // Cloned again at the same path: new.
                 both,
-                // A project that cannot be listed is not found, and what was read in it is kept.
-                "removed 1; ",
-                "added 1; ",
-                "removed 1; ",
-                "removed 3; ",
+                // A project that cannot be listed is not found, and what was read in it is kept,
+                // the ways it holds among it.
+                "; ",
+                "; ",
+                "; ",
+                "removed 4; ",
                 both,
             ]),
         ),

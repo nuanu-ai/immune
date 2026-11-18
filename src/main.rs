@@ -2445,7 +2445,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
             things(set_aside as i64, "fact", "facts")
         ));
     }
-    read_other_autoruns(&mut run, &args.home, &found)?;
+    read_other_autoruns(&mut run, &args.home, &found, walk_failure)?;
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
@@ -3597,6 +3597,15 @@ impl Visited {
         })
     }
 
+    /// Why a reading over this machine's checkouts is not whole, with its cause: the walk that
+    /// finds them failed, or checkouts the store holds were not looked into.
+    fn missed<'a>(&self, walk_failure: Option<&'a str>) -> Option<(&'a str, Cause)> {
+        let omitted = !self.held.is_subset(&self.looked);
+        walk_failure
+            .map(|why| (why, Cause::Failed))
+            .or(omitted.then_some(("known checkouts were not looked into", Cause::NotGiven)))
+    }
+
     /// Whether a file, by its path as ids name it, is in a checkout the reading did not look
     /// into: the deepest checkout whose folder holds it.
     fn unvisited(&self, path: &str) -> bool {
@@ -3612,12 +3621,12 @@ impl Visited {
     }
 }
 
-/// The entries a reading holds live about files whose paths, as ids name them, `keep` says
-/// were not read now: the statements to make again, with what they rested on.
+/// The entries a reading holds live about what `keep`, given the subject and the file's path
+/// as ids name it, says was not read now: the statements to make again, with what they rested on.
 fn kept(
     tx: &rusqlite::Transaction,
     r: &Reading,
-    keep: impl Fn(Option<&Unit>) -> bool,
+    keep: impl Fn(&str, Option<&Unit>) -> bool,
 ) -> rusqlite::Result<Vec<Statement>> {
     let mut kept = Vec::new();
     let mut stmt = tx.prepare(
@@ -3640,6 +3649,7 @@ fn kept(
         let predicate = match predicate.as_str() {
             "watched_as" => "watched_as",
             "located_on" => "located_on",
+            autorun::HOLDS => autorun::HOLDS,
             _ => continue,
         };
         // Every entry a reading of this format holds was recorded with its unit, in the
@@ -3648,7 +3658,7 @@ fn kept(
             path,
             part: part.unwrap_or_default(),
         });
-        if keep(unit.as_ref()) {
+        if keep(&subject, unit.as_ref()) {
             kept.push(Statement {
                 subject,
                 predicate,
@@ -3850,7 +3860,7 @@ fn read_watched(
                         checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
                         &args.home,
                     ),
-                    kept(run.tx, &reading, |unit| match unit {
+                    kept(run.tx, &reading, |_, unit| match unit {
                         Some(unit) => visited.unvisited(&unit.path),
                         None => omitted,
                     })?,
@@ -3858,18 +3868,14 @@ fn read_watched(
                 )
             }
         };
-        let walk_failure = walk_failure.filter(|_| point.scope == autorun::Scope::Checkout);
-        let omitted = omitted && point.scope == autorun::Scope::Checkout;
-        let missed = walk_failure.or(omitted.then_some("known checkouts were not looked into"));
-        let (completeness, reason) = looked.coverage(point, missed);
-        let cause = (completeness != "full").then(|| {
-            if walk_failure.is_some() || !looked.look.failed().is_empty() {
-                Cause::Failed
-            } else if omitted {
-                Cause::NotGiven
-            } else {
-                looked.look.cause()
-            }
+        let missed = visited
+            .missed(walk_failure)
+            .filter(|_| point.scope == autorun::Scope::Checkout);
+        let (completeness, reason) = looked.coverage(point, missed.map(|(why, _)| why));
+        let cause = (completeness != "full").then(|| match missed {
+            _ if !looked.look.failed().is_empty() => Cause::Failed,
+            Some((_, cause)) => cause,
+            None => looked.look.cause(),
         });
         placed.push(Placed {
             scope: machine.clone(),
@@ -4020,7 +4026,7 @@ fn read_watched(
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        statements.extend(kept(tx, &reading, |unit| {
+        statements.extend(kept(tx, &reading, |_, unit| {
             p.elsewhere.is_some() || unresolved_hooks || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
@@ -4551,15 +4557,16 @@ fn read_managers(run: &mut Run, args: &Args) -> rusqlite::Result<Vec<PathBuf>> {
 /// Which known ways a project runs code by itself each checkout holds, and which places of
 /// the home folder this machine holds, read here or not, as one reading of this machine; and
 /// apart, as before, the ways present that this build does not read, each with how many
-/// checkouts hold it, and the places of the home folder. With none present each of those is
-/// read in full.
+/// checkouts hold it, and the places of the home folder. What is held about a checkout the run
+/// did not look into is kept, and a reading over checkouts is full only when every checkout
+/// the store holds was looked into and the walk did not fail.
 fn read_other_autoruns(
     run: &mut Run,
     home: &Path,
     found: &[checkouts::Checkout],
+    walk_failure: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let (run_id, machine, at) = (run.run_id.to_string(), run.machine.to_string(), run.at);
-    let mut present: BTreeMap<String, usize> = BTreeMap::new();
     let mut statements = Vec::new();
     for c in found {
         let checkout = format!("checkout:{machine}/{}", c.rel);
@@ -4570,9 +4577,6 @@ fn read_other_autoruns(
                 object: point.name(),
                 source_ref: c.rel.clone(),
             });
-            if !point.read() {
-                *present.entry(point.name()).or_default() += 1;
-            }
         }
     }
     let mut in_home = Vec::new();
@@ -4604,12 +4608,24 @@ fn read_other_autoruns(
         present_kind.kind,
         present_kind.run_id,
     )?;
+    // What is held about a checkout this run did not look into is made again as it was, so
+    // the rest is compared whole, and the reading says why it is not.
+    let visited = Visited::of(run.tx, &machine, found)?;
+    let prefix = format!("checkout:{machine}/");
+    statements.extend(kept(run.tx, &present_kind, |subject, _| {
+        subject
+            .strip_prefix(&prefix)
+            .is_some_and(|rel| visited.held.contains(rel) && !visited.looked.contains(rel))
+    })?);
+    let missed = visited.missed(walk_failure);
+    let gap = Gap::when(missed.map(|(_, cause)| cause));
     let with_basis: Vec<(&str, &Statement)> =
         statements.iter().map(|s| (watched::BASIS, s)).collect();
+    // The home folder is read whatever was missed, so the reading is never none.
     let applied = Applied {
-        completeness: "full",
-        reason: None,
-        gap: &Gap::default(),
+        completeness: if missed.is_some() { "partial" } else { "full" },
+        reason: missed.map(|(why, _)| why),
+        gap: &gap,
         compared: "full",
     };
     // The ways a checkout found in this run holds are judged as finding it was.
@@ -4623,8 +4639,22 @@ fn read_other_autoruns(
         }
         Ok(baseline::found_as(tx, run_id.as_str(), &e.subject)?.unwrap_or(Verdict::Change))
     })?;
+    // The ways not read that checkouts hold, those kept as they were among them.
+    let mut present: BTreeMap<String, usize> = BTreeMap::new();
+    for s in statements.iter().filter(|s| s.subject.starts_with(&prefix)) {
+        let way = autorun::ways().find(|(p, _)| p.name() == s.object);
+        if way.is_some_and(|(p, _)| !p.read()) {
+            *present.entry(s.object.clone()).or_default() += 1;
+        }
+    }
     let (completeness, reason, gap) = if present.is_empty() {
-        ("full", None, Gap::default())
+        match missed {
+            Some((why, cause)) if found.is_empty() => {
+                ("none", Some(why.to_string()), Gap::of(cause))
+            }
+            Some((why, cause)) => ("partial", Some(why.to_string()), Gap::of(cause)),
+            None => ("full", None, Gap::default()),
+        }
     } else {
         let named: Vec<String> = present
             .iter()
@@ -4987,11 +5017,12 @@ fn match_dependencies(run: &Run) -> Result<usize, Box<dyn Error>> {
     Ok(opened)
 }
 
-/// One sentence about the vulnerability data for the report line, with what matching found.
+/// One sentence about the vulnerability data for the report line, with what matching found. It
+/// speaks for the projects found: whether those are all of them is the status's to say.
 fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Totals) -> String {
     let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
     let mut matched = format!(
-        "matched against the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock: {} in packages they use",
+        "matched against the package-lock.json, pnpm-lock.yaml and Cargo.lock of the projects found: {} in packages they use",
         things(
             t.records as i64,
             "known vulnerability",

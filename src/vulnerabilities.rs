@@ -1478,7 +1478,17 @@ fn totals_of(conn: &Connection, now: i64, t: &Totals) -> rusqlite::Result<v1::Vu
         projects_not_read: n(project_counts(&t.unread_places).1),
         projects_without_lockfile: n(project_counts(&t.unread_places).0),
         projects_compared: n(t.projects_compared),
+        projects_found: Some(projects_found(conn)?),
     })
+}
+
+/// Whether every project on this Mac was found (`covered::projects_found`): every answer here
+/// that speaks of the projects as a whole, in the totals, for one id and on the page, speaks
+/// only for the projects found while not.
+pub fn projects_found(conn: &Connection) -> rusqlite::Result<v1::ProjectsFound> {
+    let latest = crate::view::latest_coverage(conn)?;
+    let this = crate::covered::this_machine(conn)?;
+    Ok(crate::covered::projects_found(&latest, this.as_deref()))
 }
 
 /// Why the totals and the "affects" answers are absent from a store that has them not.
@@ -1858,6 +1868,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         return Ok(out);
     };
     out.store_id = Some(crate::store::id(conn)?);
+    out.projects_found = Some(projects_found(conn)?);
     let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
     let place_of = |c: &str| whole(&crate::findings::place(c, this.as_ref()));
     let records = held_records(conn, id)?;
@@ -1987,7 +1998,8 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
             out.answers.sort_by(|a, b| {
                 (&a.project_text, &a.ecosystem).cmp(&(&b.project_text, &b.ecosystem))
             });
-            out.said = Some(no_record_said(&out.answers));
+            let found = crate::covered::Found::of(out.projects_found.as_ref()).0;
+            out.said = Some(no_record_said(&out.answers, found));
         } else {
             out.data = Some(v1::RecordData::UnknownId as i32);
             out.said = Some("The data held here has no record with this id or alias, so nothing can be said about it; this is not an answer that it does not affect you.".to_string());
@@ -2144,7 +2156,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
 /// per project and ecosystem. The projects for which it cannot be told come first, each counted
 /// once with its reasons, so that the sentence is never calmer than any answer under it; with no
 /// answer at all, nothing was compared, and that cannot be told either.
-fn no_record_said(answers: &[v1::PlaceAnswer]) -> String {
+fn no_record_said(answers: &[v1::PlaceAnswer], found: crate::covered::Found) -> String {
     const HELD: &str = "The catalogue of exploited vulnerabilities holds this id, and no record of the npm or crates.io data names it";
     const NOT_EVERY: &str =
         "The data does not claim to name every vulnerability a package may hold.";
@@ -2164,9 +2176,11 @@ fn no_record_said(answers: &[v1::PlaceAnswer]) -> String {
             .insert(a.reason.as_deref().unwrap_or_default());
     }
     if unknown.is_empty() {
-        return format!(
-            "{HELD}: it does not affect any project's lockfiles, with no signs. {NOT_EVERY}"
-        );
+        let of = match found {
+            crate::covered::Found::All => "any project's lockfiles".to_string(),
+            f => format!("the lockfiles of any of {}", f.projects()),
+        };
+        return format!("{HELD}: it does not affect {of}, with no signs. {NOT_EVERY}");
     }
     let projects_said = |n: usize| crate::things(n as i64, "project", "projects");
     // A place's answer is derived from its lockfiles and its data: these are its only reasons.
