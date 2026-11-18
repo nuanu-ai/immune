@@ -4170,7 +4170,10 @@ fn read_watched(
                         }
                     };
                     rows.push(vec!["new".to_string(), p.watched_as.to_string(), path, why]);
-                    new.insert(e.subject);
+                    // A hook watched elsewhere keeps its content compared: it is not new here.
+                    if !elsewhere {
+                        new.insert(e.subject);
+                    }
                 }
                 (_, "removed", "watched_as") => {
                     if watched::hook_departure(&p.kind, &e) {

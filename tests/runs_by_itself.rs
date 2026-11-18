@@ -2208,6 +2208,35 @@ fn a_hook_another_checkout_watched_as_a_hook_before_this_run_is_not_new_where_a_
 }
 
 #[test]
+fn a_hook_that_changed_is_raised_even_where_another_checkout_starts_using_its_folder_in_the_same_run()
+ {
+    // `dev/a` is compared before `dev/z`, which owns the folder, in a full run; `dev/y` is the
+    // only checkout of a run pointed at it.
+    for (owner, taker, pointed) in [("dev/z", "dev/a", false), ("dev/x", "dev/y", true)] {
+        let e = Estate::new("hooks-changed-elsewhere");
+        let shared = e.home().join(".shared");
+        let config = format!("[core]\n hooksPath = {}\n", shared.display());
+        put(&shared.join("pre-commit"), "# v1\n");
+        put(&e.checkout(owner).join(".git/config"), &config);
+        let taker = e.checkout(taker);
+        e.full();
+        e.full();
+        put(&shared.join("pre-commit"), "# v2\n");
+        put(&taker.join(".git/config"), &config);
+        if pointed {
+            e.run_in(&taker);
+        } else {
+            e.full();
+        }
+        assert_eq!(
+            e.found(),
+            [pair("watched.git-hook", "~/.shared/pre-commit")],
+            "{owner} {pointed}"
+        );
+    }
+}
+
+#[test]
 fn a_hook_outside_a_new_clone_in_the_folder_its_configuration_names_is_new() {
     let e = Estate::new("hooks-new-clone");
     e.checkout("dev/a");
