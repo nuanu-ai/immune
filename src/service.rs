@@ -87,8 +87,8 @@ const RECOVER: &str = "; the core job may be stopped. The store was kept. The co
 const LABEL_QUOTED: usize = 200;
 /// The menu-bar app's bundle identifier, the `CFBundleIdentifier` of its `Info.plist`, which is
 /// kept with the app and not read from here: a change there must be made here too. The job names
-/// it in `AssociatedBundleIdentifiers`, so that Login Items shows the job under the app when the
-/// app is installed.
+/// in `AssociatedBundleIdentifiers` the app the core is shipped in, so that Login Items shows the
+/// job under that app (`app_bundle_id`), and this app when the core is in no app's bundle.
 pub const APP_BUNDLE_ID: &str = "ai.nuanu.immune";
 /// How long install waits after launchd loaded the job for a watcher to watch the store live, and
 /// how often it looks meanwhile. launchd starts a loaded job at once, and a watcher's first reading
@@ -516,8 +516,41 @@ fn stage_folder(dir: &Path) -> io::Result<PathBuf> {
     }
 }
 
-/// Writes the job's property list at `path` with plutil, key by key, and lints it.
-fn write_plist(path: &Path, program: &Path, home: &Path) -> Result<(), String> {
+/// The bundle identifier of the app the core at `exe` is shipped in: the outermost folder on the
+/// path whose name ends in `.app` and that the path goes on into through `Contents`, the app a
+/// person sees in Applications. Its `Info.plist` was written by someone else, so its
+/// `CFBundleIdentifier` is taken only when it is `usable_id`, and then reaches plutil only as the
+/// one argument after `-string`. Any other case is `APP_BUNDLE_ID`, never a failure. The installed
+/// copy cannot tell which app it came from, so `on` run from it keeps the app the property list in
+/// place names, when that is `usable_id`, and asks this only when it is not.
+fn app_bundle_id(exe: &Path) -> String {
+    let app = exe
+        .ancestors()
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.as_bytes().ends_with(b".app"))
+                && exe
+                    .strip_prefix(p)
+                    .is_ok_and(|rest| rest.starts_with("Contents"))
+        })
+        .last();
+    app.and_then(|app| plist_string(&app.join("Contents/Info.plist"), "CFBundleIdentifier").ok())
+        .filter(|id| usable_id(id))
+        .unwrap_or_else(|| APP_BUNDLE_ID.to_string())
+}
+
+/// Whether text read from a property list someone else may have written can be named as a bundle
+/// identifier: 1 to 155 bytes, each an ASCII letter, a digit, `.` or `-`.
+fn usable_id(id: &str) -> bool {
+    (1..=155).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+}
+
+/// Writes the job's property list at `path` with plutil, key by key, and lints it. `app` is the
+/// bundle identifier Login Items shows the job under (`app_bundle_id`).
+fn write_plist(path: &Path, program: &Path, home: &Path, app: &str) -> Result<(), String> {
     let text = |p: &Path| {
         p.to_str()
             .map(str::to_string)
@@ -538,12 +571,7 @@ fn write_plist(path: &Path, program: &Path, home: &Path) -> Result<(), String> {
         &["-insert", "KeepAlive", "-bool", "YES"],
         &["-insert", "ThrottleInterval", "-integer", "30"],
         &["-insert", "AssociatedBundleIdentifiers", "-array"],
-        &[
-            "-insert",
-            "AssociatedBundleIdentifiers.0",
-            "-string",
-            APP_BUNDLE_ID,
-        ],
+        &["-insert", "AssociatedBundleIdentifiers.0", "-string", app],
         &["-lint", "-s"],
     ];
     for step in steps {
@@ -816,7 +844,13 @@ fn on(
         stage_folder(&places.folder).map_err(|e| not_staged(&places.folder, e.to_string()))?;
     staged.folder = Some(folder.clone());
     let new_plist = folder.join(format!("{LABEL}.plist"));
-    write_plist(&new_plist, &runs, &places.home).map_err(|e| not_staged(&new_plist, e))?;
+    // The installed copy keeps the app the job names (`app_bundle_id`).
+    let kept = same
+        .then(|| plist_string(&places.plist, "AssociatedBundleIdentifiers.0").ok())
+        .flatten()
+        .filter(|id| usable_id(id));
+    let app = kept.unwrap_or_else(|| app_bundle_id(&exe));
+    write_plist(&new_plist, &runs, &places.home, &app).map_err(|e| not_staged(&new_plist, e))?;
     if !same && !in_place {
         match DirBuilder::new().mode(0o700).create(&places.bin) {
             Ok(()) => {}
