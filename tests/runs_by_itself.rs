@@ -15,6 +15,7 @@ const TASKS_KIND: &str = "editor tasks set to run when a checkout's folder is op
 const PNPM_KIND: &str =
     ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself";
 const OTHERS_KIND: &str = "other ways a checkout runs code by itself";
+const PRESENT_KIND: &str = "ways a checkout runs code by itself, as present in each";
 const LIST_KIND: &str = "indicator list given as a file";
 const UNMATCHED_KIND: &str = "indicators against what this build does not match them with";
 const AUTOSTART_KIND: &str = "launch agents and daemons";
@@ -487,9 +488,116 @@ fn other_ways_a_project_runs_code_by_itself_are_named_where_they_are_present() {
     for c in ["dev/a", "dev/b", "dev/c"] {
         std::fs::remove_dir_all(e.home().join(c)).unwrap();
     }
-    e.run();
+    // Only a walk of the whole home folder finds that projects are gone.
+    e.full();
     assert_eq!(e.coverage(OTHERS_KIND), "full|");
     assert!(e.lacks(OTHERS_KIND).is_empty());
+}
+
+/// What `immune project` answers of a project here: the ways it holds, and the presence reading
+/// and the reading of ways not read, each as completeness, cause and reason.
+fn ways_held(e: &Estate, rel: &str) -> (Vec<String>, [String; 2]) {
+    let known = e.contract(&["project", &format!("checkout:machine:mac/{rel}")]);
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let ways = known["facts"].as_array().unwrap().iter();
+    let ways = ways
+        .filter(|f| f["predicate"] == "holds_autorun_point")
+        .map(|f| text(&f["object_text"]))
+        .collect();
+    let reading = |kind: &str| {
+        let mut all = known["coverage"].as_array().unwrap().iter();
+        let c = all.find(|c| c["kind"] == kind).unwrap();
+        [&c["completeness"], &c["cause"], &c["reason_text"]]
+            .map(text)
+            .join("|")
+    };
+    (ways, [reading(PRESENT_KIND), reading(OTHERS_KIND)])
+}
+
+#[test]
+fn a_project_a_run_did_not_look_into_keeps_the_ways_it_holds_and_the_readings_say_why() {
+    let e = Estate::new("ways-skipped");
+    let shop = e.checkout("dev/shop");
+    e.checkout("work/cli");
+    put(&shop.join(".npmrc"), "ignore-scripts=false\n");
+    e.run();
+    let not_read = "none|no_reader|not read: .npmrc in 1 checkout".to_string();
+    let held = |present: &str| {
+        (
+            vec![".npmrc".to_string()],
+            [present.to_string(), not_read.clone()],
+        )
+    };
+    assert_eq!(ways_held(&e, "dev/shop"), held("full||"));
+    for (root, why) in [
+        (
+            "missing",
+            "failed|the checkout walk could not open its root folder",
+        ),
+        ("work", "not_given|known checkouts were not looked into"),
+    ] {
+        e.run_in(&e.home().join(root));
+        assert_eq!(
+            ways_held(&e, "dev/shop"),
+            held(&format!("partial|{why}")),
+            "{root}"
+        );
+    }
+    let removed = "SELECT subject FROM journal WHERE entry = 'removed'
+                     AND predicate = 'holds_autorun_point'";
+    assert!(e.rows(removed).is_empty());
+    std::fs::remove_file(shop.join(".npmrc")).unwrap();
+    e.run();
+    let whole = || ["full||".to_string(), "full||".to_string()];
+    assert_eq!(ways_held(&e, "dev/shop"), (Vec::new(), whole()));
+    assert_eq!(e.rows(removed), ["checkout:machine:mac/dev/shop"]);
+}
+
+#[test]
+fn ways_not_read_are_not_said_to_be_absent_from_projects_a_run_did_not_look_into() {
+    let e = Estate::new("others-skipped");
+    e.checkout("dev/shop");
+    e.checkout("work/cli");
+    e.run();
+    let whole = || ["full||".to_string(), "full||".to_string()];
+    assert_eq!(ways_held(&e, "dev/shop"), (Vec::new(), whole()));
+    e.run_in(&e.home().join("work"));
+    let skipped = "partial|not_given|known checkouts were not looked into".to_string();
+    assert_eq!(
+        ways_held(&e, "dev/shop"),
+        (Vec::new(), [skipped.clone(), skipped])
+    );
+    // No checkout looked into: the home folder still was, the ways in checkouts were not.
+    e.run_in(&e.home().join("missing"));
+    let why = "failed|the checkout walk could not open its root folder";
+    assert_eq!(
+        ways_held(&e, "dev/shop"),
+        (
+            Vec::new(),
+            [format!("partial|{why}"), format!("none|{why}")]
+        )
+    );
+}
+
+#[test]
+fn a_skipped_project_leaves_the_home_folders_places_whole_and_a_file_not_read_a_failure() {
+    let e = Estate::new("skipped-and-failed");
+    e.checkout("dev/shop");
+    e.checkout("work/cli");
+    e.run();
+    let cause = |kind: &str| {
+        e.rows(&format!(
+            "SELECT completeness, cause FROM coverage WHERE scope = 'machine:mac'
+               AND kind = '{}' ORDER BY id DESC LIMIT 1",
+            kind.replace('\'', "''")
+        ))
+        .concat()
+    };
+    put(&e.home().join("work/cli/.vscode/tasks.json"), "{not json");
+    e.run_in(&e.home().join("work"));
+    assert_eq!(cause(TASKS_KIND), "none|failed");
+    let home = "~/.claude/settings.json, the part that runs by itself";
+    assert_eq!(cause(home), "full|");
 }
 
 /// A project's `package.json` with these scripts.
@@ -4529,11 +4637,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "removed 4; ",
                 // Cloned again at the same path: new.
                 both,
-                // A project that cannot be listed is not found, and what was read in it is kept.
-                "removed 1; ",
-                "added 1; ",
-                "removed 1; ",
-                "removed 3; ",
+                // A project that cannot be listed is not found, and what was read in it is kept,
+                // the ways it holds among it.
+                "; ",
+                "; ",
+                "; ",
+                "removed 4; ",
                 both,
             ]),
         ),
