@@ -1,0 +1,75 @@
+check	atomic_guid	status	stage	window	program_starts	file_events	unreadable_lines	unreadable_file_events	lost	unknown_losses	file_events_lost	window_matches
+Immune-editor-autostart		executed	primary	read	18	75	0	0	0	0	0	none
+Immune-app-integrity		executed	primary	read	12	38	0	0	0	0	0	none
+T1569.001#1	6fb61988-724e-4755-a595-07743749d4e2	executed	primary	read	15	27	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1
+T1543.001#1	a5983dee-bf6c-4eaf-951c-dbc1a7b90900	executed	primary	read	15	28	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1543.001#3	66774fa8-c562-4bae-a58d-5264a0dd9dd7	executed	primary	read	16	23	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1543.004#1	03ab8df5-3a6b-4417-b6bd-bb7a5cfd74cf	executed	primary	read	40	44	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1
+T1037.005#1	134627c3-75db-410e-bff8-7a920075f198	executed	primary	read	16	8	0	0	0	0	0	sigma:dfe8b941-4e54-4242-b674-6b613d521962/low/1
+T1037.005#2	fc369906-90c7-4a15-86fd-d37da624dde6	executed	retry	read	30	133	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1 sigma:dfe8b941-4e54-4242-b674-6b613d521962/low/1
+T1037.005#3	10cf5bec-49dd-4ebf-8077-8f47e420096f	executed	retry	read	26	27	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1037.004#1	97a48daa-8bca-4bc0-b1a9-c1d163e762de	failed	primary	read	61	270	0	0	0	0	0	sigma:6ff08e55-ea53-4f27-94a1-eff92e6d9d5c/medium/3 sigma:b6e2a2e3-2d30-43b1-a4ea-071e36595690/low/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1037.002#1	f047c7de-a2d9-406e-a62b-12a09d9516f4	executed	primary	read	13	14	0	0	0	0	0	elastic:5d0265bf-dea9-41a9-92ad-48a8dcd05080/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/4
+T1547.007#1	5fefd767-ef54-4ac6-84d3-751ab85e8aba	executed	primary	read	6	3	0	0	0	0	0	sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1547.007#2	5f5b71da-e03f-42e7-ac98-d63f9e0465cb	executed	primary	read	12	8	0	0	0	0	0	elastic:5d0265bf-dea9-41a9-92ad-48a8dcd05080/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/4
+T1547.007#3	766b6c3c-9353-4033-8b7e-38b309fa3a93	executed	primary	read	7	6	0	0	0	0	0	sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1546.004#2	0a898315-4cfa-4007-bafe-33a4646d115f	executed	primary	read	18	23	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1
+T1098.004#1	342cc723-127c-4d3a-8292-9c0c6b4ecadc	executed	primary	read	5	13	0	0	0	0	0	none
+T1053.003#1	435057fb-74b1-410e-9403-d81baf194f75	failed	retry	read	35	235	0	0	0	0	0	sigma:089dbdf6-b960-4bcc-90e3-ffc3480c20f6/informational/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1543.001#2	11979f23-9b9d-482a-9935-6fc9cd022c3e	unavailable	primary	read	1	2	0	0	0	0	0	none
+T1546.014#1	23c9c127-322b-4c75-95ca-eff464906114	unavailable	primary	read	1	2	0	0	0	0	0	none
+T1078.001#3	0315bdff-4178-47e9-81e4-f31a6d23f7e4	executed	primary	read	30	148	0	0	0	0	0	sigma:089dbdf6-b960-4bcc-90e3-ffc3480c20f6/informational/1 sigma:d7329412-13bd-44ba-a072-3387f804a106/low/1
+T1078.003#2	f1275566-1c26-4b66-83e3-7f9f7f964daa	executed	primary	read	21	24	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:5d0fdb62-f225-42fb-8402-3dfe64da468a/medium/1 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1078.003#3	191db57d-091a-47d5-99f3-97fde53de505	executed	primary	read	16	57	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/1
+T1078.003#5	433842ba-e796-4fd5-a14f-95d3a1970875	executed	primary	read	23	17	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:5d0fdb62-f225-42fb-8402-3dfe64da468a/medium/1 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1136.001#3	01993ba5-1da3-4e15-a719-b690d4f0f0b2	executed	primary	read	23	13	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1531#5	4d938c43-2fe8-4d70-a5b3-5bf239aa7846	failed	retry	read	33	13	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1531#6	d3812c4e-30ee-466a-a0aa-07e355b561d6	failed	retry	read	34	17	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1564.002#1	4238a7f0-a980-4fff-98a2-dfc0a363d507	executed	primary	read	19	18	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/4 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/1
+T1564.002#2	de87ed7b-52c3-43fd-9554-730f695e7f31	executed	primary	read	31	15	0	0	0	0	0	sigma:51719bf5-e4fd-4e44-8ba8-b830e7ac0731/low/5 sigma:b22a5b36-2431-493a-8be1-0bae56c28ef3/medium/2
+T1078.003#4	20b40ea9-0e17-4155-b8e6-244911a678ac	executed	primary	read	8	22	0	0	0	0	0	elastic:cc2fd2d0-ba3a-4939-b87f-2901764ed036/medium/1 sigma:53b1b378-9b06-4992-b972-dde6e423d2b4/high/1 sigma:821bcf4d-46c7-4b87-bc57-9509d3ba7c11/medium/1
+T1222.002#13	18592ba1-5f88-4e3c-abc8-ab1c6042e389	executed	primary	read	5	7	0	0	0	0	0	none
+T1087.001#2	fed9be70-0186-4bde-9f8a-20945f9370c2	executed	primary	read	4	4	0	0	0	0	0	sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1548.003#1	150c3a08-ee6e-48a6-aeaf-3659d24ceb4e	executed	primary	read	4	5	0	0	0	0	0	sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1548.003#3	a7b17659-dd5e-46f7-b7d1-e6792c91d0bc	executed	primary	read	10	14	0	0	0	0	0	elastic:931e25a5-0f5e-4ae0-ba0d-9e94eff7e3a4/medium/2 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1548.003#5	91a60b03-fb75-4d24-a42e-2eb8956e8de1	executed	primary	read	10	10	0	0	0	0	0	elastic:931e25a5-0f5e-4ae0-ba0d-9e94eff7e3a4/medium/2 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
+T1548.001#1	896dfe97-ae43-4101-8e96-9a7996555d80	executed	retry	read	13	10	0	0	0	0	0	none
+T1548.001#3	759055b3-3885-4582-a8ec-c00c9d64dd79	executed	primary	read	10	7	0	0	0	0	0	none
+T1548.001#5	db55f666-7cba-46c6-9fe6-205a05c3242c	executed	primary	read	10	7	0	0	0	0	0	none
+T1555.001#1	88e1fa00-bf63-4e5b-a3e1-e2ea51c8cca6	executed	primary	read	10	16	0	0	0	0	0	elastic:565d6ca5-75ba-4c82-9b13-add25353471c/high/1 sigma:b120b587-a4c2-4b94-875d-99c9807d6955/medium/1
+T1555.001#3	e544bbcb-c4e0-4bd0-b614-b92131635f59	executed	primary	read	10	17	0	0	0	0	0	sigma:b120b587-a4c2-4b94-875d-99c9807d6955/medium/1
+T1113#1	0f47ceb1-720f-4275-96b8-21f0562217ac	executed	primary	read	8	47	0	0	0	0	0	sigma:0877ed01-da46-4c49-8476-d49cdd80dfa7/low/1
+T1113#2	deb7d358-5fbd-4dc4-aecc-ee0054d2d9a4	executed	primary	read	4	6	0	0	0	0	0	sigma:0877ed01-da46-4c49-8476-d49cdd80dfa7/low/1
+T1115#3	1ac2247f-65f8-4051-b51f-b0ccdfaaa5ff	executed	primary	read	11	25	0	0	0	0	0	sigma:58800443-f9fc-4d55-ae0c-98a3966dfb97/informational/1 sigma:d8af0da1-2959-40f9-a3e4-37a6aa1228b7/medium/3
+T1056.002#1	76628574-0bc1-4646-8fe2-8f4427b47d15	executed	primary	read	13	51	0	0	0	0	0	sigma:1bc2e6c5-0885-472b-bed6-be5ea8eace55/medium/1 sigma:60f1ce20-484e-41bd-85f4-ac4afec2c541/low/1
+T1056.002#3	b7037b89-947a-427a-ba29-e7e9f09bc045	executed	primary	read	5	46	0	0	0	0	0	sigma:1bc2e6c5-0885-472b-bed6-be5ea8eace55/medium/1 sigma:60f1ce20-484e-41bd-85f4-ac4afec2c541/low/1
+T1040#3	9d04efee-eff5-4240-b8d2-07792b873608	executed	primary	read	10	35	0	0	0	0	0	sigma:10227522-8429-47e6-a301-f2b2d014e7ad/informational/1 sigma:adc9bcc4-c39c-4f6b-a711-1884017bf043/informational/1
+T1040#8	e6fe5095-545d-4c8b-a0ae-e863914be3aa	executed	primary	read	5	14	0	0	0	0	0	none
+T1040#9	e2480aee-23f3-4f34-80ce-de221e27cd19	executed	primary	read	5	9	0	0	0	0	0	none
+T1048#1	f6786cc8-beda-4915-a4d6-ac2f193bb988	executed	primary	read	12	33	0	0	0	0	0	none
+T1048#2	7c3cb337-35ae-4d06-bf03-3032ed2ec268	executed	primary	read	15	11	0	0	0	0	0	none
+T1105#1	0fc6e977-cb12-44f6-b263-2824ba917409	executed	primary	read	12	10	0	0	0	0	0	none
+T1105#2	3180f7d5-52c0-4493-9ea0-e3431a84773f	executed	primary	read	12	14	0	0	0	0	0	none
+T1110.004#2	d546a3d9-0be5-40c7-ad82-5a7d79e1b66b	executed	retry	read	30	99	0	0	0	0	0	none
+T1090.001#2	648d68c1-8bcd-4486-9abe-71c6655b6a2c	executed	primary	read	31	22	0	0	0	0	0	sigma:58800443-f9fc-4d55-ae0c-98a3966dfb97/informational/9
+T1016#8	ff1d8c25-2aa4-4f18-a425-fede4a41ee88	executed	primary	read	5	9	0	0	0	0	0	sigma:58800443-f9fc-4d55-ae0c-98a3966dfb97/informational/2
+Axios-exact		executed	primary	read	7	12	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:a09ee860-31b3-4586-8a68-0ebd74ce0e5f/high/1
+Axios-variant		executed	primary	read	7	10	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1
+T1553.004#4	cc4a0b8c-426f-40ff-9426-4e10e5bf4c49	blocked	defense	read	131	998	0	0	0	0	0	sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/2
+T1490#12	ed952f70-91d4-445a-b7ff-30966bfb1aff	blocked	defense	read	3	2	0	0	0	0	0	sigma:2c95fa8a-8b8d-4787-afce-7117ceb8e3da/medium/2
+T1685#12	2a821573-fb3f-4e71-92c3-daac7432f053	failed	defense	read	3	3	0	0	0	0	0	none
+T1685#9	8fba7766-2d11-4b4a-979a-1e3d9cc9a88c	executed	defense	read	18	13	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ff39f1a6-84ac-476f-a1af-37fcdf53d7c0/medium/1
+T1685#10	62155dd8-bb3d-4f32-b31c-6532ff3ac6a3	executed	defense	read	18	10	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ff39f1a6-84ac-476f-a1af-37fcdf53d7c0/medium/1
+T1685#11	07f43b33-1e15-4e99-be70-bc094157c849	executed	defense	read	18	7	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ff39f1a6-84ac-476f-a1af-37fcdf53d7c0/medium/1
+T1685#13	b3e7510c-2d4c-4249-a33f-591a2bc83eef	executed	defense	read	18	7	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ff39f1a6-84ac-476f-a1af-37fcdf53d7c0/medium/1
+T1685.006#3	653d39cd-bae7-499a-898c-9fb96b8b5cd1	executed	defense	read	3	2	0	0	0	0	0	none
+T1070.006#3	8164a4a6-f99c-4661-ac4f-80f5e4e78d2b	executed	extras	read	9	20	0	0	0	0	0	none
+T1005#3	cfb6d400-a269-4c06-a347-6d88d584d5f7	unavailable	extras	read	1	2	0	0	0	0	0	none
+T1539#5	e57ba07b-3a33-40cd-a892-748273b9b49a	blocked	extras	read	3	3	0	0	0	0	0	none
+T1070.008#3	3824130e-a6e4-4528-8091-3a52eeb540f6	blocked	extras	read	3	2	0	0	0	0	0	none
+T1070.008#6	8a0b1579-5a36-483a-9cde-0236983e1665	blocked	extras	read	3	2	0	0	0	0	0	none
+T1547.015#2	716e756a-607b-41f3-8204-b214baf37c1d	blocked	extras	read	24	158	0	0	0	0	0	sigma:1bc2e6c5-0885-472b-bed6-be5ea8eace55/medium/1
+T1685.006#17	e62f8694-cbc7-468f-862c-b10cd07e1757	blocked	extras	read	12	48	0	0	0	0	0	none
+T1529#3	6326dbc4-444b-4c04-88f4-27e94d0327cb	executed	reboot	collector_down								not_replayed
+T1529#4	4963a81e-a3ad-4f02-adda-812343b351de	executed	reboot	collector_down								not_replayed
+T1529#5	47d0b042-a918-40ab-8cf9-150ffe919027	executed	reboot	collector_down								not_replayed
