@@ -22,6 +22,7 @@
 //! rule's id the message gives, as the status's does.
 
 use crate::contract::v1;
+use crate::covered::Found;
 use crate::overview::{level, rank, short_title, urgent_cell};
 use crate::screen::{self, BOLD, Cell, Column, Cut, DIM, GREEN, PLAIN, RED, Screen, Style, YELLOW};
 use crate::view;
@@ -893,6 +894,8 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         .collect();
     used.sort_unstable();
     used.dedup();
+    // What is said of the projects as a whole speaks only for those found while not all were.
+    let (found, scope) = Found::of(t.projects_found.as_ref());
     // Calm only when a project was compared and nothing at all could not be told.
     let calm = t.projects_compared > 0
         && t.projects_not_read == 0
@@ -926,10 +929,24 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         }
         (said, RED.bold())
     } else if calm {
-        (
-            "✓ No known vulnerability affects your projects".to_string(),
-            GREEN.bold(),
-        )
+        match found {
+            Found::All => (
+                "✓ No known vulnerability affects your projects".to_string(),
+                GREEN.bold(),
+            ),
+            // Every project found was compared: they are the ones counted.
+            Found::NotEntered => (
+                format!(
+                    "✓ No known vulnerability affects the {} found",
+                    count(t.projects_compared, "project", "projects")
+                ),
+                GREEN.bold(),
+            ),
+            Found::LookedAt => (
+                "No known vulnerability affects the projects that were looked at".to_string(),
+                BOLD,
+            ),
+        }
     } else if t.projects_compared == 0 {
         (
             "No project's lockfiles were compared in full with current vulnerability data, so none is known to be affected or not".to_string(),
@@ -978,6 +995,9 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         ));
     }
     out.extend(pieces(screen, 2, &counts));
+    if let Some(line) = &scope {
+        out.extend(sentence(screen, 2, line, PLAIN));
+    }
     for f in &t.feeds {
         if let Some(why) = &f.not_current_why {
             out.extend(sentence(
@@ -1413,6 +1433,7 @@ pub fn vulnerability(m: &v1::Vulnerability, screen: &Screen) -> String {
         *e = (*e).min(r.said);
     }
     let of = |s: Said| worst.values().filter(|w| **w == s).count() as u64;
+    let (found, scope) = Found::of(m.projects_found.as_ref());
     let (affected, untold, not_affected) =
         (of(Said::Affected), of(Said::Untold), of(Said::NotAffected));
     match m.data.map(v1::RecordData::try_from) {
@@ -1435,13 +1456,21 @@ pub fn vulnerability(m: &v1::Vulnerability, screen: &Screen) -> String {
                 }
                 (said, YELLOW.bold())
             } else if not_affected > 0 {
-                (
-                    format!(
-                        "✓ Affects none of the {} whose lockfiles were compared",
-                        count(not_affected, "project", "projects")
+                let n = count(not_affected, "project", "projects");
+                match found {
+                    Found::All => (
+                        format!("✓ Affects none of the {n} whose lockfiles were compared"),
+                        GREEN.bold(),
                     ),
-                    GREEN.bold(),
-                )
+                    Found::NotEntered => (
+                        format!("✓ Affects none of the {n} found whose lockfiles were compared"),
+                        GREEN.bold(),
+                    ),
+                    Found::LookedAt => (
+                        format!("Affects none of the {n} looked at whose lockfiles were compared"),
+                        BOLD,
+                    ),
+                }
             } else {
                 (
                     "Cannot be told: no project's lockfiles were compared with it".to_string(),
@@ -1468,6 +1497,14 @@ pub fn vulnerability(m: &v1::Vulnerability, screen: &Screen) -> String {
                 style,
             ));
         }
+    }
+    // Under an answer about the projects, the scope it speaks for when not all were found.
+    let about_projects = matches!(
+        m.data.map(v1::RecordData::try_from),
+        Some(Ok(v1::RecordData::Held | v1::RecordData::NoRecord))
+    );
+    if let Some(line) = scope.filter(|_| about_projects) {
+        out.extend(sentence(screen, 2, &line, PLAIN));
     }
     if !top.is_empty() {
         out.push(String::new());
@@ -2225,6 +2262,10 @@ mod tests {
             id_text: "GHSA-0000-0000-0000".to_string(),
             in_catalogue: Some(false),
             data: Some(v1::RecordData::Held as i32),
+            projects_found: Some(v1::ProjectsFound {
+                all: true,
+                ..Default::default()
+            }),
             records: vec![v1::RecordAnswers {
                 record_text: "GHSA-0000-0000-0000".to_string(),
                 record_source: "GitHub Advisory Database".to_string(),
@@ -2403,6 +2444,8 @@ mod tests {
         assert!(text.contains("\nThere is no store here yet.\n"), "{text}");
         assert!(text.contains("is not known"), "{text}");
         assert!(text.contains("immune run makes one"), "{text}");
+        // Nor is anything said of which projects were found, which is about none.
+        assert!(!text.contains("was found"), "{text}");
     }
 
     #[test]
@@ -2466,13 +2509,28 @@ mod tests {
 
     #[test]
     fn the_list_is_calm_only_when_its_totals_allow_it_and_counts_what_was_not_read() {
+        let all = Some(v1::ProjectsFound {
+            all: true,
+            ..Default::default()
+        });
         let calm = totals(v1::VulnerabilityTotals {
             projects_compared: 3,
+            projects_found: all,
             ..Default::default()
         });
         assert!(
             calm.starts_with("✓ No known vulnerability affects your projects\n"),
             "{calm}"
+        );
+        // From an older core, whether every project was found is not known: never the mark.
+        let older = totals(v1::VulnerabilityTotals {
+            projects_compared: 3,
+            ..Default::default()
+        });
+        assert!(
+            older.starts_with("No known vulnerability affects the projects that were looked at\n")
+                && older.contains("Whether every project was found is not known."),
+            "{older}"
         );
         assert!(
             calm.contains("\n  3 projects compared · 0 not wholly read · 0 with no lockfile\n"),
