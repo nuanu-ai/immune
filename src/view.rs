@@ -185,7 +185,7 @@ pub const SECTIONS: [(&str, &str); 6] = [
         "Known vulnerabilities in packages your projects use",
     ),
     ("you-can-fix", "You can fix"),
-    ("limits", "Not judged on this Mac"),
+    ("limits", "Could not be read on this Mac"),
     ("answered", "Answered"),
     ("as-it-happens", "As it happens"),
 ];

@@ -1423,7 +1423,7 @@ pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
 /// Whether every place this version looks for projects in was looked into at the latest check,
 /// as the contract gives it: the latest reading of this Mac by each reader that finds projects
 /// (`project::FOUND_BY`) was full, and no reading named a folder macOS protects that it left
-/// out. What this version does not look in by design (`checkouts::not_walked`) is a limit of the
+/// out. What this version does not look in by design (the walk's pruned folders) is a limit of the
 /// version, not a gap here. A finder with no reading of this Mac has not looked here: every
 /// check makes one of each, full when there is nothing to read. Each gap carries its reading's
 /// cause, a folder macOS protects `not_given` as the status's item says it (`GUARDED`); the

@@ -102,6 +102,14 @@ fn look(root: &Path, under: &Path, home: &Path) -> Option<Again> {
 }
 
 const MAX_DEPTH: usize = 5;
+
+/// Where projects are looked for, in a person's words made from the walk's own depth, so the
+/// words cannot drift from the code.
+pub fn walked() -> String {
+    format!(
+        "They are looked for in your home folder, up to {MAX_DEPTH} folders down, and in the folders your coding agents worked in."
+    )
+}
 /// Folders that are never descended into, wherever they are: tools keep copies of other
 /// people's code there, not checkouts.
 const PRUNED: [&str; 3] = ["node_modules", "target", "vendor"];
@@ -117,30 +125,6 @@ const PRUNED_IN_HOME: [&str; 6] = [
 ];
 /// The home folder's Library, where iCloud Drive and other cloud storage keep their files.
 const LIBRARY: &str = "Library";
-
-/// What the walk does not look in by design, in a person's words made from the walk's own
-/// limits, so the words cannot drift from the code.
-pub fn not_walked() -> String {
-    let in_home: Vec<String> = PRUNED_IN_HOME
-        .iter()
-        .map(|n| {
-            if *n == LIBRARY {
-                format!("{n} (which holds iCloud Drive and other cloud storage)")
-            } else {
-                n.to_string()
-            }
-        })
-        .collect();
-    let in_home: Vec<&str> = in_home.iter().map(String::as_str).collect();
-    format!(
-        "Projects are looked for in your home folder, but not in {} directly in it, not in hidden folders or folders named {}, not through a link to a folder, and not deeper than {MAX_DEPTH} folders down.",
-        crate::covered::listed(&in_home),
-        match PRUNED.split_last() {
-            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-            None => String::new(),
-        }
-    )
-}
 
 pub struct Checkout {
     /// Path relative to the home folder, with `/` between parts; the full path when the

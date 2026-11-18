@@ -989,30 +989,6 @@ impl Reason {
             Reason::Function => "function",
         }
     }
-
-    /// What it means, for a person.
-    pub fn said(&self) -> String {
-        match self {
-            Reason::NeedsEvents(c) => format!("needs {c} events"),
-            Reason::NeedsFields(f) => format!("needs {}", f.join(", ")),
-            Reason::KeywordSearch => "searches whole messages for keywords".into(),
-            Reason::NotParsed(said) => format!("could not be read: {said}"),
-            Reason::Sequence => "correlates a sequence of events, which is not translated".into(),
-            Reason::NotEql => "is not written in EQL, the only language translated".into(),
-            Reason::BackslashInWildcard => {
-                "has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented".into()
-            }
-            Reason::SpansKinds => "is about program starts and file events at once".into(),
-            Reason::NeverTrue => "could never be true over the events here".into(),
-            Reason::Regex => {
-                "needs a regular expression in EQL's syntax, which is not translated".into()
-            }
-            Reason::Unsupported => "uses a function of EQL's that is not translated".into(),
-            Reason::Function => {
-                "compares one field with another, which a Sigma rule cannot".into()
-            }
-        }
-    }
 }
 
 /// One shipped rule, read once, or one upstream rule its set names as not taken.
@@ -1392,15 +1368,17 @@ impl Rules {
         }
     }
 
-    /// Where the sets come from, in one line for a person.
+    /// Where the rules shipped come from, in one line for a person. A rule of a set that was
+    /// not taken is not counted here: `immune rules` counts those.
     pub fn sources_said(&self) -> String {
         let said: Vec<String> = self
             .sources()
             .into_iter()
             .map(|s| {
                 let mine = self.rules.iter().filter(|l| std::ptr::eq(l.source, s));
-                let (n, not_taken) =
-                    mine.fold((0, 0), |(n, t), l| (n + 1, t + usize::from(l.detail.is_some())));
+                let (n, not_taken) = mine.fold((0, 0), |(n, t), l| {
+                    (n + 1, t + usize::from(l.detail.is_some()))
+                });
                 let at = match s.commit_date {
                     _ if s.commit.is_empty() => "with this version".to_string(),
                     Some(date) => format!("at {} of {date}", &s.commit[..12]),
@@ -1413,9 +1391,9 @@ impl Rules {
                 };
                 if s.translation.is_some() {
                     format!(
-                        "{n} from {} {at}, {} of them translated into Sigma and shipped, {not_taken} not taken{levels}",
-                        s.set,
-                        n - not_taken
+                        "{} from {} {at}, translated into Sigma{levels}",
+                        n - not_taken,
+                        s.set
                     )
                 } else {
                     format!("{n} from {} {at}, all shipped{levels}", s.set)

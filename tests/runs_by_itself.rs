@@ -1199,10 +1199,7 @@ fn ways_here(e: &Estate) -> Vec<(String, String)> {
 #[test]
 fn the_page_counts_no_project_as_holding_none_of_a_way_when_not_every_project_was_looked_into() {
     let e = Estate::new("ways-page");
-    put(
-        &e.checkout("dev/shop").join(".npmrc"),
-        "ignore-scripts=false\n",
-    );
+    package(&e.checkout("dev/shop"), "");
     e.run_in(&e.home().join("missing"));
     let page = e.this_mac_page();
     let ways = section(&page, "ways-code-runs");
@@ -1218,8 +1215,8 @@ fn the_page_counts_no_project_as_holding_none_of_a_way_when_not_every_project_wa
     let page = e.this_mac_page();
     assert!(!page.contains("Not every project"), "{page}");
     let here = ways_here(&e);
-    assert!(here.contains(&(".npmrc".to_string(), "1".to_string())));
-    assert!(here.contains(&("bunfig.toml".to_string(), "0".to_string())));
+    assert!(here.contains(&("package.json".to_string(), "1".to_string())));
+    assert!(here.contains(&(".mcp.json".to_string(), "0".to_string())));
 }
 
 /// What the page's table says of one way in projects here.
@@ -1243,6 +1240,7 @@ fn no_way_is_said_absent_from_projects_while_the_sessions_that_lead_to_projects_
     let tool = e.0.join("elsewhere/tool");
     put(&tool.join(".git/HEAD"), "ref: refs/heads/main\n");
     put(&tool.join(".npmrc"), "ignore-scripts=false\n");
+    package(&tool, "");
     let sessions = e.0.join("sessions");
     session(&e, "tool", &tool);
     mode(&sessions, 0o000);
@@ -1250,10 +1248,10 @@ fn no_way_is_said_absent_from_projects_while_the_sessions_that_lead_to_projects_
     mode(&sessions, 0o755);
     let why = "the reading of checkouts in agent working folders was not full";
     assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
-    assert_eq!(way_here(&e, ".npmrc"), "Not known");
+    assert_eq!(way_here(&e, "package.json"), "Not known");
     e.go(None, &sessions);
     assert_eq!(ways_meaning(&e), ONE_NOT_READ);
-    assert_eq!(way_here(&e, ".npmrc"), "1");
+    assert_eq!(way_here(&e, "package.json"), "1");
 }
 
 #[test]
@@ -1267,6 +1265,7 @@ fn no_way_is_said_absent_from_projects_while_one_session_file_could_not_be_read(
     let other = e.0.join("elsewhere/other");
     put(&other.join(".git/HEAD"), "ref: refs/heads/main\n");
     put(&other.join(".envrc"), "use flake\n");
+    package(&other, "");
     session(&e, "other", &other);
     let file = sessions.join("other/session.jsonl");
     mode(&file, 0o000);
@@ -1274,10 +1273,10 @@ fn no_way_is_said_absent_from_projects_while_one_session_file_could_not_be_read(
     mode(&file, 0o644);
     let why = "the reading of checkouts in agent working folders was not full";
     assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
-    assert_eq!(way_here(&e, ".envrc"), "Not known");
+    assert_eq!(way_here(&e, "package.json"), "Not known");
     e.go(None, &sessions);
     assert_eq!(ways_meaning(&e), ONE_NOT_READ);
-    assert_eq!(way_here(&e, ".envrc"), "1");
+    assert_eq!(way_here(&e, "package.json"), "1");
 }
 
 #[test]
@@ -2968,9 +2967,9 @@ fn a_place_a_newer_version_reads_for_the_first_time_is_told_once_and_a_change_af
 }
 
 #[test]
-fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table() {
-    // A way the program does not read is never silent: present or not, it is on the page,
-    // and the one item of what is not covered counts the same table.
+fn every_way_read_is_on_the_page_and_the_status_counts_as_many_read_and_those_present_and_not() {
+    // The page lists the ways that are read. A way the program does not read is never silent:
+    // the status's one item counts as many read as the page lists, and those present here.
     let e = Estate::new("ways");
     for rel in ["dev/a", "dev/b"] {
         let c = e.checkout(rel);
@@ -2992,23 +2991,17 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
                 .collect()
         })
         .collect();
-    let read = rows.iter().filter(|r| r[3].starts_with("Read")).count();
-    let not_read = rows.iter().filter(|r| r[3] == "Not read").count();
-    assert_eq!(read + not_read, rows.len());
+    let read = rows.len();
+    assert!(rows.iter().all(|r| r[3].starts_with("Read")), "{rows:?}");
     let here: Vec<(&str, &str)> = rows
         .iter()
-        .filter(|r| r[4] != "0" && r[4] != "Not looked for")
+        .filter(|r| r[4] != "0" && r[4] != "—")
         .map(|r| (r[0], r[4]))
         .collect();
-    assert_eq!(
-        here,
-        [("package.json", "2"), ("bunfig.toml", "1"), (".envrc", "2")]
-    );
-    let present = rows
-        .iter()
-        .filter(|r| r[3] == "Not read" && r[4] != "0" && r[4] != "Not looked for")
-        .count();
-    assert_eq!(present, 2);
+    assert_eq!(here, [("package.json", "2")]);
+    // Present and not read: `.envrc` and `bunfig.toml`, which no row of the page names.
+    assert!(!section.contains(".envrc") && !section.contains("bunfig.toml"));
+    let present = 2;
 
     let item = |r: &serde_json::Value| {
         r["not_covered"]
@@ -3020,12 +3013,11 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
             .clone()
     };
     let u = item(&e.status());
-    assert_eq!(
-        u["title"],
-        format!(
-            "This version reads {read} of the {} known ways a project can make code run by itself.",
-            rows.len()
-        )
+    let title = u["title"].as_str().unwrap();
+    assert!(
+        title.starts_with(&format!("This version reads {read} of the "))
+            && title.ends_with(" known ways a project can make code run by itself."),
+        "{title}"
     );
     assert_eq!(
         u["meaning"],
@@ -3143,15 +3135,14 @@ fn no_page_says_none_of_what_is_in_projects_after_a_walk_that_did_not_find_them_
         assert!(!said.iter().any(|k| k == kind), "{kind}: {said:?}");
         let part = section(&page, id);
         assert!(
-            !part.contains("None found here.")
-                && part.contains("projects inside folders macOS protects were not looked into"),
+            !part.contains("None found here.") && part.contains("None in the projects found."),
             "{id}: {part}"
         );
     }
     // The count of what projects depend on is of the projects found, and says so.
     assert!(
         section(&page, "packages-your-projects-depend-on")
-            .contains("projects inside folders macOS protects were not looked into"),
+            .contains("<p>The projects found on this Mac depend on "),
         "{page}"
     );
     // What is not in projects is said as before.
@@ -3328,9 +3319,9 @@ fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_to
 }
 
 #[test]
-fn the_home_items_numbers_equal_the_pages_table_of_places() {
-    // A place the program does not read is never silent: present or not, it is on the page,
-    // and the one item of what is not covered counts the same table.
+fn the_home_item_counts_as_many_places_read_as_the_page_lists_and_those_present_and_not() {
+    // The page lists the places that are read. A place the program does not read is never
+    // silent: the status's one item counts as many read as the page lists, and those present.
     let e = Estate::new("home-places");
     put(&e.home().join(".codex/config.toml"), "model = \"x\"\n");
     put(&e.home().join(".claude/skills/a/SKILL.md"), "x\n");
@@ -3349,25 +3340,18 @@ fn the_home_items_numbers_equal_the_pages_table_of_places() {
                 .collect()
         })
         .collect();
-    let read = rows.iter().filter(|r| r[3].starts_with("Read")).count();
+    let read = rows.len();
+    assert!(rows.iter().all(|r| r[3].starts_with("Read")), "{rows:?}");
     let here: Vec<(&str, &str)> = rows
         .iter()
         .filter(|r| r[4] == "Yes")
         .map(|r| (r[0], r[3]))
         .collect();
-    assert_eq!(
-        here,
-        [
-            ("~/.gemini/settings.json", "Read"),
-            (
-                "~/.claude/skills, ~/.claude/commands, ~/.claude/agents",
-                "Not read"
-            ),
-            ("~/.codex/config.toml", "Not read"),
-        ]
-    );
+    assert_eq!(here, [("~/.gemini/settings.json", "Read")]);
     assert!(rows.iter().all(|r| r[4] == "Yes" || r[4] == "No"));
-    let present = here.iter().filter(|r| r.1 == "Not read").count();
+    // Present and not read: Codex's settings and Claude Code's skills, which no row names.
+    assert!(!section.contains(".codex") && !section.contains(".claude/skills"));
+    let present = 2;
     let item = |r: &serde_json::Value| {
         r["not_covered"]
             .as_array()
@@ -3378,12 +3362,13 @@ fn the_home_items_numbers_equal_the_pages_table_of_places() {
             .clone()
     };
     let u = item(&e.status());
-    assert_eq!(
-        u["title"],
-        format!(
-            "This version reads {read} of the {} known places where a developer tool's own settings can make code run by itself.",
-            rows.len()
-        )
+    let title = u["title"].as_str().unwrap();
+    assert!(
+        title.starts_with(&format!("This version reads {read} of the "))
+            && title.ends_with(
+                " known places where a developer tool's own settings can make code run by itself."
+            ),
+        "{title}"
     );
     assert_eq!(
         u["meaning"],
