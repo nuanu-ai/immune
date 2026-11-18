@@ -2851,12 +2851,13 @@ type CheckoutWalk = (Option<Vec<checkouts::Checkout>>, Option<&'static str>);
 /// Which checkouts are on this machine, with a reason if the walk failed. When its root is
 /// not a folder its reading failed. A walk closes a checkout the store holds only where it
 /// looked: one it went past (`Walk::went_past`), or one looked at where it was and not there.
-/// A walk of a given folder leaves the checkouts outside it as they were.
+/// A walk of a given folder leaves the checkouts outside it as they were. The folder given is
+/// made real first (`checkouts::given`).
 fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Error>> {
-    let (root, home) = (
-        args.checkouts_root.as_ref().unwrap_or(&args.home),
-        &args.home,
-    );
+    let home = &args.home;
+    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.clone());
+    let given = (args.checkouts_root.as_ref()).map(|r| checkouts::given(r, home, &real_home));
+    let root = given.as_ref().unwrap_or(home);
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let reading = Reading {
         reader: checkouts::READER,
@@ -2884,7 +2885,6 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
     }
     run.readers += 1;
     let mut walk = checkouts::walk(root, home);
-    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.clone());
     let homes = [home.as_path(), real_home.as_path()];
     // A checkout the store holds that the walk did not meet is kept as it was, nothing inside
     // it read, outside the folder the walk was given, and otherwise as looking again says.
