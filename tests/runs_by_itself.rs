@@ -618,7 +618,10 @@ fn ways_meaning(e: &Estate) -> String {
 }
 
 const NONE_WHOLE: &str = "None of the others is present in your projects now.";
-const NONE_PART: &str = "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.";
+/// What the status adds, before why, while not every project was looked into.
+const NOT_EVERY: &str =
+    "Not every project was looked at, so the projects not looked at may hold some.";
+const NONE_PART: &str = "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some.";
 
 #[test]
 fn the_status_says_no_way_not_read_is_in_projects_only_when_every_known_project_was_looked_into() {
@@ -684,6 +687,86 @@ fn the_page_counts_no_project_as_holding_none_of_a_way_when_not_every_project_wa
     let here = ways_here(&e);
     assert!(here.contains(&(".npmrc".to_string(), "1".to_string())));
     assert!(here.contains(&("bunfig.toml".to_string(), "0".to_string())));
+}
+
+/// What the page's table says of one way in projects here.
+fn way_here(e: &Estate, file: &str) -> String {
+    let here = ways_here(e).into_iter().find(|(f, _)| f == file);
+    here.unwrap().1
+}
+
+fn mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+const ONE_NOT_READ: &str = "1 of the others are present in your projects and are not read, so a change in them would go unseen.";
+
+#[test]
+fn no_way_is_said_absent_from_projects_while_the_sessions_that_lead_to_projects_could_not_be_read()
+{
+    let e = Estate::new("finder-failed");
+    e.checkout("dev/shop");
+    let tool = e.0.join("elsewhere/tool");
+    put(&tool.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&tool.join(".npmrc"), "ignore-scripts=false\n");
+    let sessions = e.0.join("sessions");
+    session(&e, "tool", &tool);
+    mode(&sessions, 0o000);
+    e.go(None, &sessions);
+    mode(&sessions, 0o755);
+    let why = "the projects on this Mac were not all found, as the reading of checkouts in agent working folders was not full";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    assert_eq!(way_here(&e, ".npmrc"), "Not known");
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), ONE_NOT_READ);
+    assert_eq!(way_here(&e, ".npmrc"), "1");
+}
+
+#[test]
+fn no_way_is_said_absent_from_projects_while_one_session_file_could_not_be_read() {
+    let e = Estate::new("finder-partial");
+    let shop = e.checkout("dev/shop");
+    let sessions = e.0.join("sessions");
+    session(&e, "shop", &shop);
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    let other = e.0.join("elsewhere/other");
+    put(&other.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&other.join(".envrc"), "use flake\n");
+    session(&e, "other", &other);
+    let file = sessions.join("other/session.jsonl");
+    mode(&file, 0o000);
+    e.go(None, &sessions);
+    mode(&file, 0o644);
+    let why = "the projects on this Mac were not all found, as the reading of checkouts in agent working folders was not full";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    assert_eq!(way_here(&e, ".envrc"), "Not known");
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), ONE_NOT_READ);
+    assert_eq!(way_here(&e, ".envrc"), "1");
+}
+
+#[test]
+fn a_count_of_ways_not_read_says_there_may_be_more_while_not_every_project_was_looked_into() {
+    let e = Estate::new("maybe-more");
+    put(
+        &e.checkout("dev/shop").join(".npmrc"),
+        "ignore-scripts=false\n",
+    );
+    e.full();
+    put(&e.checkout("dev/new").join("bunfig.toml"), "preload = []\n");
+    e.run_in(&e.home().join("missing"));
+    let why = "the checkout walk could not open its root folder";
+    assert_eq!(
+        ways_meaning(&e),
+        format!("{ONE_NOT_READ} {NOT_EVERY} Why: {why}.")
+    );
+    e.full();
+    assert_eq!(
+        ways_meaning(&e),
+        "2 of the others are present in your projects and are not read, so a change in them would go unseen."
+    );
 }
 
 /// A project's `package.json` with these scripts.
@@ -1486,7 +1569,7 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
     assert_eq!(
         item(&e.status())["meaning"],
         partial(
-            "the projects on this Mac were not all found, as the walk that finds them was not full"
+            "the projects on this Mac were not all found, as the reading of checkouts under the home folder was not full"
         )
     );
     std::fs::create_dir_all(e.home().join("Documents")).unwrap();

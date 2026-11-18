@@ -27,8 +27,8 @@ use std::process::ExitCode;
 
 /// The readings that find projects on a Mac, as reader and kind. Their latest reading of this
 /// Mac speaks for every project, known or not: a project the walk did not reach is unknown for
-/// that reason.
-const FOUND_BY: [(&str, &str); 2] = [
+/// that reason. Every project was found only when each of them was full (`covered::projects_gap`).
+pub const FOUND_BY: [(&str, &str); 2] = [
     (checkouts::READER, checkouts::KIND),
     (crate::agent_folders::READER, crate::agent_folders::KIND),
 ];

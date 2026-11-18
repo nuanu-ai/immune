@@ -2008,7 +2008,6 @@ fn walk_gap(count: Count, latest: &[Latest], this: Option<&str>) -> Vec<String> 
     covered::in_projects(count)
         .then(|| covered::projects_gap(latest, this))
         .flatten()
-        .map(str::to_string)
         .into_iter()
         .collect()
 }

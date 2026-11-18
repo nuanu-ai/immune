@@ -320,10 +320,13 @@ pub enum NoneSaid {
     /// Of places that are read wherever they are: only the words for none.
     Read(&'static str),
     /// Of what is in the projects a walk finds: none only when every project was looked into
-    /// (`ways_gap`), and otherwise none of what was looked at, with the rest not known and why.
+    /// (`ways_gap`), and otherwise none of what was looked at; a count, none or more, is then
+    /// followed by `unseen`, that the rest is not known and why.
     Walked {
         whole: &'static str,
         part: &'static str,
+        /// Said after the count, none or more, while not every project was looked into.
+        unseen: &'static str,
     },
 }
 
@@ -505,7 +508,8 @@ pub const PROJECT_AUTORUN: Cause = Cause {
     meaning: "{n} of the others are present in your projects and are not read, so a change in them would go unseen.",
     meaning_none: Some(NoneSaid::Walked {
         whole: "None of the others is present in your projects now.",
-        part: "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing. Why: {reasons}.",
+        part: "None of the others is present in the projects that were looked at.",
+        unseen: "Not every project was looked at, so the projects not looked at may hold some. Why: {reasons}.",
     }),
     advice: "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
 };
@@ -856,8 +860,20 @@ impl Uncovered {
     pub fn meaning(&self) -> String {
         match &self.cause.meaning_none {
             Some(NoneSaid::Read(none)) if self.count == 0 => self.fill(none),
-            Some(NoneSaid::Walked { whole, part }) if self.count == 0 => {
-                self.fill(if self.read_whole { whole } else { part })
+            Some(NoneSaid::Walked {
+                whole,
+                part,
+                unseen,
+            }) => {
+                let said = match (self.count, self.read_whole) {
+                    (0, true) => whole,
+                    (0, false) => part,
+                    _ => self.cause.meaning,
+                };
+                match self.read_whole {
+                    true => self.fill(said),
+                    false => self.fill(&format!("{said} {unseen}")),
+                }
             }
             _ => self.fill(self.cause.meaning),
         }
@@ -1378,27 +1394,31 @@ pub fn ways_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
         .iter()
         .find(|r| r.kind == autorun::PRESENT_KIND)
         .and_then(|r| r.reason.clone())
-        .or_else(|| projects_gap(latest, this).map(str::to_string))
+        .or_else(|| projects_gap(latest, this))
 }
 
-/// Why the walk that finds this Mac's projects was not whole: the reading of this Mac's
-/// checkouts was not full, limited to a folder given or short of one it could not list, or it
-/// did not enter every folder macOS protects. In the program's words; `None` when it was
-/// whole. Every "none" or zero said about what is in projects, in the status, its text and the
-/// pages, rests on this. Folder names are not in it: the status and the page name them apart.
-pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<&'static str> {
-    let full = latest.iter().any(|r| {
-        r.reader == crate::checkouts::READER
-            && r.kind == crate::checkouts::KIND
-            && this.is_some_and(|t| r.scope == t)
-            && r.completeness == "full"
-    });
-    if !full {
-        Some(
-            "the projects on this Mac were not all found, as the walk that finds them was not full",
-        )
+/// Why the projects on this Mac were not all found, in the program's words; `None` when they
+/// were. They were all found only when the latest reading of this Mac by each reader that finds
+/// projects (`project::FOUND_BY`) was full and every folder macOS protects was entered. A finder
+/// with no reading of this Mac has not looked here: every check makes one of each, full when
+/// there is nothing to read. Every "none" or zero said about what is in projects, in the status,
+/// its text and the pages, rests on this. Folder names are not in it: the status and the page
+/// name them apart.
+pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
+    let full = |(reader, kind): &&(&str, &str)| {
+        latest.iter().any(|r| {
+            r.reader == *reader
+                && r.kind == *kind
+                && this.is_some_and(|t| r.scope == t)
+                && r.completeness == "full"
+        })
+    };
+    if let Some((_, kind)) = crate::project::FOUND_BY.iter().find(|f| !full(f)) {
+        Some(format!(
+            "the projects on this Mac were not all found, as the reading of {kind} was not full"
+        ))
     } else if !projects_not_looked_into(latest).is_empty() {
-        Some("projects inside folders macOS protects were not looked into")
+        Some("projects inside folders macOS protects were not looked into".to_string())
     } else {
         None
     }
