@@ -41,6 +41,8 @@ pub const CAP: u64 = 8 * 1024 * 1024;
 pub const NO_HOOKS: &str = "the checkout has no hooks";
 /// Journal note for a scoped removal while another checkout still uses the same hook.
 pub const HOOK_STILL_ACTIVE: &str = "this hook is still watched in another checkout";
+/// Journal note for a hook a checkout's reading places that another checkout's already did.
+pub const HOOK_ALREADY_WATCHED: &str = "this hook is already watched in another checkout";
 /// Why the hooks of a checkout whose `.git` is a file were not read.
 pub const GIT_FILE: &str = ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read";
 /// What this build has no reader for among watched places, in its own words.
@@ -73,6 +75,18 @@ pub const HOOKS: Kind = (HOOK, HOOK_KIND);
 
 pub fn hook_departure(kind: &str, event: &crate::store::Event) -> bool {
     kind == HOOK_KIND && event.kind == "removed" && event.predicate == "watched_as"
+}
+
+/// A hook added to a checkout's reading: journaled once it is known whether another
+/// checkout's reading already placed it.
+pub fn hook_arrival(kind: &str, event: &crate::store::Event) -> bool {
+    kind == HOOK_KIND && event.kind == "added" && event.predicate == "watched_as"
+}
+
+/// The unit a reading of a checkout's hooks reads when it tells the folder Git runs hooks
+/// from: recorded, so that a later run knows an earlier one told it (`baseline.rs`).
+pub fn hooks_told(checkout: &str) -> Unit {
+    Unit::part(format!("{checkout}/.git/config"), "core.hooksPath")
 }
 
 /// Registers the coverage kinds of the places, on every open: a store of the current format
@@ -377,17 +391,24 @@ pub fn look_checkout(
         let shown = format!("{}/{path}", checkout.rel);
         look_place(&mut look, p, k, path, &checkout.path, &shown, &at);
     }
+    let mut told = untold.is_none();
     for (path, names) in folder.configured() {
-        configured_hooks(&mut look, path, names, &at);
+        let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
+        configured_hooks(&mut look, path, unit.clone(), names, &at);
+        // A folder that could not be looked at is not told yet.
+        told &= !look.not_read().any(|(u, _)| *u == unit);
+    }
+    if told {
+        look.read(hooks_told(&checkout.rel));
     }
     Hooks::Looked(look, untold)
 }
 
-/// Reads the hooks Git runs by `names` from a configured folder, `path` as written.
-fn configured_hooks(look: &mut Look, path: &Path, names: &[&str], at: &Where) {
+/// Reads the hooks Git runs by `names` from a configured folder, `path` as written and
+/// `unit` as ids name it.
+fn configured_hooks(look: &mut Look, path: &Path, unit: Unit, names: &[&str], at: &Where) {
     // The checkout's hooks were looked at, whatever this folder turns out to be.
     look.present += 1;
-    let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
     if look.not_read().any(|(u, _)| *u == unit) {
         return;
     }

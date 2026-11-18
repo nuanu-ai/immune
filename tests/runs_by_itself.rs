@@ -2063,6 +2063,198 @@ fn git_hooks_shared_between_checkouts_are_gone_only_after_the_last_checkout_stop
     assert_eq!(e.status()["watched"]["since_last_reading"]["gone"], 1);
 }
 
+/// A local configuration whose hook folder cannot be told: Git would read `more.conf` only
+/// in a Git folder that is elsewhere.
+const UNTOLD_CONFIG: &str =
+    "[core]\n hooksPath = hooks\n[includeIf \"gitdir:/elsewhere/\"]\n path = more.conf\n";
+
+#[test]
+fn hooks_in_a_configured_folder_read_for_the_first_time_are_told_once_as_the_baseline_and_never_raised_as_new()
+ {
+    // As an earlier version left the store: `.git/hooks` read in full, the folder Git's
+    // configuration names never told (`dev/a`) or never reached (`dev/b`).
+    let e = Estate::new("hooks-first-told");
+    let a = e.checkout("dev/a");
+    put(
+        &a.join(".git/more.conf"),
+        "[core]\n hooksPath = elsewhere\n",
+    );
+    put(&a.join(".git/config"), UNTOLD_CONFIG);
+    put(&a.join("hooks/pre-commit"), "# husky\n");
+    let b = e.checkout("dev/b");
+    let locked = e.0.join("locked");
+    put(&locked.join("hooks/pre-push"), "# shared\n");
+    put(
+        &b.join(".git/config"),
+        &format!("[core]\n hooksPath = {}\n", locked.join("hooks").display()),
+    );
+    mode(&locked, 0o000);
+    e.full();
+    mode(&locked, 0o755);
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    put(&a.join(".git/config"), "[core]\n hooksPath = hooks\n");
+    let before = e.last_entry();
+    e.full();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    let mut told = e.told();
+    told.sort();
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_eq!(told[0], "checkout:machine:mac/dev/a (1)");
+    assert!(told[1].ends_with("/locked/hooks/pre-push (1)"), "{told:?}");
+    assert_eq!(e.silent_after(before), 0);
+    // Kept as the baseline: a hook added there afterwards is new.
+    e.seen();
+    put(&a.join("hooks/post-merge"), "# planted\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/a/hooks/post-merge")]
+    );
+}
+
+#[test]
+fn a_hook_in_a_folder_git_now_runs_hooks_from_is_new_where_an_earlier_run_told_the_folder_before() {
+    let e = Estate::new("hooks-told-before");
+    let x = e.checkout("dev/x");
+    let y = e.checkout("dev/y");
+    put(
+        &y.join(".git/more.conf"),
+        "[core]\n hooksPath = elsewhere\n",
+    );
+    e.full();
+    // `dev/x` moves from `.git/hooks` to a folder with a hook; `dev/y` to one that cannot
+    // be told, and then to one that can.
+    put(&x.join(".git/config"), "[core]\n hooksPath = tools\n");
+    put(&x.join("tools/pre-commit"), "# moved\n");
+    put(&y.join(".git/config"), UNTOLD_CONFIG);
+    put(&y.join("hooks/pre-push"), "# moved\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/x/tools/pre-commit")]
+    );
+    e.seen();
+    put(&y.join(".git/config"), "[core]\n hooksPath = hooks\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/y/hooks/pre-push")]
+    );
+}
+
+#[test]
+fn a_hook_another_checkout_watched_as_a_hook_before_this_run_is_not_new_where_a_second_starts_using_it()
+ {
+    let e = Estate::new("hooks-already-watched");
+    let [a, b, c, d, f, g] =
+        ["dev/a", "dev/b", "dev/c", "dev/d", "dev/f", "dev/g"].map(|r| e.checkout(r));
+    let points = |dir: &Path| format!("[core]\n hooksPath = {}\n", dir.display());
+    let shared = e.home().join(".shared-hooks");
+    put(&shared.join("pre-commit"), "# shared\n");
+    put(&a.join(".git/config"), &points(&shared));
+    put(
+        &c.join(".git/more.conf"),
+        "[core]\n hooksPath = elsewhere\n",
+    );
+    put(&c.join(".git/config"), UNTOLD_CONFIG);
+    put(
+        &g.join(".git/more.conf"),
+        "[core]\n hooksPath = elsewhere\n",
+    );
+    put(&g.join(".git/config"), UNTOLD_CONFIG);
+    // Watched as a launch agent, not as a hook.
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("pre-commit"), "# an agent\n");
+    e.full();
+    // `dev/b`, and `dev/g` told for the first time, take the folder `dev/a` uses: a hook
+    // read before is not read for the first time where a checkout first tells its folder;
+    // `dev/c`,
+    // told for the first time, and `dev/d` take a new one in the same run; `dev/f` takes the
+    // launch agents' folder.
+    let fresh = e.home().join(".fresh-hooks");
+    put(&fresh.join("pre-commit"), "# fresh\n");
+    put(&b.join(".git/config"), &points(&shared));
+    put(&g.join(".git/config"), &points(&shared));
+    put(&c.join(".git/config"), &points(&fresh));
+    put(&d.join(".git/config"), &points(&fresh));
+    put(&f.join(".git/config"), &points(&agents));
+    e.full();
+    // `dev/c`'s first reading of the new folder is told once; `dev/d`'s move to it is new.
+    assert_eq!(
+        e.found(),
+        [
+            pair(FIRST_READ, "mac"),
+            pair("watched.git-hook", "~/.fresh-hooks/pre-commit"),
+            pair("watched.git-hook", "~/Library/LaunchAgents/pre-commit"),
+        ]
+    );
+    assert_eq!(e.told(), ["file:machine:mac/.fresh-hooks/pre-commit (1)"]);
+    assert_eq!(e.status()["watched"]["since_last_reading"]["new"], 2);
+    assert_eq!(
+        e.rows("SELECT scope, text FROM journal WHERE entry = 'added' AND predicate = 'watched_as' AND subject = 'file:machine:mac/.shared-hooks/pre-commit' ORDER BY seq"),
+        [
+            "checkout:machine:mac/dev/a|first reading of its place",
+            "checkout:machine:mac/dev/b|this hook is already watched in another checkout",
+            "checkout:machine:mac/dev/g|this hook is already watched in another checkout"
+        ]
+    );
+    e.seen();
+    put(&shared.join("pre-push"), "# added\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/.shared-hooks/pre-push")]
+    );
+}
+
+#[test]
+fn a_hook_that_changed_is_raised_even_where_another_checkout_starts_using_its_folder_in_the_same_run()
+ {
+    // `dev/a` is compared before `dev/z`, which owns the folder, in a full run; `dev/y` is the
+    // only checkout of a run pointed at it.
+    for (owner, taker, pointed) in [("dev/z", "dev/a", false), ("dev/x", "dev/y", true)] {
+        let e = Estate::new("hooks-changed-elsewhere");
+        let shared = e.home().join(".shared");
+        let config = format!("[core]\n hooksPath = {}\n", shared.display());
+        put(&shared.join("pre-commit"), "# v1\n");
+        put(&e.checkout(owner).join(".git/config"), &config);
+        let taker = e.checkout(taker);
+        e.full();
+        e.full();
+        put(&shared.join("pre-commit"), "# v2\n");
+        put(&taker.join(".git/config"), &config);
+        if pointed {
+            e.run_in(&taker);
+        } else {
+            e.full();
+        }
+        assert_eq!(
+            e.found(),
+            [pair("watched.git-hook", "~/.shared/pre-commit")],
+            "{owner} {pointed}"
+        );
+    }
+}
+
+#[test]
+fn a_hook_outside_a_new_clone_in_the_folder_its_configuration_names_is_new() {
+    let e = Estate::new("hooks-new-clone");
+    e.checkout("dev/a");
+    e.full();
+    let b = e.checkout("dev/b");
+    let hooks = e.home().join("b-hooks");
+    put(&hooks.join("pre-commit"), "# planted\n");
+    put(
+        &b.join(".git/config"),
+        &format!("[core]\n hooksPath = {}\n", hooks.display()),
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/b-hooks/pre-commit")]
+    );
+}
+
 #[test]
 fn git_hooks_config_parsing_cannot_activate_git_tracing() {
     let e = Estate::new("git-hooks-trace");

@@ -2575,8 +2575,9 @@ impl Run<'_> {
         for e in lifecycle::promote(self.tx, r, a.compared)? {
             let verdict = judge(&e)?;
             // A hook can move between checkouts during one reading. Its departure is
-            // journaled after every checkout has been compared.
-            if !watched::hook_departure(r.kind, &e) {
+            // journaled after every checkout has been compared, its arrival by the reading of
+            // the hooks once it knows whether another checkout placed it before.
+            if !watched::hook_departure(r.kind, &e) && !watched::hook_arrival(r.kind, &e) {
                 store::journal_event(self.tx, r, &e, verdict.text())?;
             }
             out.push((e, verdict));
@@ -4011,17 +4012,29 @@ fn read_watched(
         };
         let keep_outside =
             hooks.is_some() && p.coverage.is_some() || p.look.not_read().any(|(u, _)| outside(u));
+        // Whether an earlier run told the folder this checkout's hooks are run from.
+        let told_before = match p.checkouts.first() {
+            Some(c) => judge.part_read_before(&watched::hooks_told(c))?,
+            None => false,
+        };
         let verdict_for = |unit: &Unit| -> rusqlite::Result<Verdict> {
             let verdict = judge.verdict(unit)?;
             if verdict == Verdict::FirstRead
                 && let Some(hooks) = &hooks
             {
-                // A different effective folder is new to a checkout whose hook folder was
-                // resolved before. An outside path also belongs to its own checkout here.
-                return judge.verdict(&Unit::whole(format!(
+                // A hook is judged as if in `.git/hooks`, as a path outside belongs to its
+                // checkout too. Only a folder told before shows that Git now runs hooks from
+                // another one; a folder told for the first time is new only in a new checkout.
+                let there = Unit::whole(format!(
                     "{hooks}/{}",
                     unit.path.rsplit('/').next().unwrap_or_default()
-                )));
+                ));
+                if told_before {
+                    return judge.verdict(&there);
+                }
+                if judge.facts(&there)?.in_new_checkout {
+                    return Ok(Verdict::Change);
+                }
             }
             Ok(verdict)
         };
@@ -4128,6 +4141,12 @@ fn read_watched(
         })?;
         let mut new = BTreeSet::new();
         for (e, verdict) in events {
+            // A hook another checkout's reading placed before this run is not new here.
+            let elsewhere = lifecycle::placed(tx, &e.subject, Some(&reading))?;
+            if watched::hook_arrival(&p.kind, &e) {
+                let note = elsewhere.then_some(watched::HOOK_ALREADY_WATCHED);
+                store::journal_event(tx, &reading, &e, note.or(verdict.text()))?;
+            }
             match (verdict, e.kind, e.predicate.as_str()) {
                 (Verdict::Change, "added", "watched_as") => {
                     let path = path_of(&e.subject);
@@ -4144,13 +4163,17 @@ fn read_watched(
                             )?;
                             format!("the same as in {}", known::whole(checkout))
                         }
+                        None if elsewhere => watched::HOOK_ALREADY_WATCHED.to_string(),
                         None => {
                             observe("new", p.watched_as, &e.subject);
                             String::new()
                         }
                     };
                     rows.push(vec!["new".to_string(), p.watched_as.to_string(), path, why]);
-                    new.insert(e.subject);
+                    // A hook watched elsewhere keeps its content compared: it is not new here.
+                    if !elsewhere {
+                        new.insert(e.subject);
+                    }
                 }
                 (_, "removed", "watched_as") => {
                     if watched::hook_departure(&p.kind, &e) {

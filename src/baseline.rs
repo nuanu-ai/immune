@@ -468,7 +468,7 @@ impl Judge<'_> {
             .optional()
     }
 
-    fn part_read_before(&self, unit: &Unit) -> rusqlite::Result<bool> {
+    pub fn part_read_before(&self, unit: &Unit) -> rusqlite::Result<bool> {
         self.tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM part_read
              WHERE reader = ?1 AND kind = ?2 AND unit = ?3 AND part = ?4 AND run_id != ?5)",

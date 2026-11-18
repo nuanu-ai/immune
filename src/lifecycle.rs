@@ -213,13 +213,7 @@ pub(crate) fn retract_inside(
     r: &Reading,
     entity: &str,
 ) -> rusqlite::Result<bool> {
-    let still_somewhere: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM assertion
-                        WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?1)",
-        [entity],
-        |row| row.get(0),
-    )?;
-    if still_somewhere {
+    if placed(tx, entity, None)? {
         return Ok(false);
     }
     let inside: Vec<String> = tx
@@ -238,4 +232,21 @@ pub(crate) fn retract_inside(
         retract_inside(tx, r, &thing)?;
     }
     Ok(true)
+}
+
+/// Whether something live says where `entity` is. With `before`, only a reading of its kind
+/// that placed it before its run counts: another scope's, as what this reading adds is new
+/// to its own.
+pub(crate) fn placed(
+    tx: &Transaction,
+    entity: &str,
+    before: Option<&Reading>,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM assertion
+                        WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?1
+                          AND (?2 IS NULL OR (kind = ?2 AND run_id != ?3)))",
+        params![entity, before.map(|r| r.kind), before.map(|r| r.run_id)],
+        |row| row.get(0),
+    )
 }
