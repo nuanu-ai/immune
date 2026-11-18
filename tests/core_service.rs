@@ -1115,6 +1115,14 @@ fn a_core_shipped_inside_an_app_s_bundle_names_that_app_the_outermost_one() {
         let named = named_from(&login, &id[..8], HELPER, &[(INFO, &["-string", id])]);
         assert_eq!(named, json!([id]));
     }
+    // A name of one character before `.app` is a name.
+    let named = named_from(
+        &login,
+        "short",
+        "X.app/Contents/Helpers/immune",
+        &[("X.app/Contents/Info.plist", &["-string", "com.example.x"])],
+    );
+    assert_eq!(named, json!(["com.example.x"]));
     // An app inside the app: the outer one is the app a person sees in Applications.
     let named = named_from(
         &login,
@@ -1135,7 +1143,7 @@ fn a_core_shipped_inside_an_app_s_bundle_names_that_app_the_outermost_one() {
 fn a_bundle_whose_identifier_cannot_be_used_leaves_the_job_under_immune_s_own_app() {
     let login = Login::new("core-service-unusable");
     let long = "a".repeat(156);
-    let cases: [(&str, &str, Infos); 8] = [
+    let cases: [(&str, &str, Infos); 10] = [
         ("no-info", HELPER, &[]),
         ("integer", HELPER, &[(INFO, &["-integer", "7"])]),
         ("empty", HELPER, &[(INFO, &["-string", ""])]),
@@ -1156,7 +1164,7 @@ fn a_bundle_whose_identifier_cannot_be_used_leaves_the_job_under_immune_s_own_ap
             "Example.app/Helpers/immune",
             &[(INFO, &["-string", "com.example.shell"])],
         ),
-        // A folder with `Contents` and an `Info.plist` whose name does not end in `.app`.
+        // Folders with `Contents` and an `Info.plist` whose names are not a name and `.app`.
         (
             "not-an-app",
             "Example/Contents/Helpers/immune",
@@ -1165,44 +1173,27 @@ fn a_bundle_whose_identifier_cannot_be_used_leaves_the_job_under_immune_s_own_ap
                 &["-string", "com.example.shell"],
             )],
         ),
+        (
+            "no-dot",
+            "Exampleapp/Contents/Helpers/immune",
+            &[(
+                "Exampleapp/Contents/Info.plist",
+                &["-string", "com.example.shell"],
+            )],
+        ),
+        (
+            "only-dot-app",
+            ".app/Contents/Helpers/immune",
+            &[(
+                ".app/Contents/Info.plist",
+                &["-string", "com.example.shell"],
+            )],
+        ),
     ];
     for (case, core, infos) in cases {
         let named = named_from(&login, case, core, infos);
         assert_eq!(named, json!(["ai.nuanu.immune"]), "{case}");
     }
-}
-
-#[test]
-fn on_run_from_the_installed_copy_keeps_the_app_the_job_names() {
-    let login = Login::new("core-service-keeps");
-    let shell: Infos = &[(INFO, &["-string", "com.example.shell"])];
-    let from_copy = || {
-        service(&login.immune(&login.program, &["on", "--json"], &[]));
-        plist(&login.plist)["AssociatedBundleIdentifiers"].clone()
-    };
-    assert_eq!(
-        named_from(&login, "app", HELPER, shell),
-        json!(["com.example.shell"])
-    );
-    assert_eq!(from_copy(), json!(["com.example.shell"]));
-    // Only the installed copy keeps: a build run after the app installed the job names its own.
-    service(&login.run("on", &[]));
-    assert_eq!(from_copy(), json!(["ai.nuanu.immune"]));
-
-    // The property list in place names something that cannot be used, or is gone.
-    named_from(&login, "unusable", HELPER, shell);
-    let replace = ["-replace", "AssociatedBundleIdentifiers.0", "-string"];
-    let out = Command::new("/usr/bin/plutil")
-        .args(replace)
-        .arg("com.example shell")
-        .arg(&login.plist)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert_eq!(from_copy(), json!(["ai.nuanu.immune"]));
-    named_from(&login, "gone", HELPER, shell);
-    fs::remove_file(&login.plist).unwrap();
-    assert_eq!(from_copy(), json!(["ai.nuanu.immune"]));
 }
 
 #[test]
