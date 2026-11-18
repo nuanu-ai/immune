@@ -758,12 +758,7 @@ impl Watcher<'_> {
             &found,
             &homes,
         ) {
-            let cap = if p.reading.1 == watched::HOOK_KIND {
-                watched::HOOK_DIR_CAP
-            } else {
-                usize::MAX
-            };
-            match subscribed_capped(&p.path, p.folder, cap, &homes) {
+            match subscribed(&p.path, p.folder, &homes) {
                 Ok(paths) => {
                     targets.extend(paths.iter().map(|path| (path.clone(), p.reading.clone())));
                     wanted.extend(paths);
@@ -1361,41 +1356,36 @@ fn places(
             match p.scope {
                 autorun::Scope::Home => add(home.join(path), folder, machine, kind),
                 autorun::Scope::System => add(system.join(path), folder, machine, kind),
-                _ => {}
+                _ => {
+                    for c in found {
+                        let scope = format!("checkout:{machine}/{}", c.rel);
+                        add(c.path.join(path), folder, &scope, kind);
+                    }
+                }
             }
         }
     }
     let git = (!found.is_empty()).then(|| crate::git_hooks::Config::new(home, system, homes));
     for c in found {
-        use crate::git_hooks::{self, Folder};
+        use crate::git_hooks::{Folder, Unread};
         let git = git.as_ref().unwrap();
         let scope = format!("checkout:{machine}/{}", c.rel);
         let kind = watched::HOOK_KIND;
-        for config in git.sources().iter().filter(|path| path.is_absolute()) {
+        // `.git/hooks` is watched above; the configuration adds the folder it names.
+        for config in git.sources() {
             add(config.clone(), false, &scope, kind);
         }
-        for path in [".git/config", ".git/commondir"] {
+        for path in [".git/config", ".git/config.worktree", ".git/commondir"] {
             add(c.path.join(path), false, &scope, kind);
         }
-        match git.folder(&c.path, home, homes, &[]) {
-            Folder::Default => add(c.path.join(git_hooks::DEFAULT), true, &scope, kind),
-            Folder::Configured { worktree, receive } => {
-                for (folder, names) in [
-                    (&worktree, git_hooks::WORKTREE_HOOKS),
-                    (&receive, git_hooks::RECEIVE_HOOKS),
-                ] {
-                    for name in names {
-                        add(folder.join(name), false, &scope, kind);
-                    }
-                }
-                if worktree != receive {
-                    add(receive.join("reference-transaction"), false, &scope, kind);
-                }
+        let folder = git.folder(&c.path, home, homes, &[]);
+        for (path, names) in folder.configured() {
+            for name in names {
+                add(path.join(name), false, &scope, kind);
             }
-            Folder::Unknown(git_hooks::Unread::GitFile) => {
-                add(c.path.join(".git"), false, &scope, kind)
-            }
-            _ => {}
+        }
+        if let Folder::Unknown(Unread::GitFile) = folder {
+            add(c.path.join(".git"), false, &scope, kind)
         }
         for (file, kind) in autorun::files() {
             add(c.path.join(file), false, machine, &kind);
@@ -1457,12 +1447,7 @@ fn touched(targets: &[(PathBuf, Reading)], paths: &BTreeSet<PathBuf>) -> Option<
 /// watched folder; a change at a target is reported under the target. Nothing that leads
 /// into a folder macOS asks permission for: FSEvents resolves the paths it is given, and the
 /// reading of the place says it was not looked into. Made real without entering one.
-fn subscribed_capped(
-    place: &Path,
-    folder: bool,
-    cap: usize,
-    homes: &[&Path],
-) -> Result<Vec<PathBuf>, String> {
+fn subscribed(place: &Path, folder: bool, homes: &[&Path]) -> Result<Vec<PathBuf>, String> {
     let Some(at) = real(place, homes)? else {
         return Ok(Vec::new());
     };
@@ -1481,7 +1466,7 @@ fn subscribed_capped(
     };
     let mut out = vec![at.clone()];
     if folder && let Ok(entries) = std::fs::read_dir(own.as_ref().unwrap_or(&at)) {
-        for entry in entries.take(cap).flatten() {
+        for entry in entries.flatten() {
             out.extend(target(&at.join(entry.file_name())).ok().flatten());
         }
     }
@@ -2373,7 +2358,7 @@ mod tests {
         ];
         for path in aliases {
             assert!(
-                subscribed_capped(&path, false, usize::MAX, &[&homes[0], &homes[1]])
+                subscribed(&path, false, &[&homes[0], &homes[1]])
                     .unwrap()
                     .is_empty()
             );

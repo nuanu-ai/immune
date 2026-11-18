@@ -207,7 +207,12 @@ pub fn set_aside(
 
 /// Retracts everything read inside an entity once nothing says where it is any more, and
 /// so on down: a file located in a checkout that is gone takes its own readings along.
-pub(crate) fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Result<()> {
+/// Returns whether nothing says where it is.
+pub(crate) fn retract_inside(
+    tx: &Transaction,
+    r: &Reading,
+    entity: &str,
+) -> rusqlite::Result<bool> {
     let still_somewhere: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM assertion
                         WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?1)",
@@ -215,7 +220,7 @@ pub(crate) fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rus
         |row| row.get(0),
     )?;
     if still_somewhere {
-        return Ok(());
+        return Ok(false);
     }
     let inside: Vec<String> = tx
         .prepare(
@@ -232,5 +237,5 @@ pub(crate) fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rus
     for thing in inside {
         retract_inside(tx, r, &thing)?;
     }
-    Ok(())
+    Ok(true)
 }

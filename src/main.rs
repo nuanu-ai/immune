@@ -3790,10 +3790,25 @@ fn read_watched(
         let names = given.as_ref().map(|p| [c.path.as_path(), p.as_path()]);
         let given = names.as_ref().map_or(&[][..], |names| names.as_slice());
         let folder = git.folder(&c.path, &args.home, &homes, given);
-        let (look, elsewhere) = match watched::look_checkout(c, &args.home, homes, folder, given) {
-            watched::Hooks::GitFile => (look::Look::default(), Some(watched::GIT_FILE.to_string())),
-            watched::Hooks::Looked(look) => (look, None),
-        };
+        let (look, elsewhere, coverage) =
+            match watched::look_checkout(c, &args.home, homes, folder, given) {
+                watched::Hooks::GitFile => {
+                    let why = Some(watched::GIT_FILE.to_string());
+                    (look::Look::default(), why, None)
+                }
+                // `.git/hooks` was read; the folder the configuration names was not told.
+                watched::Hooks::Looked(look, untold) => {
+                    let coverage = untold.map(|(cause, why)| match look.completeness() {
+                        ("full", _) => ("partial", Some(why), Some(cause)),
+                        (_, reason) => {
+                            let reason = format!("{}; {why}", reason.unwrap_or_default());
+                            let cause = Some(cause).filter(|c| *c == look.cause());
+                            ("partial", Some(reason), cause.or(Some(Cause::Failed)))
+                        }
+                    });
+                    (look, None, coverage)
+                }
+            };
         // Every checkout is read, those with no hooks too: the first hook planted in a
         // checkout the store already held is then new, not the baseline. Hooks kept elsewhere
         // were not looked at.
@@ -3803,7 +3818,7 @@ fn read_watched(
             kind: watched::HOOK_KIND.to_string(),
             look,
             elsewhere,
-            coverage: None,
+            coverage,
             kept: Vec::new(),
             checkouts: vec![c.rel.clone()],
         });
@@ -3959,10 +3974,16 @@ fn read_watched(
             .checkouts
             .first()
             .filter(|_| p.kind == watched::HOOK_KIND)
-            .map(|c| watched::hook_unit(c));
-        let unresolved_hooks = hooks
-            .as_ref()
-            .is_some_and(|anchor| p.look.not_read().any(|(u, _)| u == anchor));
+            .map(|c| Unit::whole(format!("{c}/.git/hooks")));
+        // What was read outside `.git/hooks`, in a folder Git's configuration names, is kept
+        // as it was while that folder could not be told, or something outside was not read.
+        let outside = |u: &Unit| {
+            hooks
+                .as_ref()
+                .is_some_and(|h| !baseline::under(&u.path, &h.path))
+        };
+        let keep_outside =
+            hooks.is_some() && p.coverage.is_some() || p.look.not_read().any(|(u, _)| outside(u));
         let verdict_for = |unit: &Unit| -> rusqlite::Result<Verdict> {
             let verdict = judge.verdict(unit)?;
             if verdict == Verdict::FirstRead
@@ -4027,18 +4048,20 @@ fn read_watched(
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
         statements.extend(kept(tx, &reading, |_, unit| {
-            p.elsewhere.is_some() || unresolved_hooks || !p.look.retracts(unit)
+            p.elsewhere.is_some()
+                || !p.look.retracts(unit)
+                || keep_outside && unit.is_none_or(outside)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
         let (completeness, reason) = if let Some(why) = &p.elsewhere {
             ("partial", Some(why.clone()))
+        } else if let Some((completeness, reason, _)) = &p.coverage {
+            (*completeness, reason.clone())
         } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
             match p.look.completeness() {
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
                 other => other,
             }
-        } else if let Some((completeness, reason, _)) = &p.coverage {
-            (*completeness, reason.clone())
         } else {
             p.look.completeness()
         };
@@ -4302,21 +4325,11 @@ fn read_watched(
             at: run.at,
             observed_at: run.at,
         };
-        let still_watched: bool = run.tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM assertion
-             WHERE layer = 'live' AND reader = ?1 AND kind = ?2 AND subject = ?3
-               AND predicate = 'watched_as')",
-            rusqlite::params![watched::READER, watched::HOOK_KIND, event.subject],
-            |r| r.get(0),
-        )?;
-        store::journal_event(
-            run.tx,
-            &reading,
-            &event,
-            still_watched.then_some(watched::HOOK_STILL_ACTIVE),
-        )?;
-        if !still_watched && gone.insert(event.subject.clone()) {
-            lifecycle::retract_inside(run.tx, &reading, &event.subject)?;
+        // Gone only once no checkout's reading places it any more.
+        let left = lifecycle::retract_inside(run.tx, &reading, &event.subject)?;
+        let note = (!left).then_some(watched::HOOK_STILL_ACTIVE);
+        store::journal_event(run.tx, &reading, &event, note)?;
+        if left && gone.insert(event.subject.clone()) {
             observe("gone", watched::HOOK, &event.subject);
             rows.push(vec![
                 "gone".to_string(),
