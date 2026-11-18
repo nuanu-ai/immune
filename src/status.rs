@@ -367,7 +367,7 @@ fn journaled(
     };
     let mut stmt = conn.prepare(&format!(
         "SELECT at, run_id, entry, reader, scope, kind, subject, predicate, old_value, new_value,
-                seq, text IN (?3, ?4), text = ?5
+                seq, text IN (?3, ?4), text IN (?5, ?6)
          FROM journal
          WHERE {run} AND entry IN ('added', 'changed', 'removed') AND (?2 IS NULL OR reader = ?2)
          ORDER BY seq"
@@ -378,7 +378,8 @@ fn journaled(
             reader,
             store::FIRST_READING,
             store::READ_FIRST,
-            watched::HOOK_STILL_ACTIVE
+            watched::HOOK_STILL_ACTIVE,
+            watched::HOOK_ALREADY_WATCHED
         ],
         |r| {
             let reader: Option<String> = r.get(3)?;
