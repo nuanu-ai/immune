@@ -185,8 +185,21 @@ pub fn real_in(path: &Path, homes: &[&Path], given: &[&Path]) -> Real {
             continue;
         }
         let next = done.join(&part);
-        if let Some(g) = guarded(&next, !todo.is_empty()) {
+        let more = !todo.is_empty();
+        if let Some(g) = guarded(&next, more) {
             return Real::Guarded(g);
+        }
+        // A folder directly under /Volumes is told by its parent before it is looked at:
+        // looking at a mount point can wait on a server.
+        let (volumes, in_home) = ids.get_or_insert_with(|| identities(homes));
+        let parent = done_id.or_else(|| std::fs::symlink_metadata(&done).ok().map(|m| id(&m)));
+        let volume =
+            (parent.is_some() && parent == *volumes).then(|| Path::new(VOLUMES).join(&part));
+        if let Some(name) = &volume
+            && !exempt(name, more)
+            && !exempt(&next, more)
+        {
+            return Real::Guarded(name.clone());
         }
         match std::fs::symlink_metadata(&next) {
             Err(e) => return Real::Failed(e),
@@ -211,28 +224,16 @@ pub fn real_in(path: &Path, homes: &[&Path], given: &[&Path]) -> Real {
                     }
                 }
             }
-            Ok(m) if !m.is_dir() && !todo.is_empty() => {
+            Ok(m) if !m.is_dir() && more => {
                 return Real::Failed(std::io::Error::from_raw_os_error(libc::ENOTDIR));
             }
             Ok(m) if m.is_dir() => {
-                let (volumes, in_home) = ids.get_or_insert_with(|| identities(homes));
-                let parent =
-                    done_id.or_else(|| std::fs::symlink_metadata(&done).ok().map(|m| id(&m)));
-                let known = match in_home.iter().find(|(i, ..)| *i == id(&m)) {
-                    Some((_, name, at)) => Some((name.clone(), at.clone())),
-                    None if parent.is_some() && parent == *volumes => {
-                        Some((Path::new(VOLUMES).join(&part), next.clone()))
-                    }
-                    None => None,
-                };
-                done = match known {
-                    Some((name, at))
-                        if !exempt(&name, !todo.is_empty()) && !exempt(&at, !todo.is_empty()) =>
-                    {
-                        return Real::Guarded(name);
+                done = match in_home.iter().find(|(i, ..)| *i == id(&m)) {
+                    Some((_, name, at)) if !exempt(name, more) && !exempt(at, more) => {
+                        return Real::Guarded(name.clone());
                     }
                     // Exempt: on under the folder's own name, so what follows is told by it.
-                    Some((_, at)) => at,
+                    Some((_, _, at)) => at.clone(),
                     None => next,
                 };
                 done_id = Some(id(&m));

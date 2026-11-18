@@ -8,7 +8,7 @@ use crate::look::Absent;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 const CAP: u64 = 1024 * 1024;
 const KEY: &[u8] = b"core.hookspath";
@@ -116,10 +116,12 @@ impl Config {
     /// Apple Git's own file in the developer folder, the system file and the user's two.
     /// This process's own environment is not taken: the login job's has no `XDG_CONFIG_HOME`.
     pub fn new(home: &Path, system: &Path, homes: &[&Path]) -> Self {
-        let apple = developer_dir().map(|dir| {
+        let developer = developer_dir();
+        let apple = developer.as_deref().map(|dir| {
             let dir = dir.strip_prefix("/").unwrap_or(dir);
             system.join(dir).join(APPLE_CONFIG)
         });
+        *DEVELOPER.lock().unwrap_or_else(|e| e.into_inner()) = developer;
         let sources: Vec<PathBuf> = apple
             .into_iter()
             .chain([
@@ -381,27 +383,26 @@ fn expand(value: &[u8], home: &Path) -> Result<PathBuf, &'static str> {
     Ok(value.into())
 }
 
-/// The developer folder `xcode-select` names, asked once. /usr/bin/git is a developer-tools
-/// shim on Macs without those tools; this finds the installation without invoking the shim
-/// or prompting to install it.
-fn developer_dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let selected = Command::new("/usr/bin/xcode-select")
-            .env_clear()
-            .current_dir("/")
-            .arg("--print-path")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        let dir = std::str::from_utf8(&selected.stdout)
-            .ok()?
-            .trim_end_matches('\n');
-        let dir = PathBuf::from(dir);
-        (selected.status.success() && dir.is_absolute()).then_some(dir)
-    })
-    .as_deref()
+/// The developer folder `xcode-select` named when the shared configuration was last read.
+static DEVELOPER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The developer folder `xcode-select` names. /usr/bin/git is a developer-tools shim on Macs
+/// without those tools; this finds the installation without invoking the shim or prompting
+/// to install it. Asked for every pass: a watcher outlives a switch of developer tools.
+fn developer_dir() -> Option<PathBuf> {
+    let selected = Command::new("/usr/bin/xcode-select")
+        .env_clear()
+        .current_dir("/")
+        .arg("--print-path")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let dir = std::str::from_utf8(&selected.stdout)
+        .ok()?
+        .trim_end_matches('\n');
+    let dir = PathBuf::from(dir);
+    (selected.status.success() && dir.is_absolute()).then_some(dir)
 }
 
 /// Git in the developer folder, or why it is not run: running it from a folder macOS asks
@@ -423,7 +424,8 @@ fn git_in(dir: Option<&Path>, home: &Path, homes: &[&Path]) -> Result<PathBuf, S
 
 /// The records Git parses from `bytes`, or why there are none.
 fn git_config(home: &Path, homes: &[&Path], bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let git = git_in(developer_dir(), home, homes)?;
+    let developer = DEVELOPER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let git = git_in(developer.as_deref(), home, homes)?;
     let mut child = Command::new(git)
         .current_dir("/")
         .env_clear()
