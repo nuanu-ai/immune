@@ -3805,10 +3805,14 @@ fn read_watched(
             .get_or_insert_with(|| git_hooks::Config::new(&args.home, &args.system_root, &homes));
         // A walk pointed into a guarded folder may read its checkout. The paths in
         // Git config do not extend that permission to another guarded location.
-        let given = given_root
-            .as_ref()
-            .and_then(|(root, real)| Some(real.join(c.path.strip_prefix(root).ok()?)));
-        let names = given.as_ref().map(|p| [c.path.as_path(), p.as_path()]);
+        // The walk names a checkout under the root as given or made real: both names are allowed.
+        let names = given_root.as_ref().and_then(|(root, real)| {
+            let rest = (c.path.strip_prefix(root))
+                .or_else(|_| c.path.strip_prefix(real))
+                .ok()?;
+            Some([root.join(rest), real.join(rest)])
+        });
+        let names = names.as_ref().map(|[a, b]| [a.as_path(), b.as_path()]);
         let given = names.as_ref().map_or(&[][..], |names| names.as_slice());
         let folder = git.folder(&c.path, &args.home, &homes, given);
         let (look, elsewhere, coverage) =
@@ -3821,10 +3825,11 @@ fn read_watched(
                 watched::Hooks::Looked(look, untold) => {
                     let coverage = untold.map(|(cause, why)| match look.completeness() {
                         ("full", _) => ("partial", Some(why), Some(cause)),
-                        (_, reason) => {
+                        // Never calmer than `.git/hooks` alone: `none` stays `none`.
+                        (completeness, reason) => {
                             let reason = format!("{}; {why}", reason.unwrap_or_default());
                             let cause = Some(cause).filter(|c| *c == look.cause());
-                            ("partial", Some(reason), cause.or(Some(Cause::Failed)))
+                            (completeness, Some(reason), cause.or(Some(Cause::Failed)))
                         }
                     });
                     (look, None, coverage)
@@ -4023,9 +4028,6 @@ fn read_watched(
         // The place a thing read for the first time is told by: its checkout, the folder that
         // was listed, or its file.
         let group = |unit: &Unit| {
-            if hooks.is_some() {
-                return p.checkouts[0].clone();
-            }
             if let Some(c) = judge.checkout_of(&unit.path) {
                 return c.to_string();
             }

@@ -2197,6 +2197,11 @@ fn git_hooks_resolve_inherited_paths_from_the_worktree_and_receive_paths_from_gi
         &tree.join(".git/user-hooks/pre-receive"),
         "# Git's receive hook\n",
     );
+    // `git receive-pack` runs `git gc --auto` in the Git directory, and with it this hook.
+    put(
+        &tree.join(".git/user-hooks/pre-auto-gc"),
+        "# after a push\n",
+    );
     let paths = || {
         e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live' ORDER BY subject")
     };
@@ -2204,6 +2209,7 @@ fn git_hooks_resolve_inherited_paths_from_the_worktree_and_receive_paths_from_gi
     assert_eq!(
         paths(),
         [
+            "file:machine:mac/dev/tree/.git/user-hooks/pre-auto-gc",
             "file:machine:mac/dev/tree/.git/user-hooks/pre-receive",
             "file:machine:mac/dev/tree/user-hooks/pre-push"
         ]
@@ -2266,7 +2272,11 @@ fn a_hook_planted_in_dot_git_hooks_is_found_whatever_git_configuration_says() {
             "partial|",
             "includeIf",
         ),
-        ("[extensions]\n worktreeConfig = true\n", "full|", ""),
+        (
+            "[core]\n repositoryformatversion = 1\n[extensions]\n worktreeConfig = true\n",
+            "full|",
+            "",
+        ),
         ("[core]\n hooksPath =\n", "full|", ""),
         ("[core]\n hooksPath = .git/HEAD\n", "full|", ""),
         (&big, "partial|", "size cap"),
@@ -2332,7 +2342,10 @@ fn git_hooks_follow_a_plain_include_and_config_worktree_to_the_folder_they_name(
     assert_eq!(tree_hooks_reading(&e), "full|");
     assert_eq!(live_hooks(&e), ["file:machine:mac/shared-hooks/pre-push"]);
     // As `git sparse-checkout` leaves it: `config.worktree` is read after `config`.
-    put(&tree.join(".git/config"), "[extensions]\n worktreeConfig\n");
+    put(
+        &tree.join(".git/config"),
+        "[core]\n repositoryformatversion = 1\n[extensions]\n worktreeConfig\n",
+    );
     put(
         &tree.join(".git/config.worktree"),
         "[core]\n hooksPath = wt-hooks\n",
@@ -2365,20 +2378,24 @@ fn git_hooks_say_why_an_include_leaves_the_folder_untold_and_an_include_if_namin
     );
     e.full();
     assert_eq!(tree_hooks_reading(&e), "full|");
-    // Git follows ten nested includes and refuses the eleventh, whatever a later file says.
+    // Git follows ten nested includes and refuses an eleventh that is there, whatever a later
+    // file says; a missing one is skipped.
     for n in 1..=10 {
         let next = format!("[include]\n path = inc-{}.conf\n", n + 1);
         put(&e.home().join(format!("inc-{n}.conf")), &next);
     }
-    put(&global, "[include]\n path = inc-2.conf\n");
-    e.full();
-    assert_eq!(tree_hooks_reading(&e), "full|");
+    for first in ["inc-1.conf", "inc-2.conf"] {
+        put(&global, &format!("[include]\n path = {first}\n"));
+        e.full();
+        assert_eq!(tree_hooks_reading(&e), "full|");
+        put(&e.home().join("inc-11.conf"), "[user]\n name = Someone\n");
+    }
     let untold = "partial|the folder Git's configuration names for hooks could not be told: ";
     let last_cause = "SELECT cause FROM coverage WHERE scope = 'checkout:machine:mac/dev/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1";
     for (included, why, cause) in [
         (
             "[include]\n path = inc-1.conf\n",
-            "Git configuration includes are nested deeper than the 10 levels Git allows",
+            "Git configuration includes go more than 10 levels deep",
             "failed",
         ),
         (
@@ -2399,17 +2416,27 @@ fn git_hooks_say_why_an_include_leaves_the_folder_untold_and_an_include_if_namin
     assert!(e.found().is_empty());
     let met = "SELECT reason FROM coverage WHERE reader = 'watched-places' AND kind = 'folders macOS asks permission for' ORDER BY id DESC LIMIT 1";
     assert!(e.rows(met)[0].contains("~/Documents"));
-    // What `.git/hooks` could not be read for is said before it, and the cause is one only
-    // when both have it.
+    // An includeIf whose file cannot be read could name a folder: untold, as that file is.
+    put(&global, "");
+    put(
+        &e.home().join("work.conf"),
+        "[include]\n path = Documents/git.conf\n",
+    );
+    e.full();
+    let documents_why =
+        "Git's configuration leads into ~/Documents, which macOS asks permission for";
+    assert_eq!(tree_hooks_reading(&e), format!("{untold}{documents_why}"));
+    // What `.git/hooks` could not be read for is said before it, the reading is no calmer than
+    // that alone, and the cause is one only when both have it.
     let documents = e.home().join("Documents/hooks");
     link(documents.to_str().unwrap(), &tree.join(".git/hooks"));
     let tail = "; the folder Git's configuration names for hooks could not be told: Git's configuration leads into ~/Documents, which macOS asks permission for";
     for (head, cause) in [
         (
-            "partial|not looked into: dev/tree/.git/hooks: it leads into ~/Documents",
+            "none|not looked into: dev/tree/.git/hooks: it leads into ~/Documents",
             "not_given",
         ),
-        ("partial|could not be read: dev/tree/.git/hooks (", "failed"),
+        ("none|could not be read: dev/tree/.git/hooks (", "failed"),
     ] {
         e.full();
         let reading = tree_hooks_reading(&e);
@@ -2455,7 +2482,10 @@ fn git_hooks_folder_is_untold_only_when_a_moved_working_tree_moves_a_relative_pa
     }
     assert_eq!(live_hooks(&e), ["file:machine:mac/shared/pre-push"]);
     // `config.worktree` moves the working tree as `config` does.
-    put(&tree.join(".git/config"), "[extensions]\n worktreeConfig\n");
+    put(
+        &tree.join(".git/config"),
+        "[core]\n repositoryformatversion = 1\n[extensions]\n worktreeConfig\n",
+    );
     put(
         &tree.join(".git/config.worktree"),
         "[core]\n bare = true\n hooksPath = tools\n",
@@ -2517,6 +2547,148 @@ fn git_hooks_are_told_from_the_files_the_login_job_reads_whatever_the_run_s_envi
         );
         assert!(e.found().is_empty());
     }
+}
+
+#[test]
+fn git_hooks_read_config_worktree_only_where_git_reads_it() {
+    // Git takes `extensions.worktreeConfig` only beside a format version, and reads its words;
+    // a value Git reads by its own number rules leaves the folder untold.
+    let e = Estate::new("git-hooks-worktree-config");
+    let tree = e.checkout("dev/tree");
+    put(&tree.join("evil/pre-commit"), "# evil\n");
+    put(&tree.join("decoy/pre-commit"), "# decoy\n");
+    put(
+        &tree.join(".git/config.worktree"),
+        "[core]\n hooksPath = decoy\n",
+    );
+    let odd = "partial|the folder Git's configuration names for hooks could not be told: core.bare, extensions.worktreeConfig or core.repositoryformatversion has a value this reader does not read";
+    for (layout, read) in [
+        ("[extensions]\n worktreeConfig = true\n", "evil"),
+        (
+            "[core]\n repositoryformatversion = 0\n[extensions]\n worktreeConfig = true\n",
+            "decoy",
+        ),
+        (
+            "[core]\n repositoryformatversion = 1\n[extensions]\n worktreeConfig = off\n",
+            "evil",
+        ),
+        (
+            "[core]\n repositoryformatversion = 1\n[extensions]\n worktreeConfig = 00\n",
+            "",
+        ),
+        (
+            "[core]\n repositoryformatversion = 2\n[extensions]\n worktreeConfig = true\n",
+            "",
+        ),
+        ("[core]\n bare = 0x0\n", ""),
+    ] {
+        put(
+            &tree.join(".git/config"),
+            &format!("[core]\n hooksPath = evil\n{layout}"),
+        );
+        e.full();
+        let reading = tree_hooks_reading(&e);
+        if read.is_empty() {
+            assert_eq!(reading, odd, "{layout}");
+        } else {
+            assert_eq!(reading, "full|", "{layout}");
+            let hook = format!("file:machine:mac/dev/tree/{read}/pre-commit");
+            assert_eq!(live_hooks(&e), [hook], "{layout}");
+        }
+    }
+}
+
+#[test]
+fn git_hooks_read_apple_git_s_own_file_before_the_system_file() {
+    // Apple Git reads `usr/share/git-core/gitconfig` of its developer folder first. The run
+    // reads it under the system root it is given, as it reads `/etc/gitconfig`.
+    let e = Estate::new("git-hooks-apple");
+    let tree = e.checkout("dev/tree");
+    let selected = Command::new("/usr/bin/xcode-select")
+        .env_clear()
+        .arg("--print-path")
+        .output()
+        .unwrap();
+    let developer = String::from_utf8(selected.stdout).unwrap();
+    let apple =
+        e.0.join("system")
+            .join(developer.trim_end().trim_start_matches('/'))
+            .join("usr/share/git-core/gitconfig");
+    put(&apple, "[core]\n hooksPath = apple-hooks\n");
+    put(&tree.join("apple-hooks/pre-commit"), "# apple\n");
+    put(&tree.join("etc-hooks/pre-commit"), "# etc\n");
+    e.full();
+    assert_eq!(
+        live_hooks(&e),
+        ["file:machine:mac/dev/tree/apple-hooks/pre-commit"]
+    );
+    put(
+        &e.0.join("system/etc/gitconfig"),
+        "[core]\n hooksPath = etc-hooks\n",
+    );
+    e.full();
+    assert_eq!(
+        live_hooks(&e),
+        ["file:machine:mac/dev/tree/etc-hooks/pre-commit"]
+    );
+}
+
+#[test]
+fn git_hooks_includes_that_fan_out_stop_at_a_budget_and_leave_the_folder_untold() {
+    // Each file includes the next four times: within Git's depth, over a thousand files.
+    let e = Estate::new("git-hooks-fan-out");
+    let tree = e.checkout("dev/tree");
+    put(&tree.join(".git/hooks/pre-commit"), "# own\n");
+    for n in 0..5 {
+        let next = format!("[include]\n path = fan-{}.conf\n", n + 1).repeat(4);
+        put(&e.home().join(format!("fan-{n}.conf")), &next);
+    }
+    put(
+        &e.home().join(".gitconfig"),
+        "[include]\n path = fan-0.conf\n",
+    );
+    let started = std::time::Instant::now();
+    e.full();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert_eq!(
+        tree_hooks_reading(&e),
+        "partial|the folder Git's configuration names for hooks could not be told: more than 64 Git configuration files are included"
+    );
+    assert_eq!(
+        live_hooks(&e),
+        ["file:machine:mac/dev/tree/.git/hooks/pre-commit"]
+    );
+}
+
+#[test]
+fn git_hooks_say_that_git_s_own_folder_or_a_configuration_file_could_not_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("git-hooks-unreadable");
+    let tree = e.checkout("dev/tree");
+    let config = tree.join(".git/config");
+    put(&config, "[core]\n hooksPath = tools\n");
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    mode(&config, 0o000);
+    e.full();
+    let reading = tree_hooks_reading(&e);
+    assert!(
+        reading.ends_with(
+            "a Git configuration file could not be read: Permission denied (os error 13)"
+        ),
+        "{reading}"
+    );
+    mode(&config, 0o644);
+    mode(&tree.join(".git"), 0o000);
+    e.full();
+    let reading = tree_hooks_reading(&e);
+    mode(&tree.join(".git"), 0o755);
+    assert!(
+        reading.starts_with("none|could not be read: dev/tree/.git/hooks (")
+            && reading.ends_with("could not be told: could not read .git"),
+        "{reading}"
+    );
 }
 
 /// An agent's session that worked in these folders.

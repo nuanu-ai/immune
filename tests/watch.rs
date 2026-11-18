@@ -937,6 +937,8 @@ fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
 fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     let mac = Mac::new("hooks");
     mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    // Git runs no hook from `/dev/null`: nothing under it is watched, `.git/hooks` still is.
+    mac.put("dev/shop/.git/config", "[core]\n hooksPath = /dev/null\n");
     std::fs::create_dir_all(mac.home().join("dev/shop/.git/hooks")).unwrap();
     mac.run();
     let mut w = mac.watch();
@@ -965,9 +967,9 @@ const TABLE_PLACES: u64 = 35;
 /// Claude Code's state file is not one: it is rewritten all the time.
 const HOME_PLACES: u64 = 6;
 
-/// Shared Git configuration when there is a checkout to watch: the system file, XDG file,
-/// and `~/.gitconfig`.
-const GIT_CONFIG_PLACES: u64 = 3;
+/// Shared Git configuration when there is a checkout to watch: Apple Git's own file in the
+/// developer folder, the system file, the XDG file and `~/.gitconfig`.
+const GIT_CONFIG_PLACES: u64 = 4;
 
 /// The places the watcher subscribes to in each checkout with default hooks. This includes
 /// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's

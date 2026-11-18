@@ -13,9 +13,15 @@ use std::sync::OnceLock;
 const CAP: u64 = 1024 * 1024;
 const KEY: &[u8] = b"core.hookspath";
 const SYSTEM_CONFIG: &str = "etc/gitconfig";
-/// Git stops at a deeper include (`MAX_INCLUDE_DEPTH` in Git's `config.c`).
+/// Apple Git's own file, in the developer folder, read before the system file.
+const APPLE_CONFIG: &str = "usr/share/git-core/gitconfig";
+/// Git refuses an included file deeper than this (`MAX_INCLUDE_DEPTH` in Git's `config.c`).
 const INCLUDE_DEPTH: usize = 10;
+/// The configuration files one resolution reads at most, includes counted: an honest
+/// configuration reads a handful, and includes that fan out would cost a Git run each.
+const BUDGET: usize = 64;
 const UNPARSED: &str = "Git could not parse a configuration file";
+const ODD_WORD: &str = "core.bare, extensions.worktreeConfig or core.repositoryformatversion has a value this reader does not read";
 
 /// The names Git documents for hooks it runs itself, from githooks(5). A configured
 /// folder might be the worktree, the home folder or `/`. Only these names are examined
@@ -45,11 +51,14 @@ pub const WORKTREE_HOOKS: &[&str] = &[
     "sendemail-validate",
 ];
 
-/// The hooks Git runs in the Git directory during a push, `reference-transaction` among them.
+/// The hooks Git runs in the Git directory during a push, `reference-transaction` and
+/// `pre-auto-gc` among them.
 pub const RECEIVE_HOOKS: &[&str] = &[
     "post-receive",
     "post-update",
     "pre-receive",
+    // `git receive-pack` runs `git gc --auto` after a push.
+    "pre-auto-gc",
     "proc-receive",
     "push-to-checkout",
     "reference-transaction",
@@ -98,22 +107,31 @@ impl Folder {
 
 /// Shared Git configuration, read once per pass, in Git's order of precedence.
 pub struct Config {
-    sources: [PathBuf; 3],
+    sources: Vec<PathBuf>,
     inherited: Setting,
 }
 
 impl Config {
-    /// The files Git reads for every repository, found as Git finds them with only `HOME` set.
+    /// The files Git reads for every repository, found as Git finds them with only `HOME` set:
+    /// Apple Git's own file in the developer folder, the system file and the user's two.
     /// This process's own environment is not taken: the login job's has no `XDG_CONFIG_HOME`.
     pub fn new(home: &Path, system: &Path, homes: &[&Path]) -> Self {
-        let sources = [
-            system.join(SYSTEM_CONFIG),
-            home.join(".config/git/config"),
-            home.join(".gitconfig"),
-        ];
+        let apple = developer_dir().map(|dir| {
+            let dir = dir.strip_prefix("/").unwrap_or(dir);
+            system.join(dir).join(APPLE_CONFIG)
+        });
+        let sources: Vec<PathBuf> = apple
+            .into_iter()
+            .chain([
+                system.join(SYSTEM_CONFIG),
+                home.join(".config/git/config"),
+                home.join(".gitconfig"),
+            ])
+            .collect();
         let mut inherited = Setting::Unset;
+        let mut budget = BUDGET;
         for source in &sources {
-            apply(source, home, homes, &[], &mut inherited, 0);
+            apply(source, home, homes, &[], &mut inherited, 0, &mut budget);
         }
         Self { sources, inherited }
     }
@@ -136,18 +154,42 @@ impl Config {
             Real::Failed(_) => return failed("could not reach .git"),
         };
         // A separate common directory holds the configuration and the default hooks Git uses.
-        if !std::fs::symlink_metadata(git_dir.join("commondir"))
-            .is_err_and(|e| Absent::of(&e).is_some())
-        {
-            return failed("Git uses a separate common directory");
+        match std::fs::symlink_metadata(git_dir.join("commondir")) {
+            Ok(_) => return failed("Git uses a separate common directory"),
+            Err(e) if Absent::of(&e).is_none() => return failed("could not read .git"),
+            Err(_) => {}
         }
         let mut setting = self.inherited.clone();
-        let (mut moved, worktree_config) =
-            apply(&git_dir.join("config"), home, homes, given, &mut setting, 0);
-        // As `git sparse-checkout` sets it: Git then reads `config.worktree` after `config`.
-        if worktree_config {
-            let worktree = git_dir.join("config.worktree");
-            moved |= apply(&worktree, home, homes, given, &mut setting, 0).0;
+        let mut budget = BUDGET;
+        let mut apply = |path: &Path, setting: &mut Setting| {
+            apply(path, home, homes, given, setting, 0, &mut budget)
+        };
+        let local = apply(&git_dir.join("config"), &mut setting);
+        // Git takes `extensions.worktreeConfig`, as `git sparse-checkout` sets it, only beside
+        // a format version of 0 or 1, and then reads `config.worktree` after `config`.
+        let worktree_config = match (
+            last(&local, b"core.repositoryformatversion"),
+            last(&local, b"extensions.worktreeconfig"),
+        ) {
+            (None, _) | (_, None) => Some(false),
+            (Some(Some(b"0" | b"1")), Some(value)) => boolean(value),
+            _ => None,
+        };
+        let worktree = match worktree_config {
+            None => return failed(ODD_WORD),
+            Some(true) => apply(&git_dir.join("config.worktree"), &mut setting),
+            Some(false) => Vec::new(),
+        };
+        // `core.worktree`, or a true `core.bare`, moves the working tree; the later file wins.
+        let (mut worktree_set, mut bare) = (false, false);
+        for keys in [&local, &worktree] {
+            worktree_set |= last(keys, b"core.worktree").is_some();
+            if let Some(value) = last(keys, b"core.bare") {
+                let Some(value) = boolean(value) else {
+                    return failed(ODD_WORD);
+                };
+                bare = value;
+            }
         }
         match setting {
             Setting::Unset => Folder::Default,
@@ -158,7 +200,7 @@ impl Config {
                 worktree: "/".into(),
                 receive: "/".into(),
             },
-            Setting::Path(path) if moved && path.is_relative() => failed(
+            Setting::Path(path) if (worktree_set || bare) && path.is_relative() => failed(
                 "core.worktree or core.bare moves the folder a relative core.hooksPath starts from",
             ),
             Setting::Path(path) => Folder::Configured {
@@ -173,9 +215,8 @@ impl Config {
 /// the include stands, to the depth Git allows. An `includeIf` is followed without evaluating
 /// its condition, so it changes the answer only when what it includes names a hook folder.
 /// A file that cannot be read or parsed blocks the whole reading, even when another file
-/// names a hook folder. Returns whether the file itself moves the working tree
-/// (`core.worktree`, a true `core.bare`) and turns on `config.worktree`
-/// (`extensions.worktreeConfig`), which Git takes from a repository's own files only.
+/// names a hook folder, and so does reading more than `BUDGET` files for one resolution.
+/// Returns the file's own records.
 fn apply(
     path: &Path,
     home: &Path,
@@ -183,16 +224,31 @@ fn apply(
     given: &[&Path],
     setting: &mut Setting,
     depth: usize,
-) -> (bool, bool) {
-    let mut layout = (false, false);
+    budget: &mut usize,
+) -> Vec<u8> {
+    let refused = |why: String| Setting::Unavailable(Unread::Failed(why));
+    let Some(left) = budget.checked_sub(1) else {
+        *setting = refused(format!(
+            "more than {BUDGET} Git configuration files are included"
+        ));
+        return Vec::new();
+    };
+    *budget = left;
     let keys = match config(path, home, homes, given) {
         Ok(Some(keys)) => keys,
-        Ok(None) => return layout,
+        Ok(None) => return Vec::new(),
         Err(why) => {
             *setting = Setting::Unavailable(why);
-            return layout;
+            return Vec::new();
         }
     };
+    // Git skips a missing file at any depth and refuses one that is there.
+    if depth > INCLUDE_DEPTH {
+        *setting = refused(format!(
+            "Git configuration includes go more than {INCLUDE_DEPTH} levels deep"
+        ));
+        return Vec::new();
+    }
     let unknown = |why: String| Setting::Unknown(Unread::Failed(why));
     for (key, value) in records(&keys) {
         if matches!(setting, Setting::Unavailable(_)) {
@@ -203,32 +259,26 @@ fn apply(
             *setting = match value.map(|value| expand(value, home)) {
                 Some(Ok(path)) => Setting::Path(path),
                 Some(Err(why)) => unknown(format!("core.hooksPath {why}")),
-                None => Setting::Unavailable(Unread::Failed("core.hooksPath has no value".into())),
+                None => refused("core.hooksPath has no value".into()),
             };
         } else if include || key.starts_with(b"includeif.") && key.ends_with(b".path") {
-            let refused = |why: String| Setting::Unavailable(Unread::Failed(why));
             let included = match value.map(|value| expand(value, home)) {
-                // Git refuses the whole configuration then.
-                _ if depth >= INCLUDE_DEPTH => Err(refused(format!(
-                    "Git configuration includes are nested deeper than the {INCLUDE_DEPTH} levels Git allows"
-                ))),
-                None => Err(refused("an include path has no value".into())),
-                Some(Err(why)) => Err(unknown(format!("an include path {why}"))),
-                Some(Ok(to)) => Ok(path.parent().unwrap_or(path).join(to)),
-            };
-            let included = match included {
-                Ok(included) => included,
-                Err(untold) => {
-                    *setting = untold;
+                Some(Ok(to)) => path.parent().unwrap_or(path).join(to),
+                Some(Err(why)) => {
+                    *setting = unknown(format!("an include path {why}"));
+                    continue;
+                }
+                None => {
+                    *setting = refused("an include path has no value".into());
                     continue;
                 }
             };
             if include {
-                apply(&included, home, homes, given, setting, depth + 1);
+                apply(&included, home, homes, given, setting, depth + 1, budget);
                 continue;
             }
             let mut probe = Setting::Unset;
-            apply(&included, home, homes, given, &mut probe, depth + 1);
+            apply(&included, home, homes, given, &mut probe, depth + 1, budget);
             match probe {
                 Setting::Unset => {}
                 Setting::Path(_) => {
@@ -241,22 +291,33 @@ fn apply(
                     *setting = Setting::Unknown(why)
                 }
             }
-        } else if key == b"core.worktree" || key == b"core.bare" && is_true(value) {
-            layout.0 = true;
-        } else if key == b"extensions.worktreeconfig" {
-            layout.1 = is_true(value);
         }
     }
-    layout
+    keys
 }
 
-/// A Git boolean as Git reads it: a key with no value is true.
-fn is_true(value: Option<&[u8]>) -> bool {
-    !value.is_some_and(|v| {
-        [b"false".as_slice(), b"no", b"off", b"0", b""]
-            .iter()
-            .any(|x| v.eq_ignore_ascii_case(x))
-    })
+/// The last value of `key` among one file's records, `Some(None)` for a key with no value.
+fn last<'a>(keys: &'a [u8], key: &[u8]) -> Option<Option<&'a [u8]>> {
+    records(keys)
+        .filter(|(k, _)| *k == key)
+        .last()
+        .map(|(_, v)| v)
+}
+
+/// A Git boolean by the words Git documents, a key with no value being true. `None` for any
+/// other value: Git reads numbers there by rules this reader does not follow.
+fn boolean(value: Option<&[u8]>) -> Option<bool> {
+    let Some(value) = value else {
+        return Some(true);
+    };
+    let is = |words: &[&[u8]]| words.iter().any(|w| value.eq_ignore_ascii_case(w));
+    if is(&[b"true", b"yes", b"on", b"1"]) {
+        Some(true)
+    } else if is(&[b"false", b"no", b"off", b"0", b""]) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn config(
@@ -265,27 +326,31 @@ fn config(
     homes: &[&Path],
     given: &[&Path],
 ) -> Result<Option<Vec<u8>>, Unread> {
-    let failed = |why: &str| Unread::Failed(why.to_string());
+    let failed = |why: String| Unread::Failed(why);
     let at = match guarded::real_in(path, homes, given) {
         Real::At(at) => at,
         Real::Guarded(g) => return Err(Unread::Guarded(g)),
         Real::Failed(e) if Absent::on_the_way(&e).is_some() => return Ok(None),
-        Real::Failed(_) => return Err(failed("a Git configuration file could not be reached")),
+        Real::Failed(e) => {
+            return Err(failed(format!(
+                "a Git configuration file could not be reached: {e}"
+            )));
+        }
     };
     // Do not open a special file. The capped reader also checks what it opened and
     // uses O_NONBLOCK in case the file is replaced between the check and the open.
     if !std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_file() && m.len() <= CAP) {
         return Err(failed(
-            "a Git configuration file is not a regular file within the size cap of 1 MiB",
+            "a Git configuration file is not a regular file within the size cap of 1 MiB".into(),
         ));
     }
-    let bytes = crate::autorun::read_capped_resolved(&at, CAP).map_err(|_| {
-        failed("a Git configuration file could not be read within the size cap of 1 MiB")
-    })?;
+    let bytes = crate::autorun::read_capped_resolved(&at, CAP)
+        .map_err(|e| failed(format!("a Git configuration file could not be read: {e}")))?;
+    // A NUL in a value would read as a record of its own in Git's `--null` listing.
     if bytes.contains(&0) {
-        return Err(failed(UNPARSED));
+        return Err(failed(UNPARSED.into()));
     }
-    git_config(home, &bytes).map(Some).map_err(failed)
+    git_config(home, homes, &bytes).map(Some).map_err(failed)
 }
 
 /// `git config --null --list` separates records with NUL and a key from its
@@ -316,29 +381,49 @@ fn expand(value: &[u8], home: &Path) -> Result<PathBuf, &'static str> {
     Ok(value.into())
 }
 
+/// The developer folder `xcode-select` names, asked once. /usr/bin/git is a developer-tools
+/// shim on Macs without those tools; this finds the installation without invoking the shim
+/// or prompting to install it.
+fn developer_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let selected = Command::new("/usr/bin/xcode-select")
+            .env_clear()
+            .current_dir("/")
+            .arg("--print-path")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let dir = std::str::from_utf8(&selected.stdout)
+            .ok()?
+            .trim_end_matches('\n');
+        let dir = PathBuf::from(dir);
+        (selected.status.success() && dir.is_absolute()).then_some(dir)
+    })
+    .as_deref()
+}
+
+/// Git in the developer folder, or why it is not run: running it from a folder macOS asks
+/// permission for would enter that folder.
+fn git_in(dir: Option<&Path>, home: &Path, homes: &[&Path]) -> Result<PathBuf, String> {
+    let not_installed = "Git is not installed: macOS names no developer tools that hold it";
+    let git = dir.ok_or(not_installed)?.join("usr/bin/git");
+    match guarded::real_in(&git, homes, &[]) {
+        Real::At(git) if git.is_file() => Ok(git),
+        Real::Guarded(g) => {
+            let shown = guarded::shown(&g, home);
+            Err(format!(
+                "Git is in {shown}, which macOS asks permission for"
+            ))
+        }
+        _ => Err(not_installed.into()),
+    }
+}
+
 /// The records Git parses from `bytes`, or why there are none.
-fn git_config(home: &Path, bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
-    // /usr/bin/git is a developer-tools shim on Macs without those tools. Ask for the
-    // selected installation without invoking the shim or prompting to install it.
-    static GIT: OnceLock<Option<PathBuf>> = OnceLock::new();
-    let git = GIT
-        .get_or_init(|| {
-            let selected = Command::new("/usr/bin/xcode-select")
-                .env_clear()
-                .current_dir("/")
-                .arg("--print-path")
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            let root = std::str::from_utf8(&selected.stdout)
-                .ok()?
-                .trim_end_matches('\n');
-            let git = Path::new(root).join("usr/bin/git");
-            (selected.status.success() && git.is_absolute() && git.is_file()).then_some(git)
-        })
-        .as_ref()
-        .ok_or("Git is not installed: macOS names no developer tools that hold it")?;
+fn git_config(home: &Path, homes: &[&Path], bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let git = git_in(developer_dir(), home, homes)?;
     let mut child = Command::new(git)
         .current_dir("/")
         .env_clear()
@@ -363,7 +448,7 @@ fn git_config(home: &Path, bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
         .spawn()
         .map_err(|_| "Git could not be run")?;
     let (Some(mut input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
-        return Err("Git could not be run");
+        return Err("Git could not be run".into());
     };
     let mut output = output.take(CAP + 1);
     // Drain output while writing input, even if Git prints before it consumes the file.
@@ -377,6 +462,22 @@ fn git_config(home: &Path, bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
         let status = child.wait();
         let written = write.join().is_ok_and(|w| w.is_ok());
         let parsed_whole = complete && written && status.is_ok_and(|s| s.success());
-        parsed_whole.then_some(parsed).ok_or(UNPARSED)
+        parsed_whole.then_some(parsed).ok_or(UNPARSED.into())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_in_a_folder_macos_asks_permission_for_is_not_run() {
+        let home = Path::new("/Users/someone");
+        let dir = home.join("Documents/Xcode.app/Contents/Developer");
+        let why = git_in(Some(&dir), home, &[home]).unwrap_err();
+        assert_eq!(
+            why,
+            "Git is in ~/Documents, which macOS asks permission for"
+        );
+    }
 }
