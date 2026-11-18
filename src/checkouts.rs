@@ -6,6 +6,8 @@
 //! checkouts. Paths are relative to the home folder, so the same checkout has the same id
 //! whoever runs it and wherever the walk starts.
 
+use crate::agent_folders::still_there;
+use crate::guarded;
 use std::path::{Path, PathBuf};
 
 pub const READER: &str = "checkouts";
@@ -100,6 +102,59 @@ pub struct Walk {
     pub listed: Vec<String>,
     /// Every folder found in a folder that was listed, entered or not.
     pub seen: Vec<String>,
+}
+
+impl Walk {
+    /// Whether the walk looked where the checkout `rel` was and it was not there: the walk
+    /// listed the folder that held it in full, and no folder of that name was in it. A
+    /// checkout whose folder the walk did not list (deeper than it goes, inside a hidden,
+    /// pruned or guarded folder, in one that could not be listed, inside another checkout)
+    /// was not walked past, nor was one whose folder is still there.
+    pub fn went_past(&self, rel: &str) -> bool {
+        let parent = match Path::new(rel).parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
+            _ => ".".to_string(),
+        };
+        self.listed.contains(&parent) && !self.seen.iter().any(|s| s == rel)
+    }
+
+    /// A checkout the store holds at `rel` that this walk, started at `root`, did not meet.
+    /// Nothing on the way to it is looked at before it is known not to lead into a folder
+    /// macOS asks permission for that the walk was not given. Then it is kept when something
+    /// other than a folder is where it was (`is_moved`), gone when the walk went past it, and
+    /// otherwise looked at where it was, as an agent's working folder is (`still_there`).
+    pub fn look_again(&self, rel: &str, home: &Path, root: &Path, homes: &[&Path]) -> Again {
+        let path = home.join(rel);
+        if let guarded::Real::Guarded(g) = guarded::real(&path, homes)
+            && !root.starts_with(&g)
+        {
+            return Again::Guarded(g);
+        }
+        if is_moved(&path) {
+            return Again::Moved;
+        }
+        if self.went_past(rel) {
+            return Again::Gone;
+        }
+        match still_there(&path) {
+            Some(true) => Again::Found(path),
+            Some(false) => Again::Gone,
+            None => Again::NotTold,
+        }
+    }
+}
+
+/// What looking again at a known checkout found.
+pub enum Again {
+    /// It is there, at this path, as the walk names the paths it meets.
+    Found(PathBuf),
+    Gone,
+    /// Something other than a folder is where it was.
+    Moved,
+    /// The disk could not say.
+    NotTold,
+    /// It is in this folder macOS asks permission for, which was not entered.
+    Guarded(PathBuf),
 }
 
 /// The path as ids name it: relative to the home folder when it is inside it.
