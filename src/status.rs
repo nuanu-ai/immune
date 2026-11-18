@@ -347,6 +347,7 @@ struct Journaled {
     new: Option<String>,
     /// A first reading: recorded and counted as nothing new.
     first: bool,
+    hook_still_active: bool,
 }
 
 /// The differences of one run, or of every run, oldest first, from one reader or all, each
@@ -366,13 +367,19 @@ fn journaled(
     };
     let mut stmt = conn.prepare(&format!(
         "SELECT at, run_id, entry, reader, scope, kind, subject, predicate, old_value, new_value,
-                seq, text IN (?3, ?4)
+                seq, text IN (?3, ?4), text = ?5
          FROM journal
          WHERE {run} AND entry IN ('added', 'changed', 'removed') AND (?2 IS NULL OR reader = ?2)
          ORDER BY seq"
     ))?;
     let rows = stmt.query_map(
-        params![run_id, reader, store::FIRST_READING, store::READ_FIRST],
+        params![
+            run_id,
+            reader,
+            store::FIRST_READING,
+            store::READ_FIRST,
+            watched::HOOK_STILL_ACTIVE
+        ],
         |r| {
             let reader: Option<String> = r.get(3)?;
             let kind: Option<String> = r.get(5)?;
@@ -391,6 +398,7 @@ fn journaled(
                 old: r.get(8)?,
                 new: r.get(9)?,
                 first: marked,
+                hook_still_active: r.get::<_, Option<bool>>(12)?.unwrap_or(false),
             };
             e.first |= reader.as_deref().is_some_and(|r| BASELINED.contains(&r))
                 && !judged
@@ -485,7 +493,7 @@ fn path_of(id: &str) -> &str {
 /// it is new in the same run.
 fn file_changes(conn: &Connection, base: &Baselines) -> rusqlite::Result<Vec<FileChange>> {
     let mut events = journaled(conn, None, Some(watched::READER), base)?;
-    events.retain(|e| !e.first);
+    events.retain(|e| !e.first && !e.hook_still_active);
     let new: HashSet<(&str, &str)> = events
         .iter()
         .filter(|e| e.entry == "added" && e.predicate == "watched_as")

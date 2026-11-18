@@ -27,6 +27,7 @@ mod finding_answer;
 mod finding_text;
 mod findings;
 mod fsevents;
+mod git_hooks;
 mod guarded;
 mod happens;
 mod icu;
@@ -2581,7 +2582,11 @@ impl Run<'_> {
         let mut out = Vec::new();
         for e in lifecycle::promote(self.tx, r, a.compared)? {
             let verdict = judge(&e)?;
-            store::journal_event(self.tx, r, &e, verdict.text())?;
+            // A hook can move between checkouts during one reading. Its departure is
+            // journaled after every checkout has been compared.
+            if !watched::hook_departure(r.kind, &e) {
+                store::journal_event(self.tx, r, &e, verdict.text())?;
+            }
             out.push((e, verdict));
         }
         Ok(out)
@@ -3747,12 +3752,18 @@ fn read_watched(
             checkouts: Vec::new(),
         });
     }
+    let homes = watched::homes(&args.home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
+    let mut git = None;
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
         if !wanted(&scope, watched::HOOK_KIND) {
             continue;
         }
-        let (look, elsewhere) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
+        let git = git
+            .get_or_insert_with(|| git_hooks::Config::new(&args.home, &args.system_root, &homes));
+        let folder = git.folder(&c.path, &args.home, &homes);
+        let (look, elsewhere) = match watched::look_checkout(c, &args.home, homes, folder) {
             watched::Hooks::GitFile => (look::Look::default(), Some(watched::GIT_FILE.to_string())),
             watched::Hooks::Looked(look) => (look, None),
         };
@@ -3898,6 +3909,7 @@ fn read_watched(
     let first_check = !baseline::checked_before(run.tx, &run_id)?;
     // What was read for the first time, by the place that holds it and what it is watched as.
     let mut first_reads: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
+    let mut hook_departures = Vec::new();
 
     for (p, mine) in placed.iter().zip(&lines) {
         let reading = Reading {
@@ -3920,9 +3932,34 @@ fn read_watched(
         let file_id = |unit: &Unit| format!("file:{machine}/{unit}");
         let prefix = format!("file:{machine}/");
         let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
+        let hooks = p
+            .checkouts
+            .first()
+            .filter(|_| p.kind == watched::HOOK_KIND)
+            .map(|c| watched::hook_unit(c));
+        let unresolved_hooks = hooks
+            .as_ref()
+            .is_some_and(|anchor| p.look.not_read().any(|(u, _)| u == anchor));
+        let verdict_for = |unit: &Unit| -> rusqlite::Result<Verdict> {
+            let verdict = judge.verdict(unit)?;
+            if verdict == Verdict::FirstRead
+                && let Some(hooks) = &hooks
+            {
+                // A different effective folder is new to a checkout whose hook folder was
+                // resolved before. An outside path also belongs to its own checkout here.
+                return judge.verdict(&Unit::whole(format!(
+                    "{hooks}/{}",
+                    unit.path.rsplit('/').next().unwrap_or_default()
+                )));
+            }
+            Ok(verdict)
+        };
         // The place a thing read for the first time is told by: its checkout, the folder that
         // was listed, or its file.
         let group = |unit: &Unit| {
+            if hooks.is_some() {
+                return p.checkouts[0].clone();
+            }
             if let Some(c) = judge.checkout_of(&unit.path) {
                 return c.to_string();
             }
@@ -3967,7 +4004,7 @@ fn read_watched(
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
         statements.extend(kept(tx, &reading, |unit| {
-            p.elsewhere.is_some() || !p.look.retracts(unit)
+            p.elsewhere.is_some() || unresolved_hooks || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
         let (completeness, reason) = if let Some(why) = &p.elsewhere {
@@ -4015,7 +4052,7 @@ fn read_watched(
             let Some(unit) = units.get(&e.subject) else {
                 return Ok(Verdict::FirstRead);
             };
-            let v = judge.verdict(unit)?;
+            let v = verdict_for(unit)?;
             judged.insert(e.subject.clone(), v);
             Ok(v)
         })?;
@@ -4046,6 +4083,10 @@ fn read_watched(
                     new.insert(e.subject);
                 }
                 (_, "removed", "watched_as") => {
+                    if watched::hook_departure(&p.kind, &e) {
+                        hook_departures.push((p.scope.as_str(), e));
+                        continue;
+                    }
                     let place = e.old.unwrap_or_default();
                     observe("gone", &place, &e.subject);
                     rows.push(vec![
@@ -4079,10 +4120,6 @@ fn read_watched(
         // reading it again later brings what changed meanwhile as changes. Hooks no longer
         // where they were are lost sight of when they were read there before; a new worktree's
         // hooks were never here.
-        let hooks = p
-            .checkouts
-            .first()
-            .map(|c| Unit::whole(format!("{c}/.git/hooks")));
         let unread_now: Vec<(Unit, String)> = match (&p.elsewhere, &hooks) {
             (Some(why), Some(unit)) if judge.read_before(&unit.path)? => {
                 vec![(unit.clone(), why.clone())]
@@ -4097,7 +4134,7 @@ fn read_watched(
                 continue;
             }
             let id = file_id(unit);
-            match judge.verdict(unit)? {
+            match verdict_for(unit)? {
                 Verdict::Change => {
                     lost_sight(run.tx, &reading, &id, why)?;
                     observe(findings::NOT_READ, p.watched_as, &id);
@@ -4230,6 +4267,45 @@ fn read_watched(
             p.look.read_units(),
             p.look.seen_units(),
         )?;
+    }
+    let mut gone = BTreeSet::new();
+    let file_prefix = format!("file:{machine}/");
+    for (scope, event) in hook_departures {
+        let reading = Reading {
+            reader: watched::READER,
+            scope,
+            kind: watched::HOOK_KIND,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        let still_watched: bool = run.tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND kind = ?2 AND subject = ?3
+               AND predicate = 'watched_as')",
+            rusqlite::params![watched::READER, watched::HOOK_KIND, event.subject],
+            |r| r.get(0),
+        )?;
+        store::journal_event(
+            run.tx,
+            &reading,
+            &event,
+            still_watched.then_some(watched::HOOK_STILL_ACTIVE),
+        )?;
+        if !still_watched && gone.insert(event.subject.clone()) {
+            lifecycle::retract_inside(run.tx, &reading, &event.subject)?;
+            observe("gone", watched::HOOK, &event.subject);
+            rows.push(vec![
+                "gone".to_string(),
+                watched::HOOK.to_string(),
+                event
+                    .subject
+                    .strip_prefix(&file_prefix)
+                    .unwrap_or(&event.subject)
+                    .to_string(),
+                String::new(),
+            ]);
+        }
     }
     // One line per place read for the first time, and one journal entry for each, which the
     // finding that tells them rests on.

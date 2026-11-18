@@ -1514,6 +1514,49 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
 }
 
 #[test]
+fn git_hooks_watch_rebinds_to_a_new_folder_on_a_config_event() {
+    let mac = Mac::new("git-hooks-rebind");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/api/.git/config", "[core]\n hooksPath = ../first\n");
+    mac.put("dev/first/pre-commit", "# baseline\n");
+    mac.put("dev/second/pre-push", "# inactive at start\n");
+    mac.run();
+    let mut watcher = mac.watch_with(&["--alive-every", "60"]).started();
+    mac.put(
+        "dev/api/.git/config",
+        "[core]\n hooksPath = ../first\n[remote \"origin\"]\n url = https://example.invalid/repo\n",
+    );
+    assert_eq!(watcher.next("read")["opened"], 0);
+    // Git rewrites config by replacing it, as `git config` does with config.lock.
+    let replacement = mac.put(
+        "dev/api/.git/config.lock",
+        "[core]\n hooksPath = ../second\n",
+    );
+    std::fs::rename(replacement, mac.home().join("dev/api/.git/config")).unwrap();
+    assert_eq!(watcher.next("read")["opened"], 2);
+    mac.put("dev/second/post-merge", "# newly active\n");
+    assert_eq!(watcher.next("read")["opened"], 1);
+    assert_eq!(
+        found(&mac),
+        [
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/first/pre-commit".to_string()
+            ),
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/second/post-merge".to_string()
+            ),
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/second/pre-push".to_string()
+            ),
+        ]
+    );
+    assert!(watcher.stop().success());
+}
+
+#[test]
 fn what_changes_between_the_watchers_first_reading_and_the_first_check_where_the_watcher_read_is_found()
  {
     // The watcher's first reading of the home folder is that folder's baseline, though no

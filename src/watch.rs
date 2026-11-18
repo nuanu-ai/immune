@@ -751,8 +751,19 @@ impl Watcher<'_> {
         let mut wanted = BTreeSet::new();
         let mut targets = Vec::new();
         let mut problems = Vec::new();
-        for p in places(&self.args.home, &self.args.system_root, &machine, &found) {
-            match subscribed(&p.path, p.folder, &homes) {
+        for p in places(
+            &self.args.home,
+            &self.args.system_root,
+            &machine,
+            &found,
+            &homes,
+        ) {
+            let cap = if p.reading.1 == watched::HOOK_KIND {
+                watched::HOOK_DIR_CAP
+            } else {
+                usize::MAX
+            };
+            match subscribed_capped(&p.path, p.folder, cap, &homes) {
                 Ok(paths) => {
                     targets.extend(paths.iter().map(|path| (path.clone(), p.reading.clone())));
                     wanted.extend(paths);
@@ -960,10 +971,24 @@ impl Watcher<'_> {
     /// was stopped, or orphaned, while it waited for the run lock. The counts are of this
     /// reading, the baseline counting as nothing new.
     fn read(&mut self, changed: &Where) -> Result<Option<Value>, Box<dyn Error>> {
-        let only = to_read(&self.targets, changed, self.read_everything);
+        let mut only = to_read(&self.targets, changed, self.read_everything);
         let Some(_lock) = self.lock_for(READ)? else {
             return Ok(None);
         };
+        // A config change can activate a new folder. Start watching it before the read
+        // so a write between re-reading the config and hashing the hooks is seen too.
+        if only
+            .as_ref()
+            .is_none_or(|readings| readings.iter().any(|(_, kind)| kind == watched::HOOK_KIND))
+            && let Some(problems) = self.again()?
+        {
+            for p in problems {
+                if !emit(&p) {
+                    return Ok(None);
+                }
+            }
+            only = None;
+        }
         let read = read_held(self.args, &self.folder, only.as_ref());
         self.mark_held(READ, read.as_ref().err().map(|e| e.to_string()));
         // The first reading is of every place (`to_read`), and one that failed is tried again as
@@ -1312,7 +1337,13 @@ struct Place {
 /// checkout, and the files of each checkout through which something runs by itself
 /// (`autorun::files`), and the places of the home folder through which a tool's own settings
 /// do (`autorun::home_places`).
-fn places(home: &Path, system: &Path, machine: &str, found: &[checkouts::Checkout]) -> Vec<Place> {
+fn places(
+    home: &Path,
+    system: &Path,
+    machine: &str,
+    found: &[checkouts::Checkout],
+    homes: &[&Path],
+) -> Vec<Place> {
     let mut out = Vec::new();
     let mut add = |path: PathBuf, folder: bool, scope: &str, kind: &str| {
         out.push(Place {
@@ -1327,16 +1358,42 @@ fn places(home: &Path, system: &Path, machine: &str, found: &[checkouts::Checkou
             match p.scope {
                 autorun::Scope::Home => add(home.join(path), folder, machine, kind),
                 autorun::Scope::System => add(system.join(path), folder, machine, kind),
-                _ => {
-                    for c in found {
-                        let scope = format!("checkout:{machine}/{}", c.rel);
-                        add(c.path.join(path), folder, &scope, kind);
-                    }
-                }
+                _ => {}
             }
         }
     }
+    let git = (!found.is_empty()).then(|| crate::git_hooks::Config::new(home, system, homes));
     for c in found {
+        use crate::git_hooks::{self, Folder};
+        let git = git.as_ref().unwrap();
+        let scope = format!("checkout:{machine}/{}", c.rel);
+        let kind = watched::HOOK_KIND;
+        for config in git.sources().iter().filter(|path| path.is_absolute()) {
+            add(config.clone(), false, &scope, kind);
+        }
+        for path in [".git/config", ".git/commondir"] {
+            add(c.path.join(path), false, &scope, kind);
+        }
+        match git.folder(&c.path, home, homes) {
+            Folder::Default => add(c.path.join(git_hooks::DEFAULT), true, &scope, kind),
+            Folder::Configured { worktree, receive } => {
+                for (folder, names) in [
+                    (&worktree, git_hooks::WORKTREE_HOOKS),
+                    (&receive, git_hooks::RECEIVE_HOOKS),
+                ] {
+                    for name in names {
+                        add(folder.join(name), false, &scope, kind);
+                    }
+                }
+                if worktree != receive {
+                    add(receive.join("reference-transaction"), false, &scope, kind);
+                }
+            }
+            Folder::Unknown(git_hooks::Unread::GitFile) => {
+                add(c.path.join(".git"), false, &scope, kind)
+            }
+            _ => {}
+        }
         for (file, kind) in autorun::files() {
             add(c.path.join(file), false, machine, &kind);
         }
@@ -1397,7 +1454,12 @@ fn touched(targets: &[(PathBuf, Reading)], paths: &BTreeSet<PathBuf>) -> Option<
 /// watched folder; a change at a target is reported under the target. Nothing that leads
 /// into a folder macOS asks permission for: FSEvents resolves the paths it is given, and the
 /// reading of the place says it was not looked into. Made real without entering one.
-fn subscribed(place: &Path, folder: bool, homes: &[&Path]) -> Result<Vec<PathBuf>, String> {
+fn subscribed_capped(
+    place: &Path,
+    folder: bool,
+    cap: usize,
+    homes: &[&Path],
+) -> Result<Vec<PathBuf>, String> {
     let Some(at) = real(place, homes)? else {
         return Ok(Vec::new());
     };
@@ -1416,7 +1478,7 @@ fn subscribed(place: &Path, folder: bool, homes: &[&Path]) -> Result<Vec<PathBuf
     };
     let mut out = vec![at.clone()];
     if folder && let Ok(entries) = std::fs::read_dir(own.as_ref().unwrap_or(&at)) {
-        for entry in entries.flatten() {
+        for entry in entries.take(cap).flatten() {
             out.extend(target(&at.join(entry.file_name())).ok().flatten());
         }
     }
@@ -2289,6 +2351,30 @@ mod tests {
             Some(base.join("link"))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_hooks_subscription_excludes_aliases_of_guarded_folders() {
+        let dir = crate::common::Scratch::new("hook-watch-guarded");
+        let home = dir.0.join("invented-home");
+        let target = home.join("Documents/pre-commit");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "# fixture\n").unwrap();
+        let homes = watched::homes(&home);
+        let aliases = [
+            home.with_file_name("INVENTED-HOME")
+                .join("Documents/pre-commit"),
+            Path::new("/System/Volumes/Data")
+                .join(homes[1].strip_prefix("/").unwrap())
+                .join("Documents/pre-commit"),
+        ];
+        for path in aliases {
+            assert!(
+                subscribed_capped(&path, false, usize::MAX, &[&homes[0], &homes[1]])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

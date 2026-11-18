@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 
 /// The coverage kind of what the readers did not look into.
 pub const KIND: &str = "folders macOS asks permission for";
@@ -41,23 +41,48 @@ pub const IN_HOME: [&str; 7] = [
 /// Where removable and network volumes are mounted.
 pub const VOLUMES: &str = "/Volumes";
 
+// The writable side of the macOS startup volume is also reachable by this name.
+const DATA: &str = "/System/Volumes/Data";
+
+fn after_prefix<'a>(
+    mut path: Components<'a>,
+    mut prefix: Components<'_>,
+) -> Option<Components<'a>> {
+    prefix
+        .all(|p| {
+            path.next().is_some_and(|c| {
+                c.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(p.as_os_str().as_encoded_bytes())
+            })
+        })
+        .then_some(path)
+}
+
+fn data_path(path: &Path) -> Components<'_> {
+    after_prefix(path.components(), Path::new(DATA).components())
+        .or_else(|| after_prefix(path.components(), Path::new("/").components()))
+        .unwrap_or_else(|| path.components())
+}
+
 /// The guarded folder `path` is in, or `None`. `path` is taken as written: making it real
 /// would look inside the folder, and `real` is how a path from data is made real. The names
 /// are compared without regard to case, as the Mac's volumes compare them by default.
 pub fn folder_of(path: &Path, home: &Path) -> Option<PathBuf> {
     let same = |a: &std::ffi::OsStr, b: &str| a.to_string_lossy().eq_ignore_ascii_case(b);
-    let mut parts = path.components();
-    if let (Some(Component::RootDir), Some(Component::Normal(v)), Some(Component::Normal(volume))) =
-        (parts.next(), parts.next(), parts.next())
+    let mut parts = data_path(path);
+    if let (Some(Component::Normal(v)), Some(Component::Normal(volume))) =
+        (parts.next(), parts.next())
+        && path.is_absolute()
         && same(v, "Volumes")
     {
         return Some(Path::new(VOLUMES).join(volume));
     }
-    let rest = path.strip_prefix(home).ok()?;
+    let rest = after_prefix(data_path(path), data_path(home))?;
     IN_HOME
         .iter()
         .find(|g| {
-            let mut names = rest.components();
+            let mut names = rest.clone();
             g.split('/').all(
                 |want| matches!(names.next(), Some(Component::Normal(name)) if same(name, want)),
             )
@@ -141,6 +166,9 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
                         todo.push_front(c.as_os_str().to_os_string());
                     }
                 }
+            }
+            Ok(m) if !m.is_dir() && !todo.is_empty() => {
+                return Real::Failed(std::io::Error::from_raw_os_error(libc::ENOTDIR));
             }
             Ok(_) => done = next,
         }
@@ -234,8 +262,11 @@ mod tests {
         // On a volume that ignores case, every spelling is the same folder.
         for spelled in [
             "/Users/someone/documents/x",
+            "/users/SOMEONE/Documents/x",
             "/Users/someone/DESKTOP",
             "/Users/someone/library/mobile documents/a",
+            "/System/Volumes/Data/Users/someone/Documents/x",
+            "/System/Volumes/Data/Volumes/Backup/dev",
             "/volumes/Backup/dev",
         ] {
             assert!(folder_of(Path::new(spelled), home).is_some(), "{spelled}");

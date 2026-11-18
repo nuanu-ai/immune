@@ -1111,6 +1111,249 @@ fn hooks_first_read_when_a_checkouts_git_file_becomes_a_folder_are_told_once_and
     );
 }
 
+#[test]
+fn git_hooks_follow_the_effective_folder_and_leave_remote_edits_quiet() {
+    let e = Estate::new("git-hooks-path");
+    let tree = e.checkout("dev/tree");
+    let config = tree.join(".git/config");
+    let first = tree.join("first hooks");
+    put(
+        &e.home().join(".gitconfig"),
+        "[include]\n path = absent.conf\n",
+    );
+    put(
+        &config,
+        "[core]\n hooksPath = ignored\n HOOKSPATH = \"first hooks\"\n",
+    );
+    put(&first.join("pre-commit"), "# baseline\n");
+    put(&tree.join(".git/hooks/pre-commit"), "# inactive\n");
+    e.full();
+    assert!(e.found().is_empty());
+    put(
+        &config,
+        "[remote \"origin\"]\n url = https://example.invalid/project\n[core]\n hooksPath = \"first hooks\"\n",
+    );
+    put(&tree.join(".git/hooks/pre-commit"), "# still inactive\n");
+    e.full();
+    assert!(e.found().is_empty());
+    put(&first.join("pre-commit"), "# changed\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.git-hook",
+            "~/dev/tree/first hooks/pre-commit"
+        )]
+    );
+
+    e.seen();
+    let shared = e.home().join(".shared-hooks");
+    put(&shared.join("pre-push"), "# already present\n");
+    put(
+        &config,
+        &format!("[core]\n hooksPath = {}\n", shared.display()),
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.git-hook", "~/.shared-hooks/pre-push"),
+            pair("watched.git-hook", "~/dev/tree/first hooks/pre-commit"),
+        ]
+    );
+    e.seen();
+    e.full();
+    assert!(e.found().is_empty());
+    assert_eq!(e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["file:machine:mac/.shared-hooks/pre-push"]);
+}
+
+#[test]
+fn git_hooks_keep_the_last_observation_when_configuration_cannot_be_resolved() {
+    let e = Estate::new("git-hooks-config-gap");
+    let tree = e.checkout("dev/tree");
+    let config = tree.join(".git/config");
+    let hook = tree.join("hooks/pre-push");
+    put(&config, "[core]\n hooksPath = hooks\n");
+    put(&hook, "# baseline\n");
+    e.full();
+    for (config_bytes, why) in [
+        (
+            "[core]\n hooksPath = hooks\n[include]\n path = absent.conf\n".to_string(),
+            "config include",
+        ),
+        ("[unclosed\n".to_string(), "could not parse"),
+        ("#".repeat(1024 * 1024 + 1), "size cap"),
+    ] {
+        put(&config, &config_bytes);
+        e.full();
+        let coverage = e.rows("SELECT completeness, reason FROM coverage WHERE scope = 'checkout:machine:mac/dev/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1").join("");
+        assert!(
+            coverage.starts_with("partial|") && coverage.contains(why),
+            "{coverage}"
+        );
+        assert_eq!(e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["file:machine:mac/dev/tree/hooks/pre-push"]);
+        assert!(e.rows("SELECT entry FROM journal WHERE entry = 'removed' AND subject = 'file:machine:mac/dev/tree/hooks/pre-push'").is_empty());
+    }
+    let global = e.home().join(".gitconfig");
+    put(&global, "[unclosed\n");
+    put(&config, "[core]\n hooksPath = /dev/null\n");
+    e.full();
+    assert!(e.rows("SELECT reason FROM coverage WHERE scope = 'checkout:machine:mac/dev/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1")[0].contains("could not parse"));
+    assert_eq!(e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["file:machine:mac/dev/tree/hooks/pre-push"]);
+    std::fs::remove_file(global).unwrap();
+    put(&config, "[core]\n hooksPath = /dev/null\n");
+    e.full();
+    assert_eq!(e.rows("SELECT completeness, reason FROM coverage WHERE scope = 'checkout:machine:mac/dev/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1"), ["full|the checkout has no hooks"]);
+    assert!(e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'").is_empty());
+    assert!(hook.exists());
+}
+
+#[test]
+fn git_hooks_shared_between_checkouts_are_gone_only_after_the_last_checkout_stops_using_them() {
+    let e = Estate::new("git-hooks-shared");
+    let configs = ["dev/a", "dev/b"].map(|repo| e.checkout(repo).join(".git/config"));
+    let hooks = e.home().join(".shared-hooks");
+    let shared = format!("[core]\n hooksPath = {}\n", hooks.display());
+    let off = "[core]\n hooksPath = /dev/null\n";
+    put(&hooks.join("pre-commit"), "# shared\n");
+    for config in &configs {
+        put(config, &shared);
+    }
+    e.full();
+    put(&configs[1], off);
+    e.full();
+    assert!(e.found().is_empty());
+    assert_eq!(e.status()["watched"]["since_last_reading"]["gone"], 0);
+
+    // A is compared first. During this check the same file moves from A to B.
+    put(&configs[0], off);
+    put(&configs[1], &shared);
+    e.full();
+    assert_eq!(e.status()["watched"]["since_last_reading"]["gone"], 0);
+    assert_eq!(e.rows("SELECT text FROM journal WHERE entry = 'removed' AND predicate = 'watched_as' AND subject = 'file:machine:mac/.shared-hooks/pre-commit' ORDER BY seq"), ["this hook is still watched in another checkout", "this hook is still watched in another checkout"]);
+    assert!(e.rows("SELECT object FROM assertion WHERE predicate = 'has_content' AND layer = 'retracted' AND subject = 'file:machine:mac/.shared-hooks/pre-commit'").is_empty());
+
+    e.seen();
+    put(&configs[1], off);
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/.shared-hooks/pre-commit")]
+    );
+    assert_eq!(e.status()["watched"]["since_last_reading"]["gone"], 1);
+}
+
+#[test]
+fn git_hooks_config_parsing_cannot_activate_git_tracing() {
+    let e = Estate::new("git-hooks-trace");
+    let tree = e.checkout("dev/tree");
+    let trace = e.0.join("trace.log");
+    // Git's startup can load Trace2 settings even for `git config --file -`.
+    put(
+        &e.home().join(".gitconfig"),
+        &format!("[trace2]\n normalTarget = {}\n", trace.display()),
+    );
+    put(&tree.join(".git/config"), "[core]\n hooksPath = tools\n");
+    put(&tree.join("tools/pre-commit"), "# fixture\n");
+    e.full();
+    assert!(!trace.exists());
+    assert_eq!(e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["file:machine:mac/dev/tree/tools/pre-commit"]);
+}
+
+#[test]
+fn git_hooks_respect_path_permissions_and_read_regular_targets_with_a_cap() {
+    let e = Estate::new("git-hooks-targets");
+    let tree = e.checkout("dev/tree");
+    let config = tree.join(".git/config");
+    let hooks = tree.join("tools");
+    let data = e.home().join(".data/leaf");
+    put(&data, "# baseline\n");
+    put(
+        &hooks.join("helper.txt"),
+        "# outside the documented hook names\n",
+    );
+    link(data.to_str().unwrap(), &hooks.join("pre-push"));
+    let fifo = hooks.join("pre-commit");
+    assert!(
+        Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    put(&config, "[core]\n hooksPath = tools\n");
+    e.full();
+    assert_eq!(e.rows("SELECT object FROM assertion WHERE predicate = 'has_content' AND layer = 'live' AND subject = 'file:machine:mac/dev/tree/tools/pre-commit'"), ["not a regular file: fifo"]);
+    assert_eq!(e.rows("SELECT CAST(count(*) AS TEXT) FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["2"]);
+    put(&data, &"x".repeat(8 * 1024 * 1024 + 1));
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/tree/tools/pre-push")]
+    );
+
+    put(
+        &e.home().join("Documents/hidden/pre-commit"),
+        "# do not read\n",
+    );
+    let alias = e.home().with_file_name("HOME");
+    put(
+        &config,
+        &format!(
+            "[core]\n hooksPath = {}/Documents/hidden\n",
+            alias.display()
+        ),
+    );
+    e.full();
+    let coverage = e.rows("SELECT completeness, reason FROM coverage WHERE scope = 'checkout:machine:mac/dev/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1").join("");
+    assert!(
+        coverage.starts_with("partial|") && coverage.contains("~/Documents"),
+        "{coverage}"
+    );
+    assert_eq!(e.rows("SELECT CAST(count(*) AS TEXT) FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'"), ["2"]);
+}
+
+#[test]
+fn git_hooks_resolve_inherited_paths_from_the_worktree_and_receive_paths_from_git_dir() {
+    let e = Estate::new("git-hooks-inherited");
+    let tree = e.checkout("dev/tree");
+    put(
+        &e.0.join("system/etc/gitconfig"),
+        "[core]\n hooksPath = system-hooks\n",
+    );
+    put(
+        &e.home().join(".config/git/config"),
+        "[core]\n hooksPath = xdg-hooks\n",
+    );
+    let global = e.home().join(".gitconfig");
+    put(&global, "[core]\n hooksPath = user-hooks\n");
+    for folder in ["system-hooks", "xdg-hooks", "user-hooks"] {
+        put(&tree.join(folder).join("pre-push"), "# worktree\n");
+    }
+    put(&tree.join("user-hooks/pre-receive"), "# wrong base\n");
+    put(
+        &tree.join(".git/user-hooks/pre-receive"),
+        "# Git's receive hook\n",
+    );
+    let paths = || {
+        e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live' ORDER BY subject")
+    };
+    e.full();
+    assert_eq!(
+        paths(),
+        [
+            "file:machine:mac/dev/tree/.git/user-hooks/pre-receive",
+            "file:machine:mac/dev/tree/user-hooks/pre-push"
+        ]
+    );
+    std::fs::remove_file(global).unwrap();
+    e.full();
+    assert_eq!(paths(), ["file:machine:mac/dev/tree/xdg-hooks/pre-push"]);
+    std::fs::remove_file(e.home().join(".config/git/config")).unwrap();
+    e.full();
+    assert_eq!(paths(), ["file:machine:mac/dev/tree/system-hooks/pre-push"]);
+}
+
 /// An agent's session that worked in these folders.
 fn session(e: &Estate, name: &str, cwd: &Path) {
     put(
