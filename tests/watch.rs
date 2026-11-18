@@ -941,10 +941,10 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     mac.run();
     let mut w = mac.watch();
     let watching = w.next("watching");
-    // The table's places, and the checkout's hooks and its files that run code by itself.
+    // The table's places, the general Git configuration, and the checkout's own files.
     assert_eq!(
         watching["places"],
-        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
+        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES
     );
     w.next("read");
     mac.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\n");
@@ -965,10 +965,15 @@ const TABLE_PLACES: u64 = 35;
 /// Claude Code's state file is not one: it is rewritten all the time.
 const HOME_PLACES: u64 = 6;
 
-/// The places the watcher subscribes to in each checkout: its hooks folder, the editor's
-/// task file and settings, two dev container paths, `package.json`, two pnpm files, and
-/// seven files of coding agents' settings. A workspace file has no fixed name.
-const CHECKOUT_PLACES: u64 = 15;
+/// Shared Git configuration when there is a checkout to watch: the system file, XDG file,
+/// and `~/.gitconfig`.
+const GIT_CONFIG_PLACES: u64 = 3;
+
+/// The places the watcher subscribes to in each checkout with default hooks. This includes
+/// `.git/config`, `.git/commondir`, its hooks folder, the editor's task file and settings,
+/// two dev container paths, `package.json`, two pnpm files, and seven files of coding agents'
+/// settings. A workspace file has no fixed name.
+const CHECKOUT_PLACES: u64 = 17;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -2590,7 +2595,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
     let mut w = mac.watch();
     assert_eq!(
         w.next("watching")["places"],
-        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
+        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES
     );
 }
 

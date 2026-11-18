@@ -977,9 +977,12 @@ impl Watcher<'_> {
         };
         // A config change can activate a new folder. Start watching it before the read
         // so a write between re-reading the config and hashing the hooks is seen too.
-        if only
-            .as_ref()
-            .is_none_or(|readings| readings.iter().any(|(_, kind)| kind == watched::HOOK_KIND))
+        // The startup read uses the subscriptions just opened by `subscribe`. Checkouts
+        // a concurrent full run discovers are then picked up by the next scheduled look.
+        if self.read_everything
+            && only
+                .as_ref()
+                .is_none_or(|readings| readings.iter().any(|(_, kind)| kind == watched::HOOK_KIND))
             && let Some(problems) = self.again()?
         {
             for p in problems {
