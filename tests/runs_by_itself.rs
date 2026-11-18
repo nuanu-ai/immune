@@ -12,6 +12,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TASKS_KIND: &str = "editor tasks set to run when a checkout's folder is opened";
+const PNPM_KIND: &str =
+    ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself";
 const OTHERS_KIND: &str = "other ways a checkout runs code by itself";
 const LIST_KIND: &str = "indicator list given as a file";
 const UNMATCHED_KIND: &str = "indicators against what this build does not match them with";
@@ -517,6 +519,85 @@ fn pair(rule: &str, place: &str) -> (String, String) {
 }
 
 #[test]
+fn pnpmfiles_at_checkout_roots_are_baselined_and_later_compared_byte_for_byte() {
+    let e = Estate::new("pnpm-roots");
+    let shop = e.checkout("dev/shop");
+    let cli = e.checkout("dev/cli");
+    let hooks: [(&str, &[u8]); 2] = [
+        (".pnpmfile.cjs", b"module.exports = {} // \xff\n"),
+        (".pnpmfile.mjs", b"export const hooks = {} // \xff\n"),
+    ];
+    for (name, bytes) in hooks {
+        std::fs::write(shop.join(name), bytes).unwrap();
+    }
+    e.run();
+    assert!(e.found().is_empty());
+    assert_eq!(e.coverage(PNPM_KIND), "full|");
+
+    put(
+        &shop.join("pnpm-workspace.yaml"),
+        "packages: ['packages/*']\nsharedWorkspaceLockfile: false\n",
+    );
+    put(
+        &shop.join("packages/cart/.pnpmfile.mjs"),
+        "export const hooks = {}\n",
+    );
+    for (name, bytes) in hooks {
+        std::fs::write(cli.join(name), bytes).unwrap();
+        std::fs::write(shop.join(name), bytes).unwrap();
+    }
+    let findings_at = |checkout| {
+        hooks.map(|(name, _)| {
+            pair(
+                "autorun.package-install",
+                &format!("~/dev/{checkout}/{name}"),
+            )
+        })
+    };
+    e.run();
+    assert_eq!(e.found(), findings_at("cli"));
+    assert!(e.lacks(OTHERS_KIND).is_empty());
+
+    // Both byte values decode to the same replacement character in lossy UTF-8.
+    e.seen();
+    let digests = hooks.map(|(name, before)| {
+        let after = [before.strip_suffix(b"\xff\n").unwrap(), b"\xfe\n"].concat();
+        std::fs::write(shop.join(name), &after).unwrap();
+        format!(
+            "file:machine:mac/dev/shop/{name}|sha256:{}|sha256:{}",
+            sha256_of(before),
+            sha256_of(after)
+        )
+    });
+    e.run();
+    assert_eq!(e.found(), findings_at("shop"));
+    assert_eq!(
+        e.rows(
+            "SELECT subject, old_value, new_value FROM journal
+             WHERE entry = 'changed' AND predicate = 'has_content'
+               AND subject LIKE '%.pnpmfile.%' ORDER BY subject"
+        ),
+        digests
+    );
+}
+
+#[test]
+fn an_unavailable_walk_leaves_pnpm_coverage_incomplete_even_without_previously_known_checkouts() {
+    let e = Estate::new("pnpm-no-walk");
+    e.run();
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(".pnpmfile.cjs"), "module.exports = {}\n");
+    let missing = e.home().join("missing");
+    let reason = "the checkout walk could not open its root folder";
+    e.run_in(&missing);
+    assert_eq!(e.coverage(PNPM_KIND), format!("none|{reason}"));
+
+    session(&e, "shop", &shop);
+    e.run_with(&missing, &e.0.join("sessions"));
+    assert_eq!(e.coverage(PNPM_KIND), format!("partial|{reason}"));
+}
+
+#[test]
 fn a_planted_install_script_and_a_planted_agent_hook_are_findings_and_their_removal_is_not() {
     // The incident's uncaught step and ChainDrop's: a script a package manager runs on
     // install, a hook and a server an agent starts. Each is found by the rule of what runs it
@@ -587,17 +668,29 @@ fn the_text_of_a_script_or_a_command_is_never_kept_printed_or_returned() {
     let shop = e.checkout("dev/shop");
     e.run();
     package(&shop, "\"postinstall\": \"node .invented/loader-7f3a.js\"");
+    let cjs = "require('node:fs').writeFileSync(__filename + '.ran', 'pnpm-canary-801f');\nmodule.exports = {}\n";
+    put(&shop.join(".pnpmfile.cjs"), cjs);
     agent(&shop, HOOK);
     put(&shop.join(".mcp.json"), SERVER);
     let mut said = e.run();
     said.push_str(&e.status().to_string());
     said.push_str(&format!("{:?}", e.findings(true)));
-    assert_eq!(e.rules().len(), 3, "{said}");
+    assert_eq!(e.rules().len(), 4, "{said}");
+    assert_eq!(
+        std::fs::read_to_string(shop.join(".pnpmfile.cjs")).unwrap(),
+        cjs
+    );
+    assert!(!shop.join(".pnpmfile.cjs.ran").exists());
     let mut kept = std::fs::read(e.store()).unwrap();
     for file in walk(&e.0.join("raw")) {
         kept.extend(std::fs::read(file).unwrap());
     }
-    for text in ["loader-7f3a", "start-91c2", "invented-helper-5d0e"] {
+    for text in [
+        "loader-7f3a",
+        "pnpm-canary-801f",
+        "start-91c2",
+        "invented-helper-5d0e",
+    ] {
         assert!(!said.contains(text), "{text}: {said}");
         assert!(
             !kept.windows(text.len()).any(|w| w == text.as_bytes()),
@@ -1870,7 +1963,7 @@ const ZSHRC: &str = "export EDITOR=vi\n";
 /// A hash of nothing on the estate.
 const ELSEWHERE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-fn sha256_of(text: &str) -> String {
+fn sha256_of(bytes: impl AsRef<[u8]>) -> String {
     let out = Command::new("/usr/bin/shasum")
         .args(["-a", "256"])
         .stdin(std::process::Stdio::piped())
@@ -1878,7 +1971,7 @@ fn sha256_of(text: &str) -> String {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.take().unwrap().write_all(text.as_bytes())?;
+            child.stdin.take().unwrap().write_all(bytes.as_ref())?;
             child.wait_with_output()
         })
         .unwrap();
@@ -2432,7 +2525,11 @@ fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_
     let e = Estate::new("lose-sight-project");
     let shop = e.checkout("dev/shop");
     package(&shop, "\"postinstall\": \"node setup.js\"");
+    let pnpmfile = shop.join(".pnpmfile.cjs");
+    let hook = "module.exports = {}\n";
+    put(&pnpmfile, hook);
     e.run();
+    std::fs::write(&pnpmfile, vec![b' '; 1024 * 1024 + 1]).unwrap();
     let file = shop.join("package.json");
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2442,7 +2539,21 @@ fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_
     }
     assert_eq!(
         e.found(),
-        [pair("autorun.package-install", "~/dev/shop/package.json")]
+        [
+            pair("autorun.package-install", "~/dev/shop/.pnpmfile.cjs"),
+            pair("autorun.package-install", "~/dev/shop/package.json"),
+        ]
+    );
+    assert_eq!(
+        e.coverage(PNPM_KIND),
+        "none|could not be read: dev/shop/.pnpmfile.cjs (over the size cap of 1024 KiB)"
+    );
+    assert_eq!(
+        e.rows(
+            "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
+               AND subject LIKE '%dev/shop/.pnpmfile.cjs'"
+        ),
+        [format!("sha256:{}", sha256_of(hook))]
     );
     assert!(
         e.rows("SELECT new_value FROM journal WHERE entry = 'not_read'")
@@ -2458,14 +2569,18 @@ fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_
         .is_empty()
     );
     e.seen();
+    put(&pnpmfile, "module.exports = { hooks: {} }\n");
     package(&shop, "\"postinstall\": \"node steal.js\"");
     e.run();
     assert_eq!(
         e.found(),
-        [pair(
-            "autorun.package-install",
-            "~/dev/shop/package.json#/scripts/postinstall"
-        )]
+        [
+            pair("autorun.package-install", "~/dev/shop/.pnpmfile.cjs"),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop/package.json#/scripts/postinstall"
+            ),
+        ]
     );
 }
 

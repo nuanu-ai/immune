@@ -245,6 +245,16 @@
         "examples_text": [
           "machine:mac"
         ],
+        "kind": ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the checkouts checked has .pnpmfile.cjs or .pnpmfile.mjs"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
         "kind": ".vscode/mcp.json of each checkout, the part that runs by itself",
         "reader": "watched-places",
         "reason_text": "no checkout's .vscode/mcp.json holds any of the keys read"
@@ -390,9 +400,9 @@
         "reason_text": "none of the keys read is in ~/Library/Application Support/Claude/claude_desktop_config.json"
       }
     ],
-    "problems_total": 33,
-    "read_nothing": 31,
-    "readings": 53,
+    "problems_total": 34,
+    "read_nothing": 32,
+    "readings": 54,
     "unreached": [],
     "unreached_total": 0
   },
@@ -1191,7 +1201,7 @@
       "meaning": "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
       "scope": "projects",
       "since_at": 1794845558,
-      "title": "This version reads 13 of the 41 known ways a project can make code run by itself.",
+      "title": "This version reads 14 of the 41 known ways a project can make code run by itself.",
       "value_text": null,
       "who": "nothing"
     },

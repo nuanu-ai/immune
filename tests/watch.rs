@@ -965,11 +965,10 @@ const TABLE_PLACES: u64 = 35;
 /// Claude Code's state file is not one: it is rewritten all the time.
 const HOME_PLACES: u64 = 6;
 
-/// The places the watcher subscribes to in each checkout: its hooks folder and the twelve
-/// files of the ways a project runs code by itself that are read: the editor's task file and
-/// settings, the two places of a dev container's file, `package.json`, and seven files of
-/// coding agents' settings. A workspace file has no fixed name and is not subscribed to.
-const CHECKOUT_PLACES: u64 = 13;
+/// The places the watcher subscribes to in each checkout: its hooks folder, the editor's
+/// task file and settings, two dev container paths, `package.json`, two pnpm files, and
+/// seven files of coding agents' settings. A workspace file has no fixed name.
+const CHECKOUT_PLACES: u64 = 15;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -1003,6 +1002,31 @@ fn an_editor_task_planted_while_the_watcher_runs_is_a_finding_within_seconds() {
         .unwrap_or_else(|| panic!("{items}"))
         .clone();
     assert_eq!(found["where_text"], "~/dev/shop/.vscode/tasks.json");
+}
+
+#[test]
+fn both_pnpmfiles_are_watched_live_in_checkouts_the_store_knows() {
+    let mac = Mac::new("pnpm-live");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/shop/.pnpmfile.cjs", "module.exports = {}\n");
+    mac.run();
+    let mut w = mac.watch().started();
+    let written = Instant::now();
+    mac.put(
+        "dev/shop/.pnpmfile.cjs",
+        "module.exports = { hooks: { readPackage: pkg => pkg } }\n",
+    );
+    mac.put("dev/shop/.pnpmfile.mjs", "export const hooks = {}\n");
+    w.until("read", |v| count(v, "needs_a_look_total") == 2);
+    assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+    assert_eq!(
+        found(&mac),
+        [".pnpmfile.cjs", ".pnpmfile.mjs"].map(|file| (
+            "autorun.package-install".to_string(),
+            format!("~/dev/shop/{file}")
+        ))
+    );
+    assert!(w.stop().success());
 }
 
 #[test]

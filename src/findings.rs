@@ -463,10 +463,10 @@ fn package_install() -> Rule {
         confidence,
         finds: "event",
         words: Words {
-            title: "A project on this Mac now has a script that runs by itself when its packages are installed.",
-            short: "Project script that runs on package install",
-            meaning: "Some projects need this to build themselves or to set up their tools; it is also how code was planted in projects, so that it runs as soon as anyone installs their packages.",
-            advice: "Do not install that project's packages again until you have read the script named here. If you did not add it and no tool you use did, do not install them, and ask your agent to look into it.",
+            title: "A project file that can run code during package installation was added or changed.",
+            short: "Project package install script or hook",
+            meaning: "Projects use install scripts and hooks to build themselves or set up their tools. A change can make a later install run different code.",
+            advice: "Read the file named here before installing the project's packages again. If you did not expect the change, ask your agent to look into it.",
         },
         fires: |o| autorun::fires(&o.place, o.change, autorun::PACKAGE_INSTALL.0),
     }
@@ -1744,7 +1744,7 @@ const KIND_TITLES: [(&str, &str); 24] = [
     ),
     (autorun::RUNS_ON_OPEN, "Task run when a project opens"),
     (autorun::EDITOR_OPEN.0, "Editor setting in a project"),
-    (autorun::PACKAGE_INSTALL.0, "Install script in a project"),
+    (autorun::PACKAGE_INSTALL.0, "Package install script or hook"),
     (autorun::AGENT_START.0, "Agent tool in a project"),
     (autorun::AGENT_SETTINGS.0, "Coding agent tool"),
     (autorun::EDITOR_EXTENSION.0, "Editor extension"),
