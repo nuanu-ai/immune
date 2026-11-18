@@ -35,13 +35,11 @@ const THREAT_DATA_TITLE: &str = "Threat data";
 pub const TECHNICAL: &str = "technical";
 pub const VULNERABILITIES: &str = "vulnerabilities";
 
-/// At most this many things that need a look are shown in full, so the summary stays small.
-const ITEMS_SHOWN: usize = 100;
-/// At most this many examples are listed under a thing not covered.
-const EXAMPLES_SHOWN: usize = 20;
-
 /// The link back to the summary, on every page of details.
 const BACK: &str = "<nav class=\"meta\"><a href=\"../view.html\">← What needs a look</a></nav>\n";
+
+/// At most this many things that need a look are shown in full, so the summary stays small.
+const ITEMS_SHOWN: usize = 100;
 
 /// The anchor of a kind of watched thing: its words in lower case, joined by dashes.
 pub fn anchor(what: &str) -> String {
@@ -89,7 +87,7 @@ fn about(what: &str) -> &'static str {
         "applications" => "Applications in the Applications folders, with who signed each.",
         "Homebrew packages" => "What Homebrew installed in /opt/homebrew or /usr/local.",
         "npm packages" => {
-            "Packages npm installed for every project at once in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules. Those installed under nvm or another Node version manager are not read."
+            "Packages npm installed for every project at once in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules."
         }
         "app code kept outside the app" => {
             "Code that applications not made by Apple keep in your Library folder, outside the application itself."
@@ -124,26 +122,16 @@ pub fn summary(
         .filter(|u| u.cause.who == YOU)
         .collect();
     // The scope of the answer, said once as a link to where each thing is named.
-    let unjudged = unjudged(st).len();
     state(conn, &mut out, st, r, now)?;
     findings_table(conn, &mut out, st, mac.as_ref(), now)?;
-    watched_table(conn, &mut out, st, &map, &latest, &fixable, unjudged, now)?;
+    let failed = failed_here(st).len();
+    watched_table(conn, &mut out, st, &map, &latest, &fixable, failed, now)?;
     crate::happens::draw(&mut out, st, &r.rules.clone().unwrap_or_default(), now)?;
     you_can_fix(&mut out, &fixable)?;
     let name = crate::store::held_mac(conn)?.map(|(_, name)| name);
     links(&mut out, name.as_deref(), now)?;
     out.push_str(FOOT);
     Ok(out)
-}
-
-/// What on this Mac was not judged and nothing the person does changes, as the panel counts it.
-/// What holds on every Mac, a limit of this version, is not on the pages; the documents and the
-/// commands' machine form say it.
-fn unjudged(st: &crate::status::State) -> Vec<&Uncovered> {
-    st.not_covered
-        .iter()
-        .filter(|u| u.cause.who != YOU && !u.every_mac)
-        .collect()
 }
 
 /// The state's glyph, one shape for each state, as the panel draws it, so colour is never the
@@ -1041,7 +1029,7 @@ fn watched_table(
     map: &crate::map::Map,
     latest: &[Latest],
     fixable: &[&Uncovered],
-    unjudged: usize,
+    failed: usize,
     now: i64,
 ) -> Out {
     let m = &st.this_mac;
@@ -1160,10 +1148,14 @@ fn watched_table(
             }
         }
         if states.is_empty() {
-            states.push(if n.unwrap_or(0) == 0 {
-                Standing::none("none here".to_string())
-            } else {
-                Standing::read("read in full")
+            // Of a kind kept in projects, while projects were not looked for everywhere:
+            // what was read is the projects found.
+            let found = covered::in_projects(count) && not_entered(latest, this.as_deref());
+            states.push(match (n.unwrap_or(0) == 0, found) {
+                (true, true) => Standing::none("none in the projects found".to_string()),
+                (true, false) => Standing::none("none here".to_string()),
+                (false, true) => Standing::read("read in the projects found"),
+                (false, false) => Standing::read("read in full"),
             });
         }
         let id = matches!(count, Count::Dependencies).then_some("vulnerabilities");
@@ -1235,26 +1227,32 @@ fn watched_table(
         )?;
     }
     out.push_str("</div>\n");
-    if unjudged > 0 {
-        let said = if unjudged == 1 {
-            "1 thing on this Mac was not judged".to_string()
-        } else {
-            format!(
-                "{} things on this Mac were not judged",
-                grouped(unjudged as i64)
-            )
-        };
+    if failed > 0 {
         writeln!(
             out,
-            "<p class=\"nj\" id=\"limits\"><a href=\"{DETAILS}/{THIS_MAC}.html#{NOT_JUDGED}\">{said}</a></p>"
+            "<p class=\"nj\" id=\"limits\"><a href=\"{DETAILS}/{THIS_MAC}.html#{NOT_READ}\">{} on this Mac could not be read</a></p>",
+            counted(failed as i64, "thing", "things")
         )?;
     }
     out.push_str("</section>\n");
     Ok(())
 }
 
-/// The anchor of what was not judged on this Mac, on the page of what is watched.
-pub const NOT_JUDGED: &str = "not-judged";
+/// The anchor of what could not be read on this Mac, on the page of what is watched.
+pub const NOT_READ: &str = "not-read";
+
+/// What on this Mac was tried at the last check and could not be read, and nothing the person
+/// does changes: a reading or a download that failed. The pages list what is read, so what this
+/// version has no reader for and what its source does not give are not on them, on this Mac or
+/// on any; the documents and the commands' machine form say those.
+fn failed_here(st: &crate::status::State) -> Vec<&Uncovered> {
+    st.not_covered
+        .iter()
+        .filter(|u| {
+            u.cause.who != YOU && !u.every_mac && u.cause.class == crate::store::Cause::Failed
+        })
+        .collect()
+}
 
 /// What the person can fix, one cause beside another: what it is, every example as data, and
 /// Immune's advice.
@@ -1452,8 +1450,10 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
     let this = findings::This::of(conn, covered::this_machine(conn)?)?;
     let list = crate::vulnerabilities::affecting(conn)?;
     let gap = vulnerability_gap(conn, now)?;
-    // Of the projects found, while not all were, with the line that says which were not.
+    // Of the projects found, while not all were. Which folders this version does not enter is
+    // a limit of the version, which the commands say; a search that failed is said here.
     let (found, scope) = covered::Found::of(Some(&crate::vulnerabilities::projects_found(conn)?));
+    let scope = scope.filter(|_| found == covered::Found::LookedAt);
     let none = match found {
         covered::Found::All => "None is known.".to_string(),
         f => format!("None is known in {}.", f.projects()),
@@ -1505,6 +1505,9 @@ fn apart(u: &Uncovered) -> Vec<String> {
     out.extend(u.value.as_deref().map(esc_said));
     out
 }
+
+/// At most this many examples are listed under one thing that could not be read.
+const EXAMPLES_SHOWN: usize = 20;
 
 /// One thing not covered, in full: its title, where, what it means and what to do.
 fn uncovered(out: &mut String, u: &Uncovered) -> Out {
@@ -1692,28 +1695,24 @@ pub fn threat_data(conn: &Connection, r: &v1::Status, now: i64) -> Result<String
     Ok(out)
 }
 
-/// The three places of a rule, as the rules page names them: its anchor there, its heading,
-/// and what being there means.
-const PLACED: [(&str, &str, &str); 3] = [
+/// The two places of a rule this version checks, as the rules page names them: its anchor
+/// there, its heading, and what being there means. A rule that cannot be checked is not on the
+/// page: `immune rules` counts those, and `docs/coverage.md` says what would open them.
+const PLACED: [(&str, &str, &str); 2] = [
     (
         "evaluated",
-        "Can be checked in full",
+        "Checked in full",
         "Everything these rules look for is in what the event level gives: for a program start, the program, its command line and the program that started it; for a file created or renamed, its path and the program that did it.",
     ),
     (
         "in-part",
-        "Can be checked in part",
-        "Some alternatives in these rules need something an event does not give. Those never match here; the rest of each rule can.",
-    ),
-    (
-        "not-evaluated",
-        "Cannot be checked in this version",
-        "These need events or details this version does not collect. They are listed so that none is counted without being checked.",
+        "Checked in part",
+        "Each of these rules looks for one of several alternatives. Those an event can show are checked, and a rule's details name the rest.",
     ),
 ];
 
-/// Every published rule this build ships, for a person: by place, then by level, the most
-/// severe first. Each with its title, its level, what it looks for in its author's words, its
+/// Every published rule this build checks, in full or in part, for a person: by place, then
+/// by level, the most severe first. Each with its title, its level, what it looks for in its author's words, its
 /// ATT&CK techniques and its authors, and, where it is not checked in full, what is missing.
 /// Everything from a rule file is the rule's own text, each in an element of its own. The
 /// counts at the top are the status's; how many times each rule matched in the last day is
@@ -1729,7 +1728,7 @@ fn rules_page(
     events: Option<&crate::events::Level>,
     now: i64,
 ) -> String {
-    use crate::sigma::{self, Placement, Reason};
+    use crate::sigma::{self, Placement};
     let from: Vec<String> = shipped
         .sources()
         .iter()
@@ -1747,14 +1746,14 @@ fn rules_page(
         "<p>{}</p>\n<div class=\"scale\">\n",
         esc(&crate::text::rules_said(&shipped.sources_said(), r))
     ));
-    for ((anchor, title, _), n) in PLACED.iter().zip([r.evaluated, r.in_part, r.not_evaluated]) {
+    for ((anchor, title, _), n) in PLACED.iter().zip([r.evaluated, r.in_part]) {
         w(format!(
             "<p><span class=\"num\">{n}</span> <a href=\"#{anchor}\">{}</a></p>\n",
             esc(title)
         ));
     }
     w("</div>\n".to_string());
-    let (evaluated, in_part, not_evaluated) = shipped.groups();
+    let (evaluated, in_part, _) = shipped.groups();
     let source = |s: &str| format!("<span class=\"src\">{}</span>", esc(s));
     let mono = |list: &[String]| {
         list.iter()
@@ -1762,7 +1761,7 @@ fn rules_page(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    for ((anchor, title, means), group) in PLACED.iter().zip([evaluated, in_part, not_evaluated]) {
+    for ((anchor, title, means), group) in PLACED.iter().zip([evaluated, in_part]) {
         w(format!(
             "<section id=\"{anchor}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>\n",
             esc(title),
@@ -1819,7 +1818,7 @@ fn rules_page(
                     "<p class=\"meta\">Matched {} in the last day.</p>\n",
                     sigma::times(matched)
                 ));
-            } else if on && !unwatched && !matches!(l.placement, Placement::NotEvaluated(_)) {
+            } else if on && !unwatched {
                 w("<p class=\"meta\">No match in the last day.</p>\n".to_string());
             }
             if files_unwatched && on && l.placement == Placement::Evaluated {
@@ -1832,55 +1831,31 @@ fn rules_page(
                 Some(_) => w("<p class=\"missing\">Not watching on this Mac: it reads what no line read so far would carry, so whether the collector keeps it is not yet known.</p>\n".to_string()),
                 None => {}
             }
-            match &l.placement {
-                Placement::Evaluated => {}
-                Placement::InPart(branches) => {
-                    for b in branches {
-                        w(match (&b.selection, &b.said) {
-                            (Some(selection), _) => format!(
-                                "<p class=\"missing\">Never matches here: the alternative {} needs {}, which {} does not give.</p>\n",
-                                mono(std::slice::from_ref(selection)),
-                                mono(&b.fields),
-                                sigma::given_by(l.kind)
-                            ),
-                            (None, _) if !b.fields.is_empty() => format!(
-                                "<p class=\"missing\">Never matches here: an alternative of the upstream rule needs {}, which {} does not give.</p>\n",
-                                mono(&b.fields),
-                                sigma::given_by(l.kind)
-                            ),
-                            (None, said) => format!(
-                                "<p class=\"missing\">Never matches here: an alternative of the upstream rule was left out in translation, {}.</p>\n",
-                                source(said.as_deref().unwrap_or(""))
-                            ),
-                        });
-                    }
-                }
-                Placement::NotEvaluated(reason) => w(format!(
-                    "<p class=\"missing\">{}</p>\n",
-                    match reason {
-                        Reason::NeedsEvents(c) => format!(
-                            "Needs {} events, which this version does not collect.",
-                            mono(std::slice::from_ref(c))
-                        ),
-                        Reason::NeedsFields(f) => format!(
-                            "Needs {}, which {} does not give.",
-                            mono(f),
+            // What a rule checked in part goes without is a detail of the rule, said with its
+            // other details.
+            let without: Vec<String> = match &l.placement {
+                Placement::InPart(branches) => branches
+                    .iter()
+                    .map(|b| match (&b.selection, &b.said) {
+                        (Some(selection), _) => format!(
+                            "<li>Checked without the alternative {}, which needs {}; {} does not give it.</li>\n",
+                            mono(std::slice::from_ref(selection)),
+                            mono(&b.fields),
                             sigma::given_by(l.kind)
                         ),
-                        Reason::KeywordSearch => {
-                            "Searches whole messages for words; this version has the parts of an event, not messages.".to_string()
-                        }
-                        Reason::NotParsed(said) => format!("Could not be read: {}", source(said)),
-                        Reason::Sequence => "Correlates a sequence of events, which is not translated into Sigma.".to_string(),
-                        Reason::NotEql => "Not written in EQL, the only language translated into Sigma.".to_string(),
-                        Reason::BackslashInWildcard => "Has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented, so it is not translated.".to_string(),
-                        Reason::SpansKinds => "Is about program starts and file events at once, which one Sigma rule cannot be.".to_string(),
-                        Reason::NeverTrue | Reason::Regex | Reason::Unsupported | Reason::Function => {
-                            format!("{}.", capital(&reason.said()))
-                        }
-                    } + &l.detail.map_or(String::new(), |d| format!(" {}", source(d)))
-                )),
-            }
+                        (None, _) if !b.fields.is_empty() => format!(
+                            "<li>Checked without an alternative of the upstream rule, which needs {}; {} does not give it.</li>\n",
+                            mono(&b.fields),
+                            sigma::given_by(l.kind)
+                        ),
+                        (None, said) => format!(
+                            "<li>Checked without an alternative of the upstream rule, left out in translation, {}.</li>\n",
+                            source(said.as_deref().unwrap_or(""))
+                        ),
+                    })
+                    .collect(),
+                Placement::Evaluated | Placement::NotEvaluated(_) => Vec::new(),
+            };
             let Some(m) = &l.meta else {
                 w("</article>\n".to_string());
                 continue;
@@ -1900,19 +1875,12 @@ fn rules_page(
             if let Some(a) = &m.author {
                 w(format!("<li>Author: {}</li>\n", source(a)));
             }
-            if l.detail.is_some() {
-                w(format!(
-                    "<li>Not taken from {}, upstream in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
-                    esc(l.source.set),
-                    esc(l.file)
-                ));
-            } else {
-                w(format!(
-                    "<li>Published as {}, in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
-                    source(m.status.as_str()),
-                    esc(l.file)
-                ));
-            }
+            w(without.concat());
+            w(format!(
+                "<li>Published as {}, in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
+                source(m.status.as_str()),
+                esc(l.file)
+            ));
         }
         w("</section>\n".to_string());
     }
@@ -2015,11 +1983,42 @@ fn unread(
 /// projects the walk did not find.
 fn walk_gap(count: Count, latest: &[Latest], this: Option<&str>) -> Vec<String> {
     covered::in_projects(count)
-        .then(|| covered::projects_gap(latest, this))
+        .then(|| failed_walk(latest, this))
         .flatten()
         .into_iter()
         .collect()
 }
+
+/// Whether projects were looked for everywhere but in the folders this version does not enter:
+/// what a page then says of projects is said of the projects found.
+fn not_entered(latest: &[Latest], this: Option<&str>) -> bool {
+    let found = covered::projects_found(latest, this);
+    !found.all && v1::Cause::try_from(found.cause) == Ok(v1::Cause::NotGiven)
+}
+
+/// Why the projects a page lists may not be whole: a reading that failed. A folder this
+/// version does not enter is a limit of the version, which the commands say; a page shows
+/// what was read.
+fn failed_walk(latest: &[Latest], this: Option<&str>) -> Option<String> {
+    let found = covered::projects_found(latest, this);
+    (!found.all && !not_entered(latest, this))
+        .then_some(found.why)
+        .flatten()
+}
+
+/// Why the counts of ways in projects may be short, as a page tells it: the reading of which
+/// ways each project holds failed, or the search for projects did (`covered::ways_gap`, less
+/// the folders this version does not enter).
+fn ways_failed(latest: &[Latest], this: Option<&str>) -> Option<String> {
+    if not_entered(latest, this) {
+        return None;
+    }
+    covered::ways_gap(latest, this)
+}
+
+/// What an empty list of a kind kept in projects says while projects were not looked for
+/// everywhere.
+const NONE_IN_FOUND: &str = "None in the projects found.";
 
 /// The readings that fill the list of a kind of watched thing on this Mac: of files, every
 /// kind of place watched as it; of installed things, that kind; of the packages projects
@@ -2153,7 +2152,9 @@ pub fn this_mac(
             Count::Files(as_) => {
                 let walk = walk_gap(count, &st.coverage, this);
                 let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &walk);
-                files(conn, &mut out, as_, this, gap.as_deref())?
+                let found = covered::in_projects(count) && not_entered(&st.coverage, this);
+                let none = if found { NONE_IN_FOUND } else { NONE_FOUND };
+                files(conn, &mut out, as_, this, gap.as_deref(), none)?
             }
             Count::Installed(kind) => {
                 let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &[]);
@@ -2172,10 +2173,15 @@ pub fn this_mac(
                 )?;
                 writeln!(
                     out,
-                    "<p>Your projects on this Mac depend on {} packages, each counted once per project; each project and its count are under Projects below. <a href=\"{VULNERABILITIES}.html\">Known vulnerabilities in them</a> are listed by project.</p>",
+                    "<p>{} on this Mac depend on {} packages, each counted once per project; each project and its count are under Projects found below. <a href=\"{VULNERABILITIES}.html\">Known vulnerabilities in them</a> are listed by project.</p>",
+                    if not_entered(&st.coverage, this) {
+                        "The projects found"
+                    } else {
+                        "Your projects"
+                    },
                     grouped(n)
                 )?;
-                // The count is of the projects found: what the walk left out is said under it.
+                // The count is of the projects found: a walk that failed is said under it.
                 let walk = walk_gap(count, &st.coverage, this);
                 let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &walk);
                 coverage_of_list(&mut out, gap.as_deref(), false, "");
@@ -2205,25 +2211,13 @@ pub fn this_mac(
     out.push_str("</section>\n");
     also(conn, &mut out)?;
 
-    let gap = covered::ways_gap(&st.coverage, this);
+    let gap = ways_failed(&st.coverage, this);
     ways(conn, &mut out, this, gap.as_deref())?;
 
-    out.push_str("<section id=\"projects\">\n<h2>Projects</h2>\n<p class=\"muted\">Folders of code kept with git on this Mac, with how many of their dependencies are known from the files that list them.</p>\n");
-    // Folders the walk did not enter: the list is not every project on this Mac.
-    let unseen = covered::projects_not_looked_into(&st.coverage);
-    if !unseen.is_empty() {
-        let unseen: Vec<&str> = unseen.iter().map(String::as_str).collect();
-        writeln!(
-            out,
-            "<p>Not looked into: {}. macOS asks your permission before a program looks inside these folders, and this version does not ask, so a new project kept there is not found. One found there before is listed as it was, and nothing inside it is read.</p>",
-            esc(&covered::listed(&unseen))
-        )?;
-    }
-    // What the walk does not look in by design, said once, quietly.
     writeln!(
         out,
-        "<p class=\"muted\">{}</p>",
-        esc(&crate::checkouts::not_walked())
+        "<section id=\"projects\">\n<h2>Projects found</h2>\n<p class=\"muted\">Folders of code kept with git that were found on this Mac, with how many of their dependencies are known from the files that list them. {}</p>",
+        esc(&crate::checkouts::walked())
     )?;
     let list = projects(conn, this)?;
     let gap = unread(
@@ -2250,39 +2244,35 @@ pub fn this_mac(
         out.push_str("</tbody></table></div>\n");
     }
     out.push_str("</section>\n");
-    // What on this Mac was not judged, each thing in full, where the summary's line leads.
-    let unjudged = unjudged(st);
-    writeln!(
-        out,
-        "<section id=\"{NOT_JUDGED}\">\n<h2>Not judged on this Mac</h2>\n<p class=\"muted\">{}</p>",
-        esc(&if unjudged.is_empty() {
-            "Nothing beyond what you can fix, which the summary lists.".to_string()
-        } else {
-            format!(
-                "{} on this Mac this version could not judge here, and nothing you do changes.",
-                counted(unjudged.len() as i64, "thing", "things")
-            )
-        })
-    )?;
-    for u in unjudged {
-        uncovered(&mut out, u)?;
+    // What could not be read on this Mac, each thing in full, where the summary's line leads.
+    let failed = failed_here(st);
+    if !failed.is_empty() {
+        writeln!(
+            out,
+            "<section id=\"{NOT_READ}\">\n<h2>Could not be read on this Mac</h2>\n<p class=\"muted\">{} could not be read at the last check. Each is tried again at every check.</p>",
+            capital(&counted(failed.len() as i64, "thing", "things"))
+        )?;
+        for u in failed {
+            uncovered(&mut out, u)?;
+        }
+        out.push_str("</section>\n");
     }
-    out.push_str("</section>\n");
     out.push_str(FOOT);
     Ok(out)
 }
 
-/// What the section of every known way a project runs code by itself says first.
-const WAYS: &str = "Files in a project that make a tool run code by itself during routine work, such as opening the folder or installing its packages. This version reads some of them and watches what they say; the others are only named here, so a change in them goes unseen. Every way known to this version is listed, whether it is in your projects or not.";
+/// What the section of the ways a project runs code by itself says first.
+const WAYS: &str = "Files in a project that make a tool run code by itself during routine work, such as opening the folder or installing its packages. Each one listed is read, and a change in what it says is told, whether it is in your projects now or not.";
 
-/// What the section of every known place in the home folder says first.
-const HOME_WAYS: &str = "Files and folders in your home folder where a developer tool keeps its own settings for what it runs by itself, such as the programs a coding agent starts or an editor's extensions. This version reads some of them and watches what they say; the others are only named here, so a change in them goes unseen. Every place known to this version is listed, whether it is on this Mac or not.";
+/// What the section of the places in the home folder says first.
+const HOME_WAYS: &str = "Files and folders in your home folder where a developer tool keeps its own settings for what it runs by itself, such as the programs a coding agent starts or an editor's extensions. Each one listed is read, and a change in what it says is told, whether it is on this Mac now or not.";
 
-/// Every known way a project runs code by itself, from the table in `autorun`: the file, what
-/// runs it, whether the tool asks first, whether it is read, and in how many projects here it
-/// is; then, in a section of their own, the places of the home folder, and whether this Mac
-/// holds each. None is left out, present or not. While not every project was looked into
-/// (`gap`, from `covered::ways_gap`), a way no project is known to hold is not counted as none.
+/// The ways a project runs code by itself that this version reads, from the table in
+/// `autorun`: the file, what runs it, whether the tool asks first, when it is read, and in how
+/// many of the projects found it is; then, in a section of their own, the places of the home
+/// folder, and whether this Mac holds each. A way this version does not read is not on the
+/// page: the documents and the commands' machine form name it. While the reading of projects
+/// failed (`gap`, from `ways_failed`), a way no project is known to hold is not counted as none.
 fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&str>) -> Out {
     use crate::autorun::{self, Part, Scope};
     // Which subjects hold a way: checkouts of this Mac by the start of their id, or this Mac
@@ -2309,13 +2299,11 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&st
         )
     };
     for home in [false, true] {
-        let (read, known) = autorun::counts(home);
-        let (id, heading, intro, unit, column) = if home {
+        let (id, heading, intro, column) = if home {
             (
                 "home-code-runs",
                 "Places where a developer tool's own settings can make code run by itself",
                 HOME_WAYS,
-                "places",
                 "On this Mac",
             )
         } else {
@@ -2323,18 +2311,14 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&st
                 "ways-code-runs",
                 "Ways a project can make code run by itself",
                 WAYS,
-                "ways",
-                "Projects here",
+                "Projects found with it",
             )
         };
         writeln!(
             out,
-            "<section id=\"{id}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>\n<p>{}</p>",
+            "<section id=\"{id}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>",
             esc(heading),
-            esc(intro),
-            esc(&format!(
-                "This version reads {read} of the {known} known {unit}."
-            ))
+            esc(intro)
         )?;
         let gap = gap.filter(|_| !home);
         if let Some(why) = gap {
@@ -2344,7 +2328,9 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&st
         }
         out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
         view::thead(out, &["File", "What runs it", "Asks first", "Read", column]);
-        for (p, way) in autorun::ways().filter(|(p, _)| (p.scope == Scope::Home) == home) {
+        let read = |p: &autorun::Point| p.part != Part::Present;
+        for (p, way) in autorun::ways().filter(|(p, _)| (p.scope == Scope::Home) == home && read(p))
+        {
             let words = if home {
                 way.trigger.words_home()
             } else {
@@ -2352,14 +2338,13 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>, gap: Option<&st
             };
             let runs = format!("{} ({})", capital(words), way.tool);
             let read = match p.part {
-                Part::Present => "Not read",
                 Part::Entries => "Read: every entry",
                 _ if p.hourly().is_some() => "Read at full checks",
                 Part::Folders(_) => "Read: every folder, by name",
                 _ => "Read",
             };
             let here = match p.scope {
-                Scope::NamedBy(_) => "Not looked for".to_string(),
+                Scope::NamedBy(_) => "—".to_string(),
                 Scope::Checkout | Scope::System => match holding(&p.name(), false)? {
                     0 if gap.is_some() => "Not known".to_string(),
                     n => grouped(n),
@@ -2389,6 +2374,7 @@ fn files(
     as_: &str,
     this: Option<&str>,
     gap: Option<&str>,
+    none: &str,
 ) -> Out {
     let mac = findings::This::of(conn, this.map(str::to_string))?;
     let first: Vec<(String, i64)> = conn
@@ -2401,7 +2387,7 @@ fn files(
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    coverage_of_list(out, gap, first.is_empty(), NONE_FOUND);
+    coverage_of_list(out, gap, first.is_empty(), none);
     if first.is_empty() {
         return Ok(());
     }
@@ -3128,7 +3114,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         for (p, way) in autorun::ways() {
             let cell = format!("<td class=\"mono\">{}</td>", esc(&p.name()));
-            assert!(page.contains(&cell));
+            // The page lists the ways that are read, and no way that is only known.
+            assert_eq!(
+                page.contains(&cell),
+                p.part != autorun::Part::Present,
+                "{}",
+                p.name()
+            );
+            if p.part == autorun::Part::Present {
+                continue;
+            }
             // A row read only at full checks says so in its reading column.
             let rest = &page[page.find(&cell).unwrap()..];
             let line = &rest[..rest.find("</tr>").unwrap()];

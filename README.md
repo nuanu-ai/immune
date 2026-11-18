@@ -89,6 +89,7 @@ Not built yet:
 - [The collector](docs/event-level.md): installing it, what it records, its log, and the published rules it lets Immune evaluate.
 - [Writing a rule](docs/rules.md): when Immune has a Sigma rule of its own, where it goes, its two samples and the fields it can read.
 - [Attack simulations](docs/atomic.md): how much of Atomic Red Team's tests for macOS Immune notices, run by run.
+- [Changelog](CHANGELOG.md): what changed, by the day it reached `main`.
 - [The contract](contract/README.md): the Rust types a program that runs Immune reads and writes.
 
 ## Contributing, security and licence

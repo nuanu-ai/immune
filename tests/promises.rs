@@ -321,10 +321,10 @@ fn section<'a>(page: &'a str, id: &str) -> &'a str {
     &page[start..end]
 }
 
-/// What could not be judged on this Mac: the section of the page of what is watched that the
-/// summary's one line links to.
-fn limits(pages: &[(PathBuf, String)]) -> &str {
-    section(page_named(pages, "this-mac.html"), "not-judged")
+/// What could not be read on this Mac: the section of the page of what is watched that the
+/// summary's one line links to. It is there only while a reading failed.
+fn not_read(pages: &[(PathBuf, String)]) -> &str {
+    section(page_named(pages, "this-mac.html"), "not-read")
 }
 
 /// One page `immune view` wrote, by its file name.
@@ -4528,8 +4528,9 @@ fn a_folder_macos_asks_permission_for_is_never_entered_through_a_link_and_what_w
 fn projects_kept_in_desktop_or_documents_are_said_not_looked_into_and_the_list_never_reads_as_all()
 {
     // The walk enters no folder macOS asks permission for, so a project kept in Documents is
-    // never found. The page's list of projects must not read as every project on the Mac, and
-    // the status must say those folders were not looked into and that this version cannot.
+    // never found. The page's list of projects must not read as every project on the Mac: it
+    // is the projects found, with where they are looked for. The status says those folders
+    // were not looked into and that this version cannot.
     let dir = Dir::new("projects-guarded");
     let home = dir.0.join("home");
     checkout(&home, "dev/shop");
@@ -4545,9 +4546,10 @@ fn projects_kept_in_desktop_or_documents_are_said_not_looked_into_and_the_list_n
     let page = view(&dir.store());
     let projects = section(&page, "projects");
     assert!(
-        projects.contains(
-            "<p>Not looked into: Desktop and Documents. macOS asks your permission before a program looks inside these folders, and this version does not ask, so a new project kept there is not found. One found there before is listed as it was, and nothing inside it is read.</p>"
-        ),
+        projects.contains("<h2>Projects found</h2>")
+            && projects.contains(
+                "that were found on this Mac, with how many of their dependencies are known from the files that list them. They are looked for in your home folder, up to 5 folders down, and in the folders your coding agents worked in.</p>"
+            ),
         "{projects}"
     );
     assert!(projects.contains("dev/shop") && !projects.contains("notes-app"));
@@ -4591,7 +4593,7 @@ fn projects_kept_in_desktop_or_documents_are_said_not_looked_into_and_the_list_n
     let projects = section(&page, "projects");
     assert!(
         projects.contains("None found in the folders looked into.")
-            && projects.contains("<p>Not looked into: Desktop and Documents. "),
+            && projects.contains("<h2>Projects found</h2>"),
         "{projects}"
     );
 }
@@ -4671,11 +4673,12 @@ fn the_page_beyond_this_mac_says_when_the_check_its_lists_rest_on_was_made() {
 }
 
 #[test]
-fn the_walks_own_limits_are_named_once_and_a_project_found_in_documents_before_stays_listed() {
+fn the_list_of_projects_is_the_projects_found_and_one_found_in_documents_before_stays_listed() {
     // iCloud Drive and other cloud storage live in the home folder's Library, which the walk
-    // does not enter by design; nor hidden folders, links or deep folders. Named nowhere, the
-    // list of projects would read as every project on the Mac. A project found in Documents by
-    // a check pointed there is kept, not told as gone, when the usual walk cannot look.
+    // does not enter by design; nor hidden folders, links or deep folders. The list is of the
+    // projects found and says where they are looked for, so it never reads as every project on
+    // the Mac. A project found in Documents by a check pointed there is kept, not told as gone,
+    // when the usual walk cannot look.
     let dir = Dir::new("projects-walk-limits");
     let home = dir.0.join("home");
     for rel in [
@@ -4717,15 +4720,12 @@ fn the_walks_own_limits_are_named_once_and_a_project_found_in_documents_before_s
             .any(|p| projects.contains(p)),
         "{projects}"
     );
-    assert!(
-        projects.contains(
-            "Projects are looked for in your home folder, but not in Library (which holds iCloud Drive and other cloud storage), Applications, Movies, Music, Pictures and Public directly in it, not in hidden folders or folders named node_modules, target or vendor, not through a link to a folder, and not deeper than 5 folders down."
-        ),
-        "{projects}"
-    );
     assert_eq!(
-        projects.matches("not through a link to a folder").count(),
-        1
+        projects
+            .matches("They are looked for in your home folder, up to 5 folders down")
+            .count(),
+        1,
+        "{projects}"
     );
 }
 
@@ -10305,22 +10305,12 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
         printed.contains("\n  No reader in this build for\n") && row("uv.lock") && row("yarn.lock"),
         "{printed}"
     );
+    // The pages list what is read: what this version has no reader for is the status's to say.
     let pages = view_pages(&store);
-    let page = limits(&pages);
-    assert!(
-        page.contains("<h3>Some files and packages are not understood by this version yet.</h3>"),
-        "{page}"
-    );
-    // Its examples are listed as data under its title, and never put into its sentences.
-    let start = page
-        .find("<article class=\"item\" id=\"not-understood\">")
-        .unwrap();
-    let article = &page[start..start + page[start..].find("</article>").unwrap()];
-    assert!(
-        article.contains("<li>uv.lock</li>\n<li>yarn.lock</li>")
-            && article.matches("uv.lock").count() == 1,
-        "{article}"
-    );
+    for name in ["view.html", "this-mac.html"] {
+        let page = page_named(&pages, name);
+        assert!(!page.contains("id=\"not-understood\""), "{page}");
+    }
 
     let second = immune_home(&store, &brew, &absent);
     assert!(
@@ -12233,14 +12223,14 @@ fn a_secret_in_why_a_reading_failed_is_cut_wherever_the_status_gives_the_reason(
     }
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(!printed.contains(token), "{printed}");
-    // The page says it among what was not judged on this Mac, next to the name, cut.
+    // The page says it among what could not be read on this Mac, next to the name, cut.
     let page = view(&w.store());
-    let not_judged = section(&page, "not-judged");
+    let not_read = section(&page, "not-read");
     assert!(
-        not_judged.contains("<li>mac: cannot read ")
-            && not_judged.contains("\\cut{gitleaks:github-pat 40}")
-            && !not_judged.contains(token),
-        "{not_judged}"
+        not_read.contains("<li>mac: cannot read ")
+            && not_read.contains("\\cut{gitleaks:github-pat 40}")
+            && !not_read.contains(token),
+        "{not_read}"
     );
 }
 
@@ -12827,19 +12817,23 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         .map(|u| u["id"].as_str().unwrap())
         .collect();
     assert_eq!(yours, ["program-starts-not-seen"]);
-    // Each cause raised on this Mac is in full where it belongs: what the owner can fix on the
-    // summary, the rest on the page the summary's one line links to; a limit of this version,
-    // true of every Mac, is left out of both.
+    // Each cause is in full where it belongs: what the owner can fix on the summary, and a
+    // reading of this Mac that failed on the page the summary's one line links to. The pages
+    // list what is read, so anything else is left out of both: a limit of this version, true
+    // of every Mac, and what this version has no reader for on this one.
     let fix = section(page, "you-can-fix");
-    let not_judged = limits(&pages);
+    let not_read = not_read(&pages);
+    let failed_here = |u: &serde_json::Value| {
+        u["who"] != "you" && u["holds_on"] != "every_mac" && u["class"] == "failed"
+    };
     for u in r["not_covered"].as_array().unwrap() {
         let id = u["id"].as_str().unwrap();
         let (held, tag) = if u["who"] == "you" {
             (fix, format!("<article class=\"fixc\" id=\"{id}\">"))
         } else {
-            (not_judged, format!("<article class=\"item\" id=\"{id}\">"))
+            (not_read, format!("<article class=\"item\" id=\"{id}\">"))
         };
-        if u["holds_on"] == "every_mac" {
+        if u["who"] != "you" && !failed_here(u) {
             for (_, html) in &pages {
                 assert!(!html.contains(&format!(" id=\"{id}\"")), "{id}");
             }
@@ -12858,21 +12852,22 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         }
     }
     assert!(
-        not_judged.contains(
+        not_read.contains(
             "<h3>The list of vulnerabilities attackers are using could not be downloaded since the first check.</h3>"
         ),
-        "{not_judged}"
+        "{not_read}"
     );
     // The summary links to it, counting what it names.
-    let unjudged = r["not_covered"]
+    let failed = r["not_covered"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|u| u["who"] != "you" && u["holds_on"] != "every_mac")
+        .filter(|u| failed_here(u))
         .count();
+    assert!(failed > 1 && failed < r["not_covered"].as_array().unwrap().len());
     assert!(
         section(page, "watched-here").contains(&format!(
-            "<a href=\"view/this-mac.html#not-judged\">{unjudged} things on this Mac were not judged</a>"
+            "<a href=\"view/this-mac.html#not-read\">{failed} things on this Mac could not be read</a>"
         )),
         "{page}"
     );
@@ -13093,9 +13088,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     let pages = view_pages(&w.store());
     let (main, page) = &pages[0];
     let folder = main.parent().unwrap();
-    for anchor in ["you-can-fix", "limits"] {
-        assert!(page.contains(&format!(" id=\"{anchor}\"")), "{anchor}");
-    }
+    assert!(page.contains(" id=\"you-can-fix\""), "{page}");
     // What a person lands on first is in his words, not the program's. What a source said,
     // listed apart under its item, is data. The rules' own words are a person's words where
     // they are written, and "an app you build yourself" is not about this program's build.
@@ -13223,15 +13216,17 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .unwrap()
         .1;
     let n = |v: &serde_json::Value| v.as_u64().unwrap() as usize;
+    // A rule that is not checked is on no page: `immune rules --all` lists those.
     assert_eq!(
         page.matches("<article class=\"rule\">").count(),
-        n(&r["shipped"]) + n(&r["not_taken"])
+        n(&r["evaluated"]) + n(&r["in_part"])
     );
-    for (anchor, key) in [
-        ("evaluated", "evaluated"),
-        ("in-part", "in_part"),
-        ("not-evaluated", "not_evaluated"),
-    ] {
+    assert!(n(&r["not_evaluated"]) > 0 && !page.contains(" id=\"not-evaluated\""));
+    for rule in rules["not_evaluated"].as_array().unwrap() {
+        let file = format!(">{}<", rule["file"].as_str().unwrap());
+        assert!(!page.contains(&file), "{file}");
+    }
+    for (anchor, key) in [("evaluated", "evaluated"), ("in-part", "in_part")] {
         let listed = section(page, anchor);
         assert_eq!(
             listed.matches("<article class=\"rule\">").count(),
@@ -13338,20 +13333,23 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         section(page, "in-part").matches(quiet).count(),
         n(&r["in_part"]) - 1
     );
-    assert!(!section(page, "not-evaluated").contains("No match"));
     // The rules of a set that states no level are listed under their own heading, as a group
-    // after every level and not as one, and a reason the behaviour rules' translation added is said in words.
+    // after every level and not as one.
     let evaluated = section(page, "evaluated");
     let none = evaluated
         .find("<h3>Of a set that states no level</h3>")
         .unwrap();
     assert!(evaluated.find("<h3>Informational</h3>").unwrap() < none);
     assert!(evaluated.contains("<span class=\"chip lvl-none\">no level stated</span>"));
+    // What a rule checked in part goes without is a detail of that rule.
     assert!(
-        section(page, "not-evaluated")
-            .contains("<p class=\"missing\">Could never be true over the events here. "),
+        section(page, "in-part")
+            .matches("<li>Checked without ")
+            .count()
+            >= n(&r["in_part"]),
         "{page}"
     );
+    assert!(!evaluated.contains("Checked without "), "{evaluated}");
 
     // The summary's section on program starts: the count at a glance, what the collector does
     // not keep in a line beside it, and a restart of the collector said as a loss, only when
