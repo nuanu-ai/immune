@@ -2850,9 +2850,10 @@ type CheckoutWalk = (Option<Vec<checkouts::Checkout>>, Option<&'static str>);
 
 /// Which checkouts are on this machine, with a reason if the walk failed. When its root is
 /// not a folder its reading failed. A walk closes a checkout the store holds only where it
-/// looked: one it went past (`Walk::went_past`), or one looked at where it was and not there.
-/// A walk of a given folder leaves the checkouts outside it as they were. The folder given is
-/// made real first (`checkouts::given`).
+/// looked: one looked at again under its root and not there (`Walk::look_again`). It leaves
+/// the checkouts outside its root as they were. The folder given is made real first
+/// (`checkouts::given`), and a walk of a folder outside the home folder meets the home by its
+/// real path.
 fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Error>> {
     let home = &args.home;
     let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.clone());
@@ -2884,10 +2885,14 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
         ));
     }
     run.readers += 1;
-    let mut walk = checkouts::walk(root, home);
-    let homes = [home.as_path(), real_home.as_path()];
+    let walk_home = if root.starts_with(home) {
+        home
+    } else {
+        &real_home
+    };
+    let mut walk = checkouts::walk(root, walk_home);
     // A checkout the store holds that the walk did not meet is kept as it was, nothing inside
-    // it read, outside the folder the walk was given, and otherwise as looking again says.
+    // it read, outside the walk's root, and otherwise as looking again says.
     let prefix = format!("checkout:{machine}/");
     let met: BTreeSet<String> = walk.checkouts.iter().map(|c| c.rel.clone()).collect();
     let (mut kept, mut unknown) = (Vec::new(), Vec::new());
@@ -2896,11 +2901,12 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
         .filter(|rel| !met.contains(rel))
     {
-        if args.checkouts_root.is_some() && !home.join(&rel).starts_with(root) {
+        let path = walk_home.join(&rel);
+        let Ok(under) = path.strip_prefix(root) else {
             kept.push(rel);
             continue;
-        }
-        match walk.look_again(&rel, home, root, &homes) {
+        };
+        match walk.look_again(under, root, walk_home, &real_home) {
             checkouts::Again::Found(path) => walk.checkouts.push(checkouts::Checkout { rel, path }),
             checkouts::Again::Gone => {}
             checkouts::Again::Moved => kept.push(rel),
@@ -2940,7 +2946,7 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
-    not_looked_into(run, checkouts::READER, &walk.guarded, home)?;
+    not_looked_into(run, checkouts::READER, &walk.guarded, walk_home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
     let failure = unlisted

@@ -18,11 +18,11 @@ pub const TYPE: &str = "checkout";
 /// Why a walk of a folder given instead of the home folder is partial.
 pub const ONLY_GIVEN: &str = "only the given folder was walked";
 /// What is said of a checkout the store holds that is still there in another form.
-pub const MOVED: &str = "is no longer a folder reached through folders alone, as when a link to a folder elsewhere took its place or that of a folder above it: it was not looked into, and what was known of it is kept";
+pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
 
 /// The checkouts the store holds on `machine`, by their paths as ids name them, that are not
-/// among `found` and are still there in another form, as looking along real folders from the
-/// home folder finds (`look`).
+/// among `found` and are still there in another form, as looking again from the home folder
+/// finds (`look`). One outside the home folder is not looked at.
 pub fn moved(
     conn: &rusqlite::Connection,
     machine: &str,
@@ -34,7 +34,11 @@ pub fn moved(
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
         .filter(|rel| {
-            !found.contains(rel) && matches!(look(rel, home, home, &[home]), Some(Again::Moved))
+            let path = home.join(rel);
+            !found.contains(rel)
+                && path
+                    .strip_prefix(home)
+                    .is_ok_and(|under| matches!(look(home, under, home), Some(Again::Moved)))
         })
         .collect())
 }
@@ -54,43 +58,26 @@ pub fn given(root: &Path, home: &Path, real_home: &Path) -> PathBuf {
     }
 }
 
-/// How the checkout the store holds at `rel` is looked at again, as the walk started at `root`
-/// goes: along real folders down from `root`, which is taken as given, or from `/` when it is
-/// not under `root`. No link is followed and nothing past one is looked up, so a second look
-/// reaches nothing the walk could not. First, as written, it may be in a folder macOS asks
-/// permission for that the walk was not given. Then, one part at a time, it is still there in
-/// another form where a link is in its way or something other than a folder is where it was,
-/// and gone where a part is missing or a folder above it is no longer one. `None` when every
-/// part of its path is a folder.
-fn look(rel: &str, home: &Path, root: &Path, homes: &[&Path]) -> Option<Again> {
-    let path = home.join(rel);
-    // Named under the first of `homes`, however it was written, as `guarded::real` names it.
-    let folder = homes.iter().find_map(|h| {
-        guarded::folder_of(&path, h).map(|g| match g.strip_prefix(h) {
-            Ok(rest) => homes[0].join(rest),
-            Err(_) => g,
-        })
-    });
-    if let Some(g) = folder
+/// How a checkout the store holds, at `under` below the walk's `root`, is looked at again:
+/// as the walk goes, down real folders from `root`, taken as given, following no link and
+/// looking up nothing past one. First, as written, it may be in a folder macOS asks
+/// permission for under `home` that the walk was not given. Then, one part at a time, it is
+/// gone where a part is missing or a part above it is no longer a folder, a link included,
+/// since that path is no longer there; something other than a folder at its own place is it
+/// in another form. `None` when every part is a folder.
+fn look(root: &Path, under: &Path, home: &Path) -> Option<Again> {
+    if let Some(g) = guarded::folder_of(&root.join(under), home)
         && !root.starts_with(&g)
     {
         return Some(Again::Guarded(g));
     }
-    // Outside `root`, down from `/`. `home` is absolute, so `path` always is: the guard holds.
-    let (from, under) = match path.strip_prefix(root) {
-        Ok(under) => (root, under),
-        Err(_) => match path.strip_prefix("/") {
-            Ok(under) => (Path::new("/"), under),
-            Err(_) => return Some(Again::NotTold),
-        },
-    };
-    let mut at = from.to_path_buf();
+    let mut at = root.to_path_buf();
     let mut parts = under.components().peekable();
     while let Some(part) = parts.next() {
         at.push(part);
         match std::fs::symlink_metadata(&at) {
             Ok(m) if m.is_dir() => {}
-            Ok(m) if m.is_symlink() || parts.peek().is_none() => return Some(Again::Moved),
+            Ok(_) if parts.peek().is_none() => return Some(Again::Moved),
             Ok(_) => return Some(Again::Gone),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Again::Gone),
             Err(_) => return Some(Again::NotTold),
@@ -162,39 +149,25 @@ pub struct Walk {
 }
 
 impl Walk {
-    /// Whether the walk looked where the checkout `rel` was and it was not there: at some
-    /// level of its path the walk listed a folder in full, and no folder of the next name was
-    /// in it. Names are compared as written. A checkout no folder on whose way the walk listed
-    /// (deeper than it goes, inside a hidden, pruned or guarded folder, in one that could not
-    /// be listed, inside another checkout) was not walked past, nor was one whose folders are
-    /// all still there.
-    pub fn went_past(&self, rel: &str) -> bool {
-        let named = |p: &Path| match p.as_os_str().is_empty() {
-            true => ".".to_string(),
-            false => p.to_string_lossy().into_owned(),
-        };
-        let path = Path::new(rel);
-        path.ancestors()
-            .zip(path.ancestors().skip(1))
-            .any(|(at, held)| self.listed.contains(&named(held)) && !self.seen.contains(&named(at)))
-    }
-
-    /// A checkout the store holds at `rel` that this walk, started at `root`, did not meet:
-    /// as looking along real folders from `root` finds (`look`), then gone when the walk went
-    /// past it, and otherwise looked at where it was, as an agent's working folder is
-    /// (`still_there`).
-    pub fn look_again(&self, rel: &str, home: &Path, root: &Path, homes: &[&Path]) -> Again {
-        if let Some(again) = look(rel, home, root, homes) {
+    /// A checkout the store holds, at `under` below this walk's `root`, that the walk
+    /// did not meet, with the `home` the walk was given: as looking again finds (`look`), then
+    /// as it is where it was, as an agent's working folder is (`still_there`). A folder there
+    /// that the disk spells otherwise, as a volume that ignores case lets it, and that the walk
+    /// met under the disk's name (named under `real_home`, the home made real) is gone: it is
+    /// held under that name.
+    pub fn look_again(&self, under: &Path, root: &Path, home: &Path, real_home: &Path) -> Again {
+        if let Some(again) = look(root, under, home) {
             return again;
         }
-        if self.went_past(rel) {
-            return Again::Gone;
-        }
-        let path = home.join(rel);
+        let path = root.join(under);
         match still_there(&path) {
-            Some(true) => Again::Found(path),
-            Some(false) => Again::Gone,
-            None => Again::NotTold,
+            Some(true) => {}
+            Some(false) => return Again::Gone,
+            None => return Again::NotTold,
+        }
+        match std::fs::canonicalize(&path).map(|real| self::rel(real_home, &real)) {
+            Ok(named) if self.checkouts.iter().any(|c| c.rel == named) => Again::Gone,
+            _ => Again::Found(path),
         }
     }
 }
@@ -204,8 +177,7 @@ pub enum Again {
     /// It is there, at this path, as the walk names the paths it meets.
     Found(PathBuf),
     Gone,
-    /// Something other than a folder is where it was, or a link took the place of a folder
-    /// above it.
+    /// Something other than a folder is where it was.
     Moved,
     /// The disk could not say.
     NotTold,
