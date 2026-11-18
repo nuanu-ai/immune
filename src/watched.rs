@@ -17,6 +17,8 @@
 
 use crate::autorun::{Kind, Part, Point, Scope, places};
 use crate::baseline::Unit;
+use crate::git_hooks::{Folder, Unread};
+use crate::guarded::{self, Real};
 use crate::look::{Absent, Look};
 use std::fs::{FileType, Metadata, OpenOptions};
 use std::io::Read;
@@ -37,6 +39,8 @@ pub const RAW_SOME: &str = "watched-places-touched.txt";
 pub const CAP: u64 = 8 * 1024 * 1024;
 /// The note of a full reading of a checkout's hooks when it has none.
 pub const NO_HOOKS: &str = "the checkout has no hooks";
+/// Journal note for a scoped removal while another checkout still uses the same hook.
+pub const HOOK_STILL_ACTIVE: &str = "this hook is still watched in another checkout";
 /// Why the hooks of a checkout whose `.git` is a file were not read.
 pub const GIT_FILE: &str = ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read";
 /// What this build has no reader for among watched places, in its own words.
@@ -66,6 +70,10 @@ pub const PROFILES: Kind = (PROFILE, PROFILE_KIND);
 pub const SSH_FILES: Kind = (SSH, SSH_KIND);
 pub const AUTHS: Kind = (AUTH, AUTH_KIND);
 pub const HOOKS: Kind = (HOOK, HOOK_KIND);
+
+pub fn hook_departure(kind: &str, event: &crate::store::Event) -> bool {
+    kind == HOOK_KIND && event.kind == "removed" && event.predicate == "watched_as"
+}
 
 /// Registers the coverage kinds of the places, on every open: a store of the current format
 /// takes a kind added since without a rebuild.
@@ -308,6 +316,7 @@ pub fn look_machine(roots: &Roots, kind: &str) -> Look {
     let at = Where {
         homes: [homes[0].as_path(), homes[1].as_path()],
         home: roots.home,
+        given: &[],
     };
     for (p, k) in places().filter(|(_, k)| k.1 == kind) {
         for path in p.paths {
@@ -324,10 +333,14 @@ pub fn look_machine(roots: &Roots, kind: &str) -> Look {
 
 /// How the hooks of one checkout could be looked at.
 pub enum Hooks {
-    Looked(Look),
+    /// What was read, and why the folder Git's configuration names could not be told.
+    Looked(Look, Option<(Cause, String)>),
     /// `.git` is a file: the hooks are elsewhere.
     GitFile,
 }
+
+/// How the reason of a checkout's hooks reading says the configured folder was not told.
+const UNTOLD: &str = "the folder Git's configuration names for hooks could not be told: ";
 
 /// The places of each checkout: its hooks.
 fn in_checkout() -> impl Iterator<Item = (&'static Point, Kind, &'static str)> {
@@ -336,34 +349,70 @@ fn in_checkout() -> impl Iterator<Item = (&'static Point, Kind, &'static str)> {
         .flat_map(|(p, k)| p.paths.iter().map(move |path| (p, k, *path)))
 }
 
-/// Looks at the hooks folder of one checkout. `rel` is the checkout's path as ids name it.
-pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
-    let homes = homes(home);
-    let at = Where {
-        homes: [homes[0].as_path(), homes[1].as_path()],
-        home,
-    };
+/// Looks at the hooks of one checkout: `.git/hooks` as it always was, whatever Git's
+/// configuration says, and besides it the folder the configuration names (`git_hooks`) when
+/// that can be told. When it cannot, `.git/hooks` is still read and the reason says why.
+pub fn look_checkout(
+    checkout: &crate::checkouts::Checkout,
+    home: &Path,
+    homes: [&Path; 2],
+    folder: Folder,
+    given: &[&Path],
+) -> Hooks {
+    let at = Where { homes, home, given };
     let mut look = Look::default();
-    // `.git` is not looked at where it leads into a folder macOS asks permission for.
-    let dotgit = match crate::guarded::followed(&checkout.join(".git"), &at.homes) {
-        Ok(dotgit) => dotgit,
-        Err(folder) => {
-            for (_, _, path) in in_checkout() {
-                look.not_into(Unit::whole(format!("{rel}/{path}")), folder.clone(), home);
-            }
-            return Hooks::Looked(look);
+    let untold = match &folder {
+        Folder::Unknown(Unread::GitFile) => return Hooks::GitFile,
+        Folder::Unknown(Unread::Guarded(g)) => {
+            look.met(g.clone());
+            let into = guarded::shown(g, home);
+            let why =
+                format!("Git's configuration leads into {into}, which macOS asks permission for");
+            Some((Cause::NotGiven, format!("{UNTOLD}{why}")))
         }
+        Folder::Unknown(Unread::Failed(why)) => Some((Cause::Failed, format!("{UNTOLD}{why}"))),
+        _ => None,
     };
-    // When `.git` cannot be looked at, its hooks folder cannot be either, and says so.
-    match std::fs::metadata(dotgit) {
-        Ok(m) if !m.is_dir() => Hooks::GitFile,
-        _ => {
-            for (p, k, path) in in_checkout() {
-                let shown = format!("{rel}/{path}");
-                look_place(&mut look, p, k, path, checkout, &shown, &at);
-            }
-            Hooks::Looked(look)
-        }
+    for (p, k, path) in in_checkout() {
+        let shown = format!("{}/{path}", checkout.rel);
+        look_place(&mut look, p, k, path, &checkout.path, &shown, &at);
+    }
+    for (path, names) in folder.configured() {
+        configured_hooks(&mut look, path, names, &at);
+    }
+    Hooks::Looked(look, untold)
+}
+
+/// Reads the hooks Git runs by `names` from a configured folder, `path` as written.
+fn configured_hooks(look: &mut Look, path: &Path, names: &[&str], at: &Where) {
+    // The checkout's hooks were looked at, whatever this folder turns out to be.
+    look.present += 1;
+    let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
+    if look.not_read().any(|(u, _)| *u == unit) {
+        return;
+    }
+    let folder = match guarded::real_in(path, &at.homes, at.given) {
+        Real::At(folder) => folder,
+        Real::Guarded(g) => return look.not_into(unit, g, at.home),
+        Real::Failed(e) if Absent::on_the_way(&e).is_some() => return,
+        Real::Failed(e) => return look.not_looked_at(unit, reason(&e)),
+    };
+    match std::fs::metadata(&folder) {
+        Ok(meta) if meta.is_dir() => {}
+        // A non-directory cannot contain a Git hook. This does not open a FIFO,
+        // socket or device configured as the hooks path.
+        Ok(_) => return,
+        Err(e) => return look.not_looked_at(unit, reason(&e)),
+    }
+    let shown = crate::checkouts::rel(at.homes[1], &folder);
+    for name in names {
+        let entry = if shown == "/" {
+            format!("/{name}")
+        } else {
+            format!("{shown}/{name}")
+        };
+        let examined = examine(&folder.join(name), look, at, None);
+        take(look, HOOKS, None, entry, examined, at);
     }
 }
 
@@ -372,6 +421,7 @@ pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
 struct Where<'a> {
     homes: [&'a Path; 2],
     home: &'a Path,
+    given: &'a [&'a Path],
 }
 
 /// The keys of a row whose parts count, `None` for a row read whole.
@@ -630,7 +680,7 @@ fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
     let read = || -> std::io::Result<Result<Vec<u8>, &'static str>> {
         let file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
             .open(path)?;
         let opened = file.metadata()?;
         if !opened.is_file() {

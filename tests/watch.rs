@@ -937,14 +937,16 @@ fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
 fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     let mac = Mac::new("hooks");
     mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    // Git runs no hook from `/dev/null`: nothing under it is watched, `.git/hooks` still is.
+    mac.put("dev/shop/.git/config", "[core]\n hooksPath = /dev/null\n");
     std::fs::create_dir_all(mac.home().join("dev/shop/.git/hooks")).unwrap();
     mac.run();
     let mut w = mac.watch();
     let watching = w.next("watching");
-    // The table's places, and the checkout's hooks and its files that run code by itself.
+    // The table's places, the general Git configuration, and the checkout's own files.
     assert_eq!(
         watching["places"],
-        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
+        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES
     );
     w.next("read");
     mac.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\n");
@@ -965,10 +967,15 @@ const TABLE_PLACES: u64 = 35;
 /// Claude Code's state file is not one: it is rewritten all the time.
 const HOME_PLACES: u64 = 6;
 
-/// The places the watcher subscribes to in each checkout: its hooks folder, the editor's
-/// task file and settings, two dev container paths, `package.json`, two pnpm files, and
-/// seven files of coding agents' settings. A workspace file has no fixed name.
-const CHECKOUT_PLACES: u64 = 15;
+/// Shared Git configuration when there is a checkout to watch: Apple Git's own file in the
+/// developer folder, the system file, the XDG file and `~/.gitconfig`.
+const GIT_CONFIG_PLACES: u64 = 4;
+
+/// The places the watcher subscribes to in each checkout with default hooks. This includes
+/// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's
+/// task file and settings, two dev container paths, `package.json`, two pnpm files, and seven
+/// files of coding agents' settings. A workspace file has no fixed name.
+const CHECKOUT_PLACES: u64 = 18;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -1511,6 +1518,49 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
             "{order}"
         );
     }
+}
+
+#[test]
+fn git_hooks_watch_rebinds_to_a_new_folder_on_a_config_event() {
+    let mac = Mac::new("git-hooks-rebind");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/api/.git/config", "[core]\n hooksPath = ../first\n");
+    mac.put("dev/first/pre-commit", "# baseline\n");
+    mac.put("dev/second/pre-push", "# inactive at start\n");
+    mac.run();
+    let mut watcher = mac.watch_with(&["--alive-every", "60"]).started();
+    mac.put(
+        "dev/api/.git/config",
+        "[core]\n hooksPath = ../first\n[remote \"origin\"]\n url = https://example.invalid/repo\n",
+    );
+    assert_eq!(watcher.next("read")["opened"], 0);
+    // Git rewrites config by replacing it, as `git config` does with config.lock.
+    let replacement = mac.put(
+        "dev/api/.git/config.lock",
+        "[core]\n hooksPath = ../second\n",
+    );
+    std::fs::rename(replacement, mac.home().join("dev/api/.git/config")).unwrap();
+    assert_eq!(watcher.next("read")["opened"], 2);
+    mac.put("dev/second/post-merge", "# newly active\n");
+    assert_eq!(watcher.next("read")["opened"], 1);
+    assert_eq!(
+        found(&mac),
+        [
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/first/pre-commit".to_string()
+            ),
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/second/post-merge".to_string()
+            ),
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/second/pre-push".to_string()
+            ),
+        ]
+    );
+    assert!(watcher.stop().success());
 }
 
 #[test]
@@ -2547,7 +2597,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
     let mut w = mac.watch();
     assert_eq!(
         w.next("watching")["places"],
-        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
+        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES
     );
 }
 

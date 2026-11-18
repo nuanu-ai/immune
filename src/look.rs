@@ -271,14 +271,18 @@ pub fn retire_unread(tx: &Transaction, r: &Reading) -> rusqlite::Result<usize> {
     // named by what follows the prefix of its ids, as `kept` in `main.rs` takes it. A thing of
     // another machine is left as it is.
     let prefix = format!("file:{}/", r.scope);
+    let checkout_prefix = format!("checkout:{}/", r.scope);
     let checkout = |rel: &str| checkouts.contains(&format!("{}/{rel}", r.scope));
     let mut watched: BTreeSet<&str> = BTreeSet::new();
     let mut unclaimed = Vec::new();
     for (scope, kind, subject) in &rows {
         // A kind no row reads has no candidates, so what is of it is never claimed.
-        let claimed = subject
-            .strip_prefix(&prefix)
-            .is_none_or(|name| !baseline::candidates(kind, name, checkout).is_empty());
+        let claimed = subject.strip_prefix(&prefix).is_none_or(|name| {
+            // A resolved hook can be anywhere. Its checkout scope, not a static
+            // filename pattern, is what claims it for the next comparison.
+            kind == watched::HOOK_KIND && scope.strip_prefix(&checkout_prefix).is_some_and(checkout)
+                || !baseline::candidates(kind, name, checkout).is_empty()
+        });
         if claimed {
             watched.insert(subject);
         } else {

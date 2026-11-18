@@ -105,7 +105,9 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
             (_, true) => "removed",
             _ => "changed",
         };
-        if kind == "removed" && key.1 == "located_on" {
+        // A hook may gain another checkout in the same reading. The hook reader
+        // checks its final locations before retracting the content.
+        if kind == "removed" && key.1 == "located_on" && r.kind != crate::watched::HOOK_KIND {
             retract_inside(tx, r, &key.0)?;
         }
         events.push(Event {
@@ -205,7 +207,12 @@ pub fn set_aside(
 
 /// Retracts everything read inside an entity once nothing says where it is any more, and
 /// so on down: a file located in a checkout that is gone takes its own readings along.
-fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Result<()> {
+/// Returns whether nothing says where it is.
+pub(crate) fn retract_inside(
+    tx: &Transaction,
+    r: &Reading,
+    entity: &str,
+) -> rusqlite::Result<bool> {
     let still_somewhere: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM assertion
                         WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?1)",
@@ -213,7 +220,7 @@ fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Resu
         |row| row.get(0),
     )?;
     if still_somewhere {
-        return Ok(());
+        return Ok(false);
     }
     let inside: Vec<String> = tx
         .prepare(
@@ -230,5 +237,5 @@ fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Resu
     for thing in inside {
         retract_inside(tx, r, &thing)?;
     }
-    Ok(())
+    Ok(true)
 }

@@ -591,7 +591,7 @@ pub static POINTS: [Point; 87] = [
     row(&["*.xcodeproj"], Present, BuildOrTest, "Xcode", NotKnown, (EVENT, "high", "low"), "https://attack.mitre.org/techniques/T1546/"),
     Point { place: Some(watched::HOOKS), ..row(&[".git/hooks"], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".git/config"], Present, GitCommand, "git", Never, (EVENT, "high", "medium"), "https://git-scm.com/docs/git-config"),
-    Point { scope: Scope::NamedBy("core.hooksPath"), ..row(&[], Present, GitCommand, "git", Never, (EVENT, "medium", "low"), "https://git-scm.com/docs/githooks") },
+    Point { scope: Scope::NamedBy("core.hooksPath"), place: Some(watched::HOOKS), ..row(&[], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".gitmodules", ".git/modules"], Present, GitCommand, "git", Never, (EVENT, "high", "low"), "https://securitylabs.datadoghq.com/articles/git-arbitrary-file-write/"),
     row(&[".pre-commit-config.yaml"], Present, GitCommand, "pre-commit", Never, (EVENT, "medium", "low"), "https://pre-commit.com/"),
     row(&[".envrc"], Present, EnterInShell, "direnv", OncePerContent, (EVENT, "high", "medium"), "https://direnv.net/"),
@@ -989,10 +989,12 @@ pub fn fires(place: &str, change: &str, watched_as: &str) -> bool {
 /// is present and not read. One that is not full may be about any checkout. A row that is not
 /// read here has a kind no reading writes.
 pub fn checkout_kinds() -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
     let mut kinds: Vec<String> = ways()
         .map(|(p, _)| p)
         .filter(|p| p.scope != Scope::Home)
         .map(Point::kind)
+        .filter(|kind| seen.insert(kind.clone()))
         .collect();
     kinds.push(PRESENT_KIND.to_string());
     kinds.push(OTHERS_KIND.to_string());
@@ -1430,9 +1432,18 @@ fn expand(v: &Value, rest: &str, done: String, out: &mut Vec<String>) {
 
 /// A regular file's bytes, opened without waiting, up to the cap; else why not.
 pub fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    read_capped_with(path, cap, 0)
+}
+
+/// Read a path whose links have already been resolved, without following a replacement.
+pub fn read_capped_resolved(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
+    read_capped_with(path, cap, libc::O_NOFOLLOW)
+}
+
+fn read_capped_with(path: &Path, cap: u64, flags: libc::c_int) -> Result<Vec<u8>, String> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK)
+        .custom_flags(libc::O_NONBLOCK | flags)
         .open(path)
         .map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
@@ -1699,10 +1710,10 @@ mod tests {
             assert_eq!(is, was);
         }
         assert_eq!(now.lines().count(), before.lines().count());
-        // 36 watched places, 41 ways in a project and 11 in the home folder: one table.
+        // 37 watched places, 41 ways in a project and 11 in the home folder: one table.
         assert_eq!(
             (places().count(), ways().count(), POINTS.len()),
-            (36, 52, 87)
+            (37, 52, 87)
         );
     }
 

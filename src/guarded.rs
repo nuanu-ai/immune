@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 
 /// The coverage kind of what the readers did not look into.
 pub const KIND: &str = "folders macOS asks permission for";
@@ -41,23 +41,48 @@ pub const IN_HOME: [&str; 7] = [
 /// Where removable and network volumes are mounted.
 pub const VOLUMES: &str = "/Volumes";
 
+// The writable side of the macOS startup volume is also reachable by this name.
+const DATA: &str = "/System/Volumes/Data";
+
+fn after_prefix<'a>(
+    mut path: Components<'a>,
+    mut prefix: Components<'_>,
+) -> Option<Components<'a>> {
+    prefix
+        .all(|p| {
+            path.next().is_some_and(|c| {
+                c.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(p.as_os_str().as_encoded_bytes())
+            })
+        })
+        .then_some(path)
+}
+
+fn data_path(path: &Path) -> Components<'_> {
+    after_prefix(path.components(), Path::new(DATA).components())
+        .or_else(|| after_prefix(path.components(), Path::new("/").components()))
+        .unwrap_or_else(|| path.components())
+}
+
 /// The guarded folder `path` is in, or `None`. `path` is taken as written: making it real
 /// would look inside the folder, and `real` is how a path from data is made real. The names
 /// are compared without regard to case, as the Mac's volumes compare them by default.
 pub fn folder_of(path: &Path, home: &Path) -> Option<PathBuf> {
     let same = |a: &std::ffi::OsStr, b: &str| a.to_string_lossy().eq_ignore_ascii_case(b);
-    let mut parts = path.components();
-    if let (Some(Component::RootDir), Some(Component::Normal(v)), Some(Component::Normal(volume))) =
-        (parts.next(), parts.next(), parts.next())
+    let mut parts = data_path(path);
+    if let (Some(Component::Normal(v)), Some(Component::Normal(volume))) =
+        (parts.next(), parts.next())
+        && path.is_absolute()
         && same(v, "Volumes")
     {
         return Some(Path::new(VOLUMES).join(volume));
     }
-    let rest = path.strip_prefix(home).ok()?;
+    let rest = after_prefix(data_path(path), data_path(home))?;
     IN_HOME
         .iter()
         .find(|g| {
-            let mut names = rest.components();
+            let mut names = rest.clone();
             g.split('/').all(
                 |want| matches!(names.next(), Some(Component::Normal(name)) if same(name, want)),
             )
@@ -85,8 +110,47 @@ const MAX_LINKS: usize = 32;
 /// the same way. Reading where a link points is not entering where it points;
 /// `canonicalize` on a path inside a guarded folder would be. A relative path fails.
 pub fn real(path: &Path, homes: &[&Path]) -> Real {
+    real_in(path, homes, &[])
+}
+
+/// A folder's device and inode: what every spelling of it shares.
+type Id = (u64, u64);
+
+fn id(meta: &std::fs::Metadata) -> Id {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+/// The guarded folders by identity, each with its name under the first of `homes` and its path
+/// under the home it was found in, the last of `homes` first; and `/Volumes`. The volume folds
+/// names that a comparison of ASCII case does not (`Deſktop` is `~/Desktop`), so another
+/// spelling is told by identity. Looking at a folder is not entering it.
+fn identities(homes: &[&Path]) -> (Option<Id>, Vec<(Id, PathBuf, PathBuf)>) {
+    let meta = |p: &Path| std::fs::symlink_metadata(p).ok().filter(|m| m.is_dir());
+    let mut in_home = Vec::new();
+    for h in homes.iter().rev() {
+        for g in IN_HOME {
+            if let Some(m) = meta(&h.join(g)) {
+                in_home.push((id(&m), homes[0].join(g), h.join(g)));
+            }
+        }
+    }
+    (meta(Path::new(VOLUMES)).map(|m| id(&m)), in_home)
+}
+
+/// Like `real`, with the given checkout allowed under both its supplied and resolved names.
+/// Its guarded ancestors may be traversed to reach it.
+pub fn real_in(path: &Path, homes: &[&Path], given: &[&Path]) -> Real {
+    let exempt = |p: &Path, on_the_way: bool| {
+        given
+            .iter()
+            .any(|root| p.starts_with(root) || on_the_way && root.starts_with(p))
+    };
     // A guarded folder is named under the first of `homes`, however it was reached.
-    let guarded = |p: &Path| {
+    let guarded = |p: &Path, on_the_way: bool| {
+        if exempt(p, on_the_way) {
+            return None;
+        }
         homes.iter().find_map(|h| {
             folder_of(p, h).map(|g| match g.strip_prefix(h) {
                 Ok(rest) => homes[0].join(rest),
@@ -98,7 +162,7 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
         return Real::Failed(std::io::Error::other("the path is not absolute"));
     }
     // As written first: a home folder reached through a link is in `homes` by both names.
-    if let Some(g) = guarded(path) {
+    if let Some(g) = guarded(path, false) {
         return Real::Guarded(g);
     }
     let mut todo: VecDeque<OsString> = path
@@ -107,6 +171,9 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
         .map(|c| c.as_os_str().to_os_string())
         .collect();
     let mut done = PathBuf::from("/");
+    // The identity of `done`, while it is known; and the guarded folders', asked once.
+    let mut done_id: Option<Id> = None;
+    let mut ids = None;
     let mut links = 0;
     while let Some(part) = todo.pop_front() {
         if part == "." {
@@ -114,11 +181,25 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
         }
         if part == ".." {
             done.pop();
+            done_id = None;
             continue;
         }
         let next = done.join(&part);
-        if let Some(g) = guarded(&next) {
+        let more = !todo.is_empty();
+        if let Some(g) = guarded(&next, more) {
             return Real::Guarded(g);
+        }
+        // A folder directly under /Volumes is told by its parent before it is looked at:
+        // looking at a mount point can wait on a server.
+        let (volumes, in_home) = ids.get_or_insert_with(|| identities(homes));
+        let parent = done_id.or_else(|| std::fs::symlink_metadata(&done).ok().map(|m| id(&m)));
+        let volume =
+            (parent.is_some() && parent == *volumes).then(|| Path::new(VOLUMES).join(&part));
+        if let Some(name) = &volume
+            && !exempt(name, more)
+            && !exempt(&next, more)
+        {
+            return Real::Guarded(name.clone());
         }
         match std::fs::symlink_metadata(&next) {
             Err(e) => return Real::Failed(e),
@@ -135,6 +216,7 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
                 };
                 if target.is_absolute() {
                     done = PathBuf::from("/");
+                    done_id = None;
                 }
                 for c in target.components().rev() {
                     if c != Component::RootDir {
@@ -142,10 +224,24 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
                     }
                 }
             }
+            Ok(m) if !m.is_dir() && more => {
+                return Real::Failed(std::io::Error::from_raw_os_error(libc::ENOTDIR));
+            }
+            Ok(m) if m.is_dir() => {
+                done = match in_home.iter().find(|(i, ..)| *i == id(&m)) {
+                    Some((_, name, at)) if !exempt(name, more) && !exempt(at, more) => {
+                        return Real::Guarded(name.clone());
+                    }
+                    // Exempt: on under the folder's own name, so what follows is told by it.
+                    Some((_, _, at)) => at.clone(),
+                    None => next,
+                };
+                done_id = Some(id(&m));
+            }
             Ok(_) => done = next,
         }
     }
-    Real::At(done)
+    guarded(&done, false).map_or(Real::At(done), Real::Guarded)
 }
 
 /// `path` with its last part made real by `real` when that part is a symbolic link, and as
@@ -234,8 +330,11 @@ mod tests {
         // On a volume that ignores case, every spelling is the same folder.
         for spelled in [
             "/Users/someone/documents/x",
+            "/users/SOMEONE/Documents/x",
             "/Users/someone/DESKTOP",
             "/Users/someone/library/mobile documents/a",
+            "/System/Volumes/Data/Users/someone/Documents/x",
+            "/System/Volumes/Data/Volumes/Backup/dev",
             "/volumes/Backup/dev",
         ] {
             assert!(folder_of(Path::new(spelled), home).is_some(), "{spelled}");
@@ -286,12 +385,25 @@ mod tests {
             (home.join("dev/../Documents/proj"), base.join("Documents")),
             (base.join("Documents/proj"), base.join("Documents")),
             (home.join("volume/dev"), PathBuf::from("/Volumes/Backup")),
+            // The volume folds `ſ` to `s`: the same folder by another spelling, told by identity.
+            (home.join("Documentſ/proj"), base.join("Documents")),
+            (
+                Path::new("/System/Volumes/Data")
+                    .join(home.strip_prefix("/").unwrap())
+                    .join("documentſ/proj"),
+                base.join("Documents"),
+            ),
         ] {
             match real_of(written.clone()) {
                 Real::Guarded(g) => assert_eq!(g, folder, "{}", written.display()),
                 other => panic!("{}: {other:?}", written.display()),
             }
         }
+        // A folder given inside a guarded one lets the walk pass the guarded one on its way
+        // there, under the folder's own name, so nothing beside the given folder is entered.
+        let given = home.join("Documents/given");
+        let beside = real_in(&home.join("Documentſ/other/x"), &[&base, &home], &[&given]);
+        assert!(matches!(beside, Real::Guarded(g) if g == base.join("Documents")));
         assert!(
             matches!(real_of(home.join("work/shop")), Real::At(p) if p == home.join("dev/shop"))
         );
