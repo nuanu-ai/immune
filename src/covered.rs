@@ -1376,18 +1376,26 @@ const GUARDED_WHAT: [(&[&str], &str); 7] = [
 ];
 
 /// The folders macOS protects that a reading of what a reader did not look into names, as a
-/// person names them.
+/// person names them. A disk's name comes from the Mac and may hold ", " but never "/": a
+/// folder begins only where a path does (`guarded::shown`), and the rest belongs to the one
+/// before.
 fn not_looked_into(r: &Latest) -> Vec<String> {
     let named = r
         .reason
         .as_deref()
         .and_then(|s| s.strip_prefix(guarded::NOT_LOOKED_INTO))
         .unwrap_or_default();
-    named
-        .split(", ")
-        .filter(|f| !f.is_empty())
-        .map(plain_folder)
-        .collect()
+    let mut folders: Vec<String> = Vec::new();
+    for part in named.split(", ").filter(|f| !f.is_empty()) {
+        match folders.last_mut() {
+            Some(last) if !part.starts_with('/') && !part.starts_with("~/") => {
+                last.push_str(", ");
+                last.push_str(part);
+            }
+            _ => folders.push(part.to_string()),
+        }
+    }
+    folders.iter().map(|f| plain_folder(f)).collect()
 }
 
 /// Why what is said of the ways present in projects is not whole, in the program's words;
@@ -1404,20 +1412,22 @@ pub fn ways_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
         .or_else(|| projects_gap(latest, this))
 }
 
-/// Why the projects on this Mac were not all found, in the program's words; `None` when they
-/// were (`projects_found`). Every "none" or zero said about what is in projects, in the status,
-/// its text and the pages, rests on this. Folder names are not in it: the status and the page
-/// name them apart.
+/// Why not every place this version looks for projects in was looked into, in the program's
+/// words; `None` when every one was (`projects_found`). Every "none" or zero said about what is
+/// in projects, in the status, its text and the pages, rests on this. Folder names are not in
+/// it: the status and the page name them apart.
 pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
     projects_found(latest, this).why
 }
 
-/// Whether every project on this Mac was found, as the contract gives it. They were all found
-/// only when the latest reading of this Mac by each reader that finds projects
-/// (`project::FOUND_BY`) was full and every folder macOS protects was entered. A finder with no
-/// reading of this Mac has not looked here: every check makes one of each, full when there is
-/// nothing to read. Each gap carries its reading's cause, a folder macOS protects `not_given`
-/// as the status's item says it (`GUARDED`); the worst one is the answer's, with its why.
+/// Whether every place this version looks for projects in was looked into at the latest check,
+/// as the contract gives it: the latest reading of this Mac by each reader that finds projects
+/// (`project::FOUND_BY`) was full, and no reading named a folder macOS protects that it left
+/// out. What this version does not look in by design (`checkouts::not_walked`) is a limit of the
+/// version, not a gap here. A finder with no reading of this Mac has not looked here: every
+/// check makes one of each, full when there is nothing to read. Each gap carries its reading's
+/// cause, a folder macOS protects `not_given` as the status's item says it (`GUARDED`); the
+/// worst one is the answer's, with its why. The folders are data, whole as in `examples_text`.
 pub fn projects_found(latest: &[Latest], this: Option<&str>) -> v1::ProjectsFound {
     let mut gaps: Vec<(store::Cause, String)> = Vec::new();
     for (reader, kind) in crate::project::FOUND_BY {
@@ -1442,10 +1452,7 @@ pub fn projects_found(latest: &[Latest], this: Option<&str>) -> v1::ProjectsFoun
     }
     let folders = projects_not_looked_into(latest);
     if !folders.is_empty() {
-        gaps.push((
-            GUARDED.class,
-            "projects inside folders macOS protects were not looked into".to_string(),
-        ));
+        gaps.push((GUARDED.class, PROTECTED.to_string()));
     }
     let worst = gaps.into_iter().min_by_key(|(cause, _)| *cause);
     v1::ProjectsFound {
@@ -1454,14 +1461,22 @@ pub fn projects_found(latest: &[Latest], this: Option<&str>) -> v1::ProjectsFoun
             crate::contract::value_of::<v1::Cause>(c.literal())
         }),
         why: worst.map(|(_, why)| why),
-        folders_text: folders,
+        folders_text: folders.iter().map(|f| crate::known::whole(f)).collect(),
     }
 }
 
-/// What may be said of the projects as a whole, by `ProjectsFound` alone.
+/// Why, when the gap is a folder macOS protects: said by the folders' sentence in its place.
+const PROTECTED: &str = "projects inside folders macOS protects were not looked into";
+
+/// How `plain_folder` begins a disk's name. The name comes from the Mac: a sentence says
+/// "other disks" in its place, and only the data holds it.
+const DISK: &str = "the disk ";
+
+/// What may be said of the projects as a whole, by `ProjectsFound` alone: of every project
+/// in the places this version looks in, or only of those found there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Found {
-    /// Every project was found: what is said is whole, with its mark.
+    /// Every place this version looks in was looked into: what is said is whole, with its mark.
     All,
     /// Not all, as places the check was not given or does not enter: whole for the projects
     /// found, which the sentence names, with its mark.
@@ -1484,13 +1499,28 @@ impl Found {
         match v1::Cause::try_from(p.cause) {
             _ if p.all => (Found::All, None),
             Ok(v1::Cause::NotGiven) => {
-                let line = if p.folders_text.is_empty() {
-                    format!("{}.", crate::pages::capital(why))
-                } else {
-                    let folders: Vec<&str> = p.folders_text.iter().map(String::as_str).collect();
-                    format!("Projects in {} were not looked for.", listed(&folders))
-                };
-                (Found::NotEntered, Some(line))
+                // Every gap: the why, unless the folders' sentence says it, then the folders,
+                // each disk said once as other disks.
+                let mut said = Vec::new();
+                if why != PROTECTED {
+                    said.push(format!("{}.", crate::pages::capital(why)));
+                }
+                let mut folders: Vec<&str> = p
+                    .folders_text
+                    .iter()
+                    .filter(|f| !f.starts_with(DISK))
+                    .map(String::as_str)
+                    .collect();
+                if p.folders_text.iter().any(|f| f.starts_with(DISK)) {
+                    folders.push("other disks");
+                }
+                if !folders.is_empty() {
+                    said.push(format!(
+                        "Projects in {} were not looked for.",
+                        listed(&folders)
+                    ));
+                }
+                (Found::NotEntered, Some(said.join(" ")))
             }
             _ => (
                 Found::LookedAt,
@@ -1551,7 +1581,7 @@ fn plain_folder(shown: &str) -> String {
         "~/Library/CloudStorage" => "cloud storage folders".to_string(),
         "~/Library/Containers" | "~/Library/Group Containers" => "other apps' folders".to_string(),
         _ => match shown.strip_prefix("/Volumes/") {
-            Some(disk) => format!("the disk {disk}"),
+            Some(disk) => format!("{DISK}{disk}"),
             None => shown.strip_prefix("~/").unwrap_or(shown).to_string(),
         },
     }

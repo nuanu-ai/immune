@@ -2507,35 +2507,41 @@ pub struct VulnerabilityTotals {
     /// no known vulnerability affects the projects. Since 1.18.0.
     #[prost(uint64, tag = "19")]
     pub projects_compared: u64,
-    /// Whether every project on this Mac was found: every count here speaks only for the projects
-    /// found. Absent from an older core, and then read as not known, never as all found. Since
-    /// 1.21.0.
+    /// Whether every place this version looks for projects in was looked into: while not, every
+    /// count here speaks only for the projects found. Absent from an older core, and then read as
+    /// not known, never as `all`. Since 1.21.0.
     #[prost(message, optional, tag = "20")]
     pub projects_found: ::core::option::Option<ProjectsFound>,
 }
-/// Whether every project on this Mac was found. While not, what is said of the projects as a
-/// whole (none, zero, a count) speaks only for the projects found.
+/// Whether the projects found are every project in the places this version looks for them in.
+/// While not, what is said of the projects as a whole (none, zero, a count) speaks only for the
+/// projects found.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectsFound {
+    /// Every place this version looks for projects in was looked into at the latest check, and no
+    /// folder macOS protects was met there and left out. It does not claim every project on this
+    /// Mac: what this version does not look in by design, such as hidden folders, is a limit of
+    /// the version, named in the reference.
     #[prost(bool, tag = "1")]
     pub all: bool,
     /// Why not, in the core's words. Absent when `all`.
     #[prost(string, optional, tag = "2")]
     pub why: ::core::option::Option<::prost::alloc::string::String>,
     /// What kind of gap it is, `unspecified` when `all`: `failed`, a reading that finds projects
-    /// failed, such as a folder the walk could not list; `not_given`, a place the check was not
-    /// given or does not enter, such as a folder macOS protects. It is the class the status's own
-    /// item for the same gap carries. A value the reader does not know is read as `failed`.
+    /// failed, or has no reading of this Mac, such as a walk that could not list a folder;
+    /// `not_given`, a place the check was not given or does not enter, such as a folder macOS
+    /// protects. It is the class the status's own item for the same gap carries. A value the reader
+    /// does not know is read as `failed`.
     #[prost(enumeration = "Cause", tag = "3")]
     #[serde(
         serialize_with = "crate::enum_name::<Cause, _>",
         deserialize_with = "crate::enum_from_name::<Cause, _>"
     )]
     pub cause: i32,
-    /// Folders macOS protects that were not looked into, as a person names them, such as
-    /// `Documents`. Whole.
+    /// Folders macOS protects that a reading met and left out, as a person names them, such as
+    /// `Documents`, or `the disk <name>` with the name the Mac gives. Whole.
     #[prost(string, repeated, tag = "4")]
     pub folders_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
@@ -2636,8 +2642,9 @@ pub struct Vulnerability {
     pub declared_note: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "11")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
-    /// As in `VulnerabilityTotals`: the answers speak only for the projects found. Absent when there
-    /// is no store, and from an older core, and then read as not known. Since 1.21.0.
+    /// As in `VulnerabilityTotals`: while not `all`, the answers speak only for the projects found.
+    /// Absent when there is no store, and from an older core, and then read as not known. Since
+    /// 1.21.0.
     #[prost(message, optional, tag = "12")]
     pub projects_found: ::core::option::Option<ProjectsFound>,
 }
