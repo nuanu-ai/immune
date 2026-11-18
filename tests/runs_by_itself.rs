@@ -600,6 +600,92 @@ fn a_skipped_project_leaves_the_home_folders_places_whole_and_a_file_not_read_a_
     assert_eq!(cause(home), "full|");
 }
 
+#[test]
+fn a_place_in_the_home_folder_is_never_counted_as_a_way_present_in_projects() {
+    let e = Estate::new("home-not-projects");
+    e.checkout("dev/shop");
+    put(&e.home().join(".codex/config.toml"), "model = \"x\"\n");
+    e.full();
+    assert_eq!(e.coverage(OTHERS_KIND), "full|");
+}
+
+/// What the status's item on the ways a project runs code by itself that are not read means.
+fn ways_meaning(e: &Estate) -> String {
+    let status = e.status();
+    let mut items = status["not_covered"].as_array().unwrap().iter();
+    let item = items.find(|u| u["id"] == "project-autorun").unwrap();
+    item["meaning"].as_str().unwrap().to_string()
+}
+
+const NONE_WHOLE: &str = "None of the others is present in your projects now.";
+const NONE_PART: &str = "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.";
+
+#[test]
+fn the_status_says_no_way_not_read_is_in_projects_only_when_every_known_project_was_looked_into() {
+    let e = Estate::new("ways-said");
+    e.checkout("dev/shop");
+    let tool = e.home().join(".config/tool");
+    put(&tool.join(".git/HEAD"), "ref: refs/heads/main\n");
+    let sessions = e.0.join("sessions");
+    session(&e, "tool", &tool);
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    // A walk that could not open its root folder, after a whole one.
+    e.run_with(&e.home().join("missing"), &sessions);
+    let why = "the checkout walk could not open its root folder";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+    // Sessions that could not be read: the project only they lead to was not looked into.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |m| std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(m));
+    mode(0o000).unwrap();
+    e.go(None, &sessions);
+    mode(0o755).unwrap();
+    let why = "known checkouts were not looked into";
+    assert_eq!(ways_meaning(&e), format!("{NONE_PART} Why: {why}."));
+    e.go(None, &sessions);
+    assert_eq!(ways_meaning(&e), NONE_WHOLE);
+}
+
+/// The cells of the page's table of ways a project runs code by itself, as file and projects.
+fn ways_here(e: &Estate) -> Vec<(String, String)> {
+    let page = e.this_mac_page();
+    let section = section(&page, "ways-code-runs");
+    let cell = |c: &str| c[c.find('>').unwrap() + 1..c.find("</td>").unwrap()].to_string();
+    let row = |r: &str| {
+        let cells: Vec<String> = r.split("<td").skip(1).map(cell).collect();
+        (cells[0].clone(), cells[4].clone())
+    };
+    section.split("<tr>").skip(2).map(row).collect()
+}
+
+#[test]
+fn the_page_counts_no_project_as_holding_none_of_a_way_when_not_every_project_was_looked_into() {
+    let e = Estate::new("ways-page");
+    put(
+        &e.checkout("dev/shop").join(".npmrc"),
+        "ignore-scripts=false\n",
+    );
+    e.run_in(&e.home().join("missing"));
+    let page = e.this_mac_page();
+    let ways = section(&page, "ways-code-runs");
+    assert!(
+        ways.contains("the checkout walk could not open its root folder"),
+        "{ways}"
+    );
+    assert!(ways_here(&e).iter().all(|(_, n)| n != "0"));
+    // The places of the home folder do not rest on projects.
+    let home = section(&page, "home-code-runs");
+    assert!(!home.contains("Not every project"), "{home}");
+    e.full();
+    let page = e.this_mac_page();
+    assert!(!page.contains("Not every project"), "{page}");
+    let here = ways_here(&e);
+    assert!(here.contains(&(".npmrc".to_string(), "1".to_string())));
+    assert!(here.contains(&("bunfig.toml".to_string(), "0".to_string())));
+}
+
 /// A project's `package.json` with these scripts.
 fn package(c: &Path, scripts: &str) {
     put(
@@ -1314,7 +1400,7 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
         package(&c, "");
     }
     put(&e.checkout("dev/c").join("bunfig.toml"), "preload = []\n");
-    e.run();
+    e.full();
     let page = e.this_mac_page();
     let start = page.find("<section id=\"ways-code-runs\">").unwrap();
     let section = &page[start..start + page[start..].find("</section>").unwrap()];
@@ -1394,13 +1480,21 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
         "None of the others is present in your projects now."
     );
     // A walk of a given folder, or one that left out a folder macOS protects, says what it
-    // looked at and that the rest was not.
-    let partial = "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.";
+    // looked at, that the rest was not, and why.
+    let partial = |why: &str| format!("{NONE_PART} Why: {why}.");
     e.run_in(&e.home().join("dev"));
-    assert_eq!(item(&e.status())["meaning"], partial);
+    assert_eq!(
+        item(&e.status())["meaning"],
+        partial(
+            "the projects on this Mac were not all found, as the walk that finds them was not full"
+        )
+    );
     std::fs::create_dir_all(e.home().join("Documents")).unwrap();
     e.full();
-    assert_eq!(item(&e.status())["meaning"], partial);
+    assert_eq!(
+        item(&e.status())["meaning"],
+        partial("projects inside folders macOS protects were not looked into")
+    );
 }
 
 /// The kinds the summary's table of what is watched says none of: each row whose state is

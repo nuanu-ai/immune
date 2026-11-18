@@ -319,9 +319,8 @@ pub struct Cause {
 pub enum NoneSaid {
     /// Of places that are read wherever they are: only the words for none.
     Read(&'static str),
-    /// Of what is in the projects a walk finds: none only after a whole walk
-    /// (`projects_walked_whole`), and otherwise none of what was looked at, with the rest not
-    /// known.
+    /// Of what is in the projects a walk finds: none only when every project was looked into
+    /// (`ways_gap`), and otherwise none of what was looked at, with the rest not known and why.
     Walked {
         whole: &'static str,
         part: &'static str,
@@ -506,7 +505,7 @@ pub const PROJECT_AUTORUN: Cause = Cause {
     meaning: "{n} of the others are present in your projects and are not read, so a change in them would go unseen.",
     meaning_none: Some(NoneSaid::Walked {
         whole: "None of the others is present in your projects now.",
-        part: "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
+        part: "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing. Why: {reasons}.",
     }),
     advice: "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
 };
@@ -1157,7 +1156,7 @@ pub fn not_covered(
     let mut project_autorun = None;
     if looked {
         let names: BTreeSet<&str> = ways.iter().filter_map(|(_, _, n)| n.as_deref()).collect();
-        let walked_whole = projects_walked_whole(latest, this);
+        let gap = ways_gap(latest, this);
         project_autorun = Some(Uncovered {
             since: latest
                 .iter()
@@ -1167,7 +1166,8 @@ pub fn not_covered(
             examples: names.iter().map(|n| Example::named(*n)).collect(),
             // None of the ways not read is in a project here: what is left is the version's.
             every_mac: names.is_empty(),
-            read_whole: walked_whole,
+            read_whole: gap.is_none(),
+            reasons: gap.into_iter().collect(),
             ..Uncovered::new(&PROJECT_AUTORUN, names.len())
         });
     }
@@ -1367,16 +1367,25 @@ fn not_looked_into(r: &Latest) -> Vec<String> {
         .collect()
 }
 
-/// Whether the walk that finds this Mac's projects was whole: the reading of this Mac's
-/// checkouts was full, not limited to a folder given nor short of one it could not list, and
-/// it entered every folder macOS protects. Every "none" or zero said about what is in projects,
-/// in the status, its text and the pages, rests on this, through `projects_gap`.
-pub fn projects_walked_whole(latest: &[Latest], this: Option<&str>) -> bool {
-    projects_gap(latest, this).is_none()
+/// Why what is said of the ways present in projects is not whole, in the program's words;
+/// `None` when it is. It rests on the reading of which ways each checkout holds, which carries a
+/// reason exactly when it is not full: its walk failed or known projects were not looked into.
+/// The reading of the ways not read is made from the same look and is whole when it is. Then it
+/// rests on the walk that finds projects (`projects_gap`). The status and the page ask this
+/// before they say none or zero of a way in projects.
+pub fn ways_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
+    latest
+        .iter()
+        .find(|r| r.kind == autorun::PRESENT_KIND)
+        .and_then(|r| r.reason.clone())
+        .or_else(|| projects_gap(latest, this).map(str::to_string))
 }
 
-/// Why the walk that finds this Mac's projects was not whole, in the program's words; `None`
-/// when it was. Folder names are not in it: the status and the page name them apart.
+/// Why the walk that finds this Mac's projects was not whole: the reading of this Mac's
+/// checkouts was not full, limited to a folder given or short of one it could not list, or it
+/// did not enter every folder macOS protects. In the program's words; `None` when it was
+/// whole. Every "none" or zero said about what is in projects, in the status, its text and the
+/// pages, rests on this. Folder names are not in it: the status and the page name them apart.
 pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<&'static str> {
     let full = latest.iter().any(|r| {
         r.reader == crate::checkouts::READER
