@@ -110,8 +110,20 @@ const MAX_LINKS: usize = 32;
 /// the same way. Reading where a link points is not entering where it points;
 /// `canonicalize` on a path inside a guarded folder would be. A relative path fails.
 pub fn real(path: &Path, homes: &[&Path]) -> Real {
+    real_in(path, homes, &[])
+}
+
+/// Like `real`, with the given checkout allowed under both its supplied and resolved names.
+/// Its guarded ancestors may be traversed to reach it.
+pub fn real_in(path: &Path, homes: &[&Path], given: &[&Path]) -> Real {
     // A guarded folder is named under the first of `homes`, however it was reached.
-    let guarded = |p: &Path| {
+    let guarded = |p: &Path, on_the_way: bool| {
+        if given
+            .iter()
+            .any(|root| p.starts_with(root) || on_the_way && root.starts_with(p))
+        {
+            return None;
+        }
         homes.iter().find_map(|h| {
             folder_of(p, h).map(|g| match g.strip_prefix(h) {
                 Ok(rest) => homes[0].join(rest),
@@ -123,7 +135,7 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
         return Real::Failed(std::io::Error::other("the path is not absolute"));
     }
     // As written first: a home folder reached through a link is in `homes` by both names.
-    if let Some(g) = guarded(path) {
+    if let Some(g) = guarded(path, false) {
         return Real::Guarded(g);
     }
     let mut todo: VecDeque<OsString> = path
@@ -142,7 +154,7 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
             continue;
         }
         let next = done.join(&part);
-        if let Some(g) = guarded(&next) {
+        if let Some(g) = guarded(&next, !todo.is_empty()) {
             return Real::Guarded(g);
         }
         match std::fs::symlink_metadata(&next) {
@@ -173,7 +185,7 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
             Ok(_) => done = next,
         }
     }
-    Real::At(done)
+    guarded(&done, false).map_or(Real::At(done), Real::Guarded)
 }
 
 /// `path` with its last part made real by `real` when that part is a symbolic link, and as

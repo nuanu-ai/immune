@@ -317,6 +317,7 @@ pub fn look_machine(roots: &Roots, kind: &str) -> Look {
     let at = Where {
         homes: [homes[0].as_path(), homes[1].as_path()],
         home: roots.home,
+        given: &[],
     };
     for (p, k) in places().filter(|(_, k)| k.1 == kind) {
         for path in p.paths {
@@ -349,8 +350,9 @@ pub fn look_checkout(
     home: &Path,
     homes: [&Path; 2],
     folder: Folder,
+    given: &[&Path],
 ) -> Hooks {
-    let at = Where { homes, home };
+    let at = Where { homes, home, given };
     let mut look = Look::default();
     let unit = hook_unit(&checkout.rel);
     match folder {
@@ -390,7 +392,7 @@ pub fn look_checkout(
 }
 
 fn configured_hooks(look: &mut Look, path: &Path, names: &[&str], unit: &Unit, at: &Where) {
-    let folder = match guarded::real(path, &at.homes) {
+    let folder = match guarded::real_in(path, &at.homes, at.given) {
         Real::At(folder) => folder,
         Real::Guarded(g) => return look.not_into(unit.clone(), g, at.home),
         Real::Failed(e) => {
@@ -426,6 +428,7 @@ fn configured_hooks(look: &mut Look, path: &Path, names: &[&str], unit: &Unit, a
 struct Where<'a> {
     homes: [&'a Path; 2],
     home: &'a Path,
+    given: &'a [&'a Path],
 }
 
 /// The keys of a row whose parts count, `None` for a row read whole.

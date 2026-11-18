@@ -95,7 +95,7 @@ impl Config {
         let mut inherited = Setting::Unset;
         for source in &sources {
             if source.is_absolute() {
-                apply(source, home, homes, &mut inherited, false);
+                apply(source, home, homes, &[], &mut inherited, false);
             } else if !matches!(inherited, Setting::Unavailable(_)) {
                 inherited = Setting::Unknown(Unread::Failed("Git uses a relative XDG_CONFIG_HOME"));
             }
@@ -107,9 +107,9 @@ impl Config {
         &self.sources
     }
 
-    pub fn folder(&self, checkout: &Path, home: &Path, homes: &[&Path]) -> Folder {
+    pub fn folder(&self, checkout: &Path, home: &Path, homes: &[&Path], given: &[&Path]) -> Folder {
         let dotgit = checkout.join(".git");
-        let git_dir = match guarded::real(&dotgit, homes) {
+        let git_dir = match guarded::real_in(&dotgit, homes, given) {
             Real::At(at) => match std::fs::symlink_metadata(&at) {
                 Ok(meta) if meta.is_dir() => at,
                 Ok(_) => return Folder::Unknown(Unread::GitFile),
@@ -127,7 +127,14 @@ impl Config {
             return Folder::Unknown(Unread::Failed("Git uses a separate common directory"));
         }
         let mut setting = self.inherited.clone();
-        apply(&git_dir.join("config"), home, homes, &mut setting, true);
+        apply(
+            &git_dir.join("config"),
+            home,
+            homes,
+            given,
+            &mut setting,
+            true,
+        );
         match setting {
             Setting::Unset => Folder::Default,
             Setting::Unknown(why) | Setting::Unavailable(why) => Folder::Unknown(why),
@@ -147,11 +154,18 @@ impl Config {
 
 /// An include can shadow earlier values. A configuration file that cannot be read or
 /// parsed blocks the whole reading, even when another file specifies a hook folder.
-fn apply(path: &Path, home: &Path, homes: &[&Path], setting: &mut Setting, local: bool) {
+fn apply(
+    path: &Path,
+    home: &Path,
+    homes: &[&Path],
+    given: &[&Path],
+    setting: &mut Setting,
+    local: bool,
+) {
     if matches!(setting, Setting::Unavailable(_)) {
         return;
     }
-    let keys = match config(path, home, homes) {
+    let keys = match config(path, home, homes, given) {
         Ok(Some(keys)) => keys,
         Ok(None) => return,
         Err(why) => {
@@ -192,8 +206,13 @@ fn apply(path: &Path, home: &Path, homes: &[&Path], setting: &mut Setting, local
     }
 }
 
-fn config(path: &Path, home: &Path, homes: &[&Path]) -> Result<Option<Vec<u8>>, Unread> {
-    let at = match guarded::real(path, homes) {
+fn config(
+    path: &Path,
+    home: &Path,
+    homes: &[&Path],
+    given: &[&Path],
+) -> Result<Option<Vec<u8>>, Unread> {
+    let at = match guarded::real_in(path, homes, given) {
         Real::At(at) => at,
         Real::Guarded(g) => return Err(Unread::Guarded(g)),
         Real::Failed(e) if Absent::on_the_way(&e).is_some() => return Ok(None),

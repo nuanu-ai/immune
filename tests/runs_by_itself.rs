@@ -1314,6 +1314,44 @@ fn git_hooks_respect_path_permissions_and_read_regular_targets_with_a_cap() {
 }
 
 #[test]
+fn git_hooks_in_a_checkout_explicitly_given_to_the_reader_cannot_expand_that_permission() {
+    let e = Estate::new("git-hooks-given-checkout");
+    let tree = e.checkout("Documents/given/tree");
+    let root = e.home().join("Documents/given");
+    let outside = e.home().join("Documents/other");
+    let config = tree.join(".git/config");
+    put(&tree.join("tools/pre-commit"), "# own hook\n");
+    put(&outside.join("pre-push"), "# outside the given folder\n");
+    put(&config, "[core]\n hooksPath = tools\n");
+    e.run_in(&root);
+    let paths = || {
+        e.rows("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = 'git hook' AND layer = 'live'")
+    };
+    let coverage = || {
+        e.rows("SELECT completeness, reason FROM coverage WHERE scope = 'checkout:machine:mac/Documents/given/tree' AND reader = 'watched-places' ORDER BY id DESC LIMIT 1")
+    };
+    assert_eq!(
+        paths(),
+        ["file:machine:mac/Documents/given/tree/tools/pre-commit"]
+    );
+    assert_eq!(coverage(), ["full|"]);
+    link(outside.to_str().unwrap(), &tree.join("linked"));
+    for path in ["../../other", "linked"] {
+        put(&config, &format!("[core]\n hooksPath = {path}\n"));
+        e.run_in(&root);
+        assert_eq!(
+            paths(),
+            ["file:machine:mac/Documents/given/tree/tools/pre-commit"]
+        );
+        let coverage = coverage();
+        assert!(
+            coverage[0].starts_with("partial|") && coverage[0].contains("~/Documents"),
+            "{coverage:?}"
+        );
+    }
+}
+
+#[test]
 fn git_hooks_resolve_inherited_paths_from_the_worktree_and_receive_paths_from_git_dir() {
     let e = Estate::new("git-hooks-inherited");
     let tree = e.checkout("dev/tree");

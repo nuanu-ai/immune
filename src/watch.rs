@@ -1374,7 +1374,7 @@ fn places(
         for path in [".git/config", ".git/commondir"] {
             add(c.path.join(path), false, &scope, kind);
         }
-        match git.folder(&c.path, home, homes) {
+        match git.folder(&c.path, home, homes, &[]) {
             Folder::Default => add(c.path.join(git_hooks::DEFAULT), true, &scope, kind),
             Folder::Configured { worktree, receive } => {
                 for (folder, names) in [

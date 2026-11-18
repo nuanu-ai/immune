@@ -3754,6 +3754,16 @@ fn read_watched(
     }
     let homes = watched::homes(&args.home);
     let homes = [homes[0].as_path(), homes[1].as_path()];
+    let given_root = args.checkouts_root.as_ref().and_then(|root| {
+        if homes
+            .iter()
+            .any(|home| guarded::folder_of(root, home).is_some())
+        {
+            Some((root, root.canonicalize().ok()?))
+        } else {
+            None
+        }
+    });
     let mut git = None;
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
@@ -3762,8 +3772,15 @@ fn read_watched(
         }
         let git = git
             .get_or_insert_with(|| git_hooks::Config::new(&args.home, &args.system_root, &homes));
-        let folder = git.folder(&c.path, &args.home, &homes);
-        let (look, elsewhere) = match watched::look_checkout(c, &args.home, homes, folder) {
+        // A walk pointed into a guarded folder may read its checkout. The paths in
+        // Git config do not extend that permission to another guarded location.
+        let given = given_root
+            .as_ref()
+            .and_then(|(root, real)| Some(real.join(c.path.strip_prefix(root).ok()?)));
+        let names = given.as_ref().map(|p| [c.path.as_path(), p.as_path()]);
+        let given = names.as_ref().map_or(&[][..], |names| names.as_slice());
+        let folder = git.folder(&c.path, &args.home, &homes, given);
+        let (look, elsewhere) = match watched::look_checkout(c, &args.home, homes, folder, given) {
             watched::Hooks::GitFile => (look::Look::default(), Some(watched::GIT_FILE.to_string())),
             watched::Hooks::Looked(look) => (look, None),
         };
