@@ -2507,6 +2507,37 @@ pub struct VulnerabilityTotals {
     /// no known vulnerability affects the projects. Since 1.18.0.
     #[prost(uint64, tag = "19")]
     pub projects_compared: u64,
+    /// Whether every project on this Mac was found: every count here speaks only for the projects
+    /// found. Absent from an older core, and then read as not known, never as all found. Since
+    /// 1.21.0.
+    #[prost(message, optional, tag = "20")]
+    pub projects_found: ::core::option::Option<ProjectsFound>,
+}
+/// Whether every project on this Mac was found. While not, what is said of the projects as a
+/// whole (none, zero, a count) speaks only for the projects found.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectsFound {
+    #[prost(bool, tag = "1")]
+    pub all: bool,
+    /// Why not, in the core's words. Absent when `all`.
+    #[prost(string, optional, tag = "2")]
+    pub why: ::core::option::Option<::prost::alloc::string::String>,
+    /// What kind of gap it is, `unspecified` when `all`: `failed`, a reading that finds projects
+    /// failed, such as a folder the walk could not list; `not_given`, a place the check was not
+    /// given or does not enter, such as a folder macOS protects. It is the class the status's own
+    /// item for the same gap carries. A value the reader does not know is read as `failed`.
+    #[prost(enumeration = "Cause", tag = "3")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Cause, _>",
+        deserialize_with = "crate::enum_from_name::<Cause, _>"
+    )]
+    pub cause: i32,
+    /// Folders macOS protects that were not looked into, as a person names them, such as
+    /// `Documents`. Whole.
+    #[prost(string, repeated, tag = "4")]
+    pub folders_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Whether a feed's data is current now.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2605,6 +2636,10 @@ pub struct Vulnerability {
     pub declared_note: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "11")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+    /// As in `VulnerabilityTotals`: the answers speak only for the projects found. Absent when there
+    /// is no store, and from an older core, and then read as not known. Since 1.21.0.
+    #[prost(message, optional, tag = "12")]
+    pub projects_found: ::core::option::Option<ProjectsFound>,
 }
 /// A record the data holds, and its answer in each place.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4470,8 +4505,9 @@ pub struct Catalogue {
     #[prost(message, optional, tag = "3")]
     pub verdict_rule: ::core::option::Option<VerdictWords>,
     /// Every cause of what is not covered, with its words. In the words `{n}` is the count, `{what}`
-    /// what it is, as a list of the catalogue's own words, `{date}` a time, and `{reasons}` why, in
-    /// the core's words. A name taken from the Mac is never in them: it is in `examples_text`.
+    /// what it is, as a list of the catalogue's own words, `{date}` a time, `{reasons}` why, in the
+    /// core's words, and `{projects}` the projects it speaks for, such as `your projects` or `the
+    /// projects found` (`ProjectsFound`); `{projects}` since 1.21.0. A name taken from the Mac is never in them: it is in `examples_text`.
     #[prost(message, repeated, tag = "4")]
     pub not_covered: ::prost::alloc::vec::Vec<CauseWords>,
     /// The levels, from least to worst.

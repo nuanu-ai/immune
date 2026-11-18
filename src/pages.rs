@@ -1452,7 +1452,16 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
     let this = findings::This::of(conn, covered::this_machine(conn)?)?;
     let list = crate::vulnerabilities::affecting(conn)?;
     let gap = vulnerability_gap(conn, now)?;
-    coverage_of_list(&mut out, gap.as_deref(), list.is_empty(), "None is known.");
+    // Of the projects found, while not all were, with the line that says which were not.
+    let (found, scope) = covered::Found::of(Some(&crate::vulnerabilities::projects_found(conn)?));
+    let none = match found {
+        covered::Found::All => "None is known.".to_string(),
+        f => format!("None is known in {}.", f.projects()),
+    };
+    coverage_of_list(&mut out, gap.as_deref(), list.is_empty(), &none);
+    if let Some(line) = scope {
+        writeln!(out, "<p class=\"muted\">{}</p>", esc(&line))?;
+    }
     let mut projects: BTreeMap<&str, Vec<&crate::vulnerabilities::Affecting>> = BTreeMap::new();
     for a in &list {
         projects.entry(a.checkout.as_str()).or_default().push(a);

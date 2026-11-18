@@ -6,6 +6,7 @@
 //! `cannot_judge`, `coverage` and `no_reader_for` stay as they were, for agents: this is the
 //! same data told for a person.
 
+use crate::contract::v1;
 use crate::status::{self, Catalogue, Problems};
 use crate::view::Latest;
 use crate::{autorun, findings, guarded, integrity, resolver, servers, store, watched};
@@ -294,7 +295,8 @@ pub const NOTHING: &str = "nothing";
 /// The fixed words of one cause of what is not covered, for a person: plain words, what it
 /// means for him, and whether he can do something about it. A title is given for one and
 /// for many. In the words `{n}` is the count, `{what}` what it is in the catalogue's own words,
-/// `{date}` a time, and `{reasons}` why, in the program's words. A name taken from the Mac never
+/// `{date}` a time, `{reasons}` why, in the program's words, and `{projects}` the projects it
+/// speaks for (`Found::projects`). A name taken from the Mac never
 /// enters the words: it is an example, given apart as data.
 pub struct Cause {
     pub id: &'static str,
@@ -568,8 +570,8 @@ pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
     scope: "projects",
     kind: "packages whose known vulnerabilities cannot be told",
     title: [
-        "For {n} of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
-        "For {n} of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
+        "For {n} of the packages {projects} use, this version cannot tell whether a known vulnerability affects them.",
+        "For {n} of the packages {projects} use, this version cannot tell whether a known vulnerability affects them.",
     ],
     meaning: "Why, with how many packages each: {reasons}.",
     meaning_none: None,
@@ -795,6 +797,8 @@ pub struct Uncovered {
     /// For a cause about what is in projects, the walk that finds them was whole: "none" is
     /// said only then.
     pub read_whole: bool,
+    /// The projects it speaks for, where the words say `{projects}`.
+    pub projects: &'static str,
     /// True only where no reading of this Mac raised it: a limit of this version, the same on
     /// every Mac. Set at the one place that adds those, `LIMITS`, and where a reading found
     /// nothing of its kind here; everything else is of this Mac.
@@ -831,6 +835,7 @@ impl Uncovered {
             reasons: Vec::new(),
             what: Vec::new(),
             read_whole: true,
+            projects: Found::All.projects(),
             every_mac: false,
         }
     }
@@ -851,6 +856,7 @@ impl Uncovered {
             .replace("{date}", &date)
             .replace("{reasons}", &reasons)
             .replace("{what}", &what)
+            .replace("{projects}", self.projects)
     }
 
     pub fn title(&self) -> String {
@@ -1307,6 +1313,7 @@ pub fn not_covered(
                 .iter()
                 .map(|(code, n)| crate::vulnerabilities::reason_said(code, *n))
                 .collect(),
+            projects: Found::of(Some(&projects_found(latest, this))).0.projects(),
             ..Uncovered::new(&VULNERABILITIES_UNKNOWN, t.packages_unknown)
         });
     }
@@ -1398,29 +1405,109 @@ pub fn ways_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
 }
 
 /// Why the projects on this Mac were not all found, in the program's words; `None` when they
-/// were. They were all found only when the latest reading of this Mac by each reader that finds
-/// projects (`project::FOUND_BY`) was full and every folder macOS protects was entered. A finder
-/// with no reading of this Mac has not looked here: every check makes one of each, full when
-/// there is nothing to read. Every "none" or zero said about what is in projects, in the status,
+/// were (`projects_found`). Every "none" or zero said about what is in projects, in the status,
 /// its text and the pages, rests on this. Folder names are not in it: the status and the page
 /// name them apart.
 pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<String> {
-    let full = |(reader, kind): &&(&str, &str)| {
-        latest.iter().any(|r| {
-            r.reader == *reader
-                && r.kind == *kind
-                && this.is_some_and(|t| r.scope == t)
-                && r.completeness == "full"
-        })
-    };
-    if let Some((_, kind)) = crate::project::FOUND_BY.iter().find(|f| !full(f)) {
-        Some(format!(
-            "the projects on this Mac were not all found, as the reading of {kind} was not full"
-        ))
-    } else if !projects_not_looked_into(latest).is_empty() {
-        Some("projects inside folders macOS protects were not looked into".to_string())
-    } else {
-        None
+    projects_found(latest, this).why
+}
+
+/// Whether every project on this Mac was found, as the contract gives it. They were all found
+/// only when the latest reading of this Mac by each reader that finds projects
+/// (`project::FOUND_BY`) was full and every folder macOS protects was entered. A finder with no
+/// reading of this Mac has not looked here: every check makes one of each, full when there is
+/// nothing to read. Each gap carries its reading's cause, a folder macOS protects `not_given`
+/// as the status's item says it (`GUARDED`); the worst one is the answer's, with its why.
+pub fn projects_found(latest: &[Latest], this: Option<&str>) -> v1::ProjectsFound {
+    let mut gaps: Vec<(store::Cause, String)> = Vec::new();
+    for (reader, kind) in crate::project::FOUND_BY {
+        let r = latest
+            .iter()
+            .find(|r| r.reader == reader && r.kind == kind && this.is_some_and(|t| r.scope == t));
+        if r.is_some_and(|r| r.completeness == "full") {
+            continue;
+        }
+        // Projects are found by walking and by reading sessions: a gap that is not a place
+        // left out is a failure.
+        let cause = match r.and_then(|r| r.cause.as_deref()) {
+            Some("not_given") => store::Cause::NotGiven,
+            _ => store::Cause::Failed,
+        };
+        // A walk limited to the folder given says so in the program's own words.
+        let why = match r.and_then(|r| r.reason.as_deref()) {
+            Some(crate::checkouts::ONLY_GIVEN) => crate::checkouts::ONLY_GIVEN.to_string(),
+            _ => format!("the reading of {kind} was not full"),
+        };
+        gaps.push((cause, why));
+    }
+    let folders = projects_not_looked_into(latest);
+    if !folders.is_empty() {
+        gaps.push((
+            GUARDED.class,
+            "projects inside folders macOS protects were not looked into".to_string(),
+        ));
+    }
+    let worst = gaps.into_iter().min_by_key(|(cause, _)| *cause);
+    v1::ProjectsFound {
+        all: worst.is_none(),
+        cause: worst.as_ref().map_or(0, |(c, _)| {
+            crate::contract::value_of::<v1::Cause>(c.literal())
+        }),
+        why: worst.map(|(_, why)| why),
+        folders_text: folders,
+    }
+}
+
+/// What may be said of the projects as a whole, by `ProjectsFound` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Found {
+    /// Every project was found: what is said is whole, with its mark.
+    All,
+    /// Not all, as places the check was not given or does not enter: whole for the projects
+    /// found, which the sentence names, with its mark.
+    NotEntered,
+    /// Not all, as a reading failed, or not known: no mark.
+    LookedAt,
+}
+
+impl Found {
+    /// Which case `p` is, and the one line of scope said under the answer when not all were
+    /// found. A message without it, from an older core, is not known.
+    pub fn of(p: Option<&v1::ProjectsFound>) -> (Found, Option<String>) {
+        let Some(p) = p else {
+            return (
+                Found::LookedAt,
+                Some("Whether every project was found is not known.".to_string()),
+            );
+        };
+        let why = p.why.as_deref().unwrap_or("not known");
+        match v1::Cause::try_from(p.cause) {
+            _ if p.all => (Found::All, None),
+            Ok(v1::Cause::NotGiven) => {
+                let line = if p.folders_text.is_empty() {
+                    format!("{}.", crate::pages::capital(why))
+                } else {
+                    let folders: Vec<&str> = p.folders_text.iter().map(String::as_str).collect();
+                    format!("Projects in {} were not looked for.", listed(&folders))
+                };
+                (Found::NotEntered, Some(line))
+            }
+            _ => (
+                Found::LookedAt,
+                Some(format!(
+                    "Not every folder could be looked into, so some projects may not have been found: {why}."
+                )),
+            ),
+        }
+    }
+
+    /// The projects a statement about them as a whole speaks for.
+    pub fn projects(self) -> &'static str {
+        match self {
+            Found::All => "your projects",
+            Found::NotEntered => "the projects found",
+            Found::LookedAt => "the projects that were looked at",
+        }
     }
 }
 
@@ -1530,7 +1617,8 @@ pub const EXAMPLES: usize = 3;
 const EVERY_EXAMPLE: [&str; 1] = [OTHER_MANAGERS.id];
 
 /// Every cause with its words, as the catalogue of `immune rules` gives them. `{n}` stands for
-/// the count, `{what}` for what it is, as a list, `{date}` for a time and `{reasons}` for why.
+/// the count, `{what}` for what it is, as a list, `{date}` for a time, `{reasons}` for why and
+/// `{projects}` for the projects it speaks for.
 pub fn causes() -> Vec<crate::contract::v1::CauseWords> {
     CAUSES
         .iter()

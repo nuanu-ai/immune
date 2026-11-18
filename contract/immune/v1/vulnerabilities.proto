@@ -18,6 +18,7 @@ package immune.v1;
 
 import "immune/v1/common.proto";
 import "immune/v1/findings.proto";
+import "immune/v1/known.proto";
 
 // The answer to `immune vulnerabilities`: the "affects" answers, the most severe first.
 message Vulnerabilities {
@@ -143,6 +144,26 @@ message VulnerabilityTotals {
   // and no place not wholly read. With none, nothing was compared, and the text never says that
   // no known vulnerability affects the projects. Since 1.18.0.
   uint64 projects_compared = 19;
+  // Whether every project on this Mac was found: every count here speaks only for the projects
+  // found. Absent from an older core, and then read as not known, never as all found. Since
+  // 1.21.0.
+  ProjectsFound projects_found = 20;
+}
+
+// Whether every project on this Mac was found. While not, what is said of the projects as a
+// whole (none, zero, a count) speaks only for the projects found.
+message ProjectsFound {
+  bool all = 1;
+  // Why not, in the core's words. Absent when `all`.
+  optional string why = 2;
+  // What kind of gap it is, `unspecified` when `all`: `failed`, a reading that finds projects
+  // failed, such as a folder the walk could not list; `not_given`, a place the check was not
+  // given or does not enter, such as a folder macOS protects. It is the class the status's own
+  // item for the same gap carries. A value the reader does not know is read as `failed`.
+  Cause cause = 3;
+  // Folders macOS protects that were not looked into, as a person names them, such as
+  // `Documents`. Whole.
+  repeated string folders_text = 4;
 }
 
 // Whether a feed's data is current now.
@@ -207,6 +228,9 @@ message Vulnerability {
   // As in `Vulnerabilities`.
   string declared_note = 10;
   repeated NotComputed not_computed = 11;
+  // As in `VulnerabilityTotals`: the answers speak only for the projects found. Absent when there
+  // is no store, and from an older core, and then read as not known. Since 1.21.0.
+  ProjectsFound projects_found = 12;
 }
 
 // Whether the data holds a record of an id. `UNSPECIFIED`, or a value the reader does not know,

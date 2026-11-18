@@ -1198,7 +1198,7 @@
       "holds_on": "every_mac",
       "id": "project-autorun",
       "kind": "ways a project runs code by itself that are not read",
-      "meaning": "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some. Why: the projects on this Mac were not all found, as the reading of checkouts under the home folder was not full.",
+      "meaning": "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some. Why: only the given folder was walked.",
       "scope": "projects",
       "since_at": 1794845558,
       "title": "This version reads 14 of the 41 known ways a project can make code run by itself.",
@@ -1265,7 +1265,7 @@
       "meaning": "Why, with how many packages each: 1 is in an ecosystem whose list of known vulnerabilities was never read or is not current.",
       "scope": "projects",
       "since_at": null,
-      "title": "For 1 of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
+      "title": "For 1 of the packages the projects found use, this version cannot tell whether a known vulnerability affects them.",
       "value_text": null,
       "who": "nothing"
     },
@@ -1498,6 +1498,12 @@
     "not_affected_no_signs": null,
     "places_not_read": 0,
     "projects_compared": 0,
+    "projects_found": {
+      "all": false,
+      "cause": "not_given",
+      "folders_text": [],
+      "why": "only the given folder was walked"
+    },
     "projects_not_read": 0,
     "projects_without_lockfile": 0,
     "unknown": 1,
