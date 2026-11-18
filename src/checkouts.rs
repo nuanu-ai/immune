@@ -6,6 +6,8 @@
 //! checkouts. Paths are relative to the home folder, so the same checkout has the same id
 //! whoever runs it and wherever the walk starts.
 
+use crate::agent_folders::still_there;
+use crate::guarded;
 use std::path::{Path, PathBuf};
 
 pub const READER: &str = "checkouts";
@@ -18,26 +20,85 @@ pub const ONLY_GIVEN: &str = "only the given folder was walked";
 /// What is said of a checkout the store holds that is still there in another form.
 pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
 
-/// Whether something other than a folder is where a checkout was, a link to one included:
-/// the checkout is not gone, and is not looked into there.
-pub fn is_moved(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir())
-}
-
-/// The checkouts the store holds on `machine`, by their paths as ids name them, that are not
-/// among `found` and are still there in another form (`is_moved`).
+/// The checkouts the store holds on `machine`, by their paths as ids name them, that are still
+/// there in another form, as looking again from where the walk started finds (`look`). One
+/// outside the walk's root is not looked at. A checkout a reader found is a folder, so it is
+/// never among them.
 pub fn moved(
     conn: &rusqlite::Connection,
     machine: &str,
-    home: &Path,
-    found: &[String],
+    start: &Start,
 ) -> rusqlite::Result<Vec<String>> {
     let prefix = format!("checkout:{machine}/");
     Ok(crate::store::live_subjects(conn, READER)?
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
-        .filter(|rel| !found.contains(rel) && is_moved(&home.join(rel)))
+        .filter(|rel| {
+            let path = start.home.join(rel);
+            path.strip_prefix(&start.root).is_ok_and(|under| {
+                matches!(look(&start.root, under, &start.home), Some(Again::Kept))
+            })
+        })
         .collect())
+}
+
+/// Where a walk starts, and the home folder as it meets it there.
+pub struct Start {
+    pub root: PathBuf,
+    /// The home folder as written when the walk starts in it, and made real otherwise: ids
+    /// are named relative to it.
+    pub home: PathBuf,
+    /// The home folder made real, as the disk spells it.
+    pub real_home: PathBuf,
+}
+
+/// Where a walk of the folder `given`, or of the home folder, starts. A folder given is made
+/// real, so that no id names a checkout through a link, `..` or the working folder: the
+/// person gave it, so following it is asked for. One that cannot be made real stays as given,
+/// and the walk says it is not a folder.
+pub fn start(given: Option<&Path>, home: &Path) -> Start {
+    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let root = given.map_or_else(
+        || home.to_path_buf(),
+        |g| std::fs::canonicalize(g).unwrap_or_else(|_| g.to_path_buf()),
+    );
+    let home = match root.starts_with(home) {
+        true => home.to_path_buf(),
+        false => real_home.clone(),
+    };
+    Start {
+        root,
+        home,
+        real_home,
+    }
+}
+
+/// How a checkout the store holds, at `under` below the walk's `root`, is looked at again:
+/// as the walk goes, down real folders from `root`, taken as given, following no link and
+/// looking up nothing past one. First, as written, it may be in a folder macOS asks
+/// permission for under `home` that the walk was not given. Then, one part at a time, it is
+/// gone where a part is missing or a part above it is no longer a folder, a link included,
+/// since that path is no longer there; something other than a folder at its own place is it
+/// in another form, kept. `None` when every part is a folder.
+fn look(root: &Path, under: &Path, home: &Path) -> Option<Again> {
+    if let Some(g) = guarded::folder_of(&root.join(under), home)
+        && !root.starts_with(&g)
+    {
+        return Some(Again::Guarded(g));
+    }
+    let mut at = root.to_path_buf();
+    let mut parts = under.components().peekable();
+    while let Some(part) = parts.next() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) if parts.peek().is_none() => return Some(Again::Kept),
+            Ok(_) => return Some(Again::Gone),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Again::Gone),
+            Err(_) => return Some(Again::NotTold),
+        }
+    }
+    None
 }
 
 const MAX_DEPTH: usize = 5;
@@ -102,6 +163,41 @@ pub struct Walk {
     pub seen: Vec<String>,
 }
 
+impl Walk {
+    /// Whether a checkout the store holds, at `under` below the walk's root, that the walk did
+    /// not meet is still there: as looking again finds (`look`), then as it is where it was,
+    /// as an agent's working folder is (`still_there`). It is never read from here: one the
+    /// walk does not reach is kept as it was. A folder there that the disk spells otherwise,
+    /// as a volume that ignores case lets it, and that the walk met under the disk's name is
+    /// gone: it is held under that name.
+    pub fn look_again(&self, under: &Path, start: &Start) -> Again {
+        if let Some(again) = look(&start.root, under, &start.home) {
+            return again;
+        }
+        let path = start.root.join(under);
+        match still_there(&path) {
+            Some(true) => {}
+            Some(false) => return Again::Gone,
+            None => return Again::NotTold,
+        }
+        match std::fs::canonicalize(&path).map(|real| rel(&start.real_home, &real)) {
+            Ok(named) if self.checkouts.iter().any(|c| c.rel == named) => Again::Gone,
+            _ => Again::Kept,
+        }
+    }
+}
+
+/// What looking again at a known checkout found.
+pub enum Again {
+    Gone,
+    /// It is there, as it was or in another form: kept as it was, nothing in it read.
+    Kept,
+    /// The disk could not say.
+    NotTold,
+    /// It is in this folder macOS asks permission for, which was not entered.
+    Guarded(PathBuf),
+}
+
 /// The path as ids name it: relative to the home folder when it is inside it.
 pub fn rel(home: &Path, path: &Path) -> String {
     match path.strip_prefix(home) {
@@ -154,11 +250,10 @@ fn subfolders(dir: &Path, in_home: bool) -> Option<Listed> {
     })
 }
 
-/// Walks `root` to a fixed depth. When the root is the home folder, the home folder itself
-/// is not taken for a checkout: a home folder under git is a store of settings, and taking
-/// it would hide every checkout inside it.
+/// Walks `root` to a fixed depth. The home folder, met from whatever root, is never taken for
+/// a checkout: a home folder under git is a store of settings, and taking it would hide every
+/// checkout inside it. Its own folders that hold media, applications or settings are pruned.
 pub fn walk(root: &Path, home: &Path) -> Walk {
-    let is_home = root == home;
     let mut checkouts = Vec::new();
     let mut unlisted = Vec::new();
     let mut guarded = Vec::new();
@@ -166,7 +261,7 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
     let mut seen = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
-        let top = depth == 0 && is_home;
+        let top = dir == home;
         if !top && std::fs::symlink_metadata(dir.join(".git")).is_ok() {
             checkouts.push(Checkout {
                 rel: rel(home, &dir),
