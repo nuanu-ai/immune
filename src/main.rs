@@ -2423,7 +2423,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     read_brew(&mut run, args)?;
     let servers = args.servers_input.clone();
     read_servers(&mut run, servers.as_deref())?;
-    let walked = read_checkouts(&mut run, args)?;
+    let (walked, walk_failure) = read_checkouts(&mut run, args)?;
     let from_agents = read_agent_folders(&mut run, args)?;
     let any_checkouts = walked.is_some() || !from_agents.is_empty();
     // One checkout found by both readers is read once.
@@ -2433,7 +2433,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     if any_checkouts {
         read_lockfiles(&mut run, args, &found)?;
     }
-    let (watched, mut opened) = watch_places(&mut run, args, &found, None)?;
+    let (watched, mut opened) = watch_places(&mut run, args, &found, None, walk_failure)?;
     // What was set aside as no longer read, by this run or by a watcher since the last run's
     // line, is said once, here: a watcher's own line is not where a person is told.
     let set_aside = lifecycle::set_aside(run.tx, run.run_id, Some(watched::READER))?;
@@ -2854,23 +2854,24 @@ fn unlisted_note(folders: &[String]) -> String {
     format!("Folders that could not be listed: {}.", shown.join(", "))
 }
 
-/// Which checkouts are on this machine. `None` when the root is not a folder: then
-/// nothing was looked at and nothing is said. A folder given instead of the home folder is
-/// read partially: what is outside it was not looked at and must not be retracted.
-fn read_checkouts(
-    run: &mut Run,
-    args: &Args,
-) -> Result<Option<Vec<checkouts::Checkout>>, Box<dyn Error>> {
+type CheckoutWalk = (Option<Vec<checkouts::Checkout>>, Option<&'static str>);
+
+/// Which checkouts are on this machine, with a reason if the walk failed. When its root is
+/// not a folder it has no reading. A walk of a given folder leaves the checkouts outside it.
+fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Error>> {
     let (root, home) = (
         args.checkouts_root.as_ref().unwrap_or(&args.home),
         &args.home,
     );
     if !root.is_dir() {
         run.notes.push(format!(
-            "No checkouts: {} is not a folder.",
+            "Could not look for checkouts in {}: not a folder.",
             known::whole(&root.display().to_string())
         ));
-        return Ok(None);
+        return Ok((
+            None,
+            Some("the checkout walk could not open its root folder"),
+        ));
     }
     run.readers += 1;
     let walk = checkouts::walk(root, home);
@@ -2914,6 +2915,9 @@ fn read_checkouts(
     not_looked_into(run, checkouts::READER, &walk.guarded, home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
+    let failure = unlisted
+        .as_ref()
+        .map(|_| "the checkout walk could not list some folders");
     if unlisted.is_some() {
         run.notes.push(unlisted_note(&walk.unlisted));
     }
@@ -2961,7 +2965,7 @@ fn read_checkouts(
         &walk.listed.iter().map(Unit::whole).collect::<Vec<_>>(),
         &walk.seen.iter().map(Unit::whole).collect::<Vec<_>>(),
     )?;
-    Ok(Some(walk.checkouts))
+    Ok((Some(walk.checkouts), failure))
 }
 
 /// Checkouts in the folders agents worked in. The candidates are the working folders in the
@@ -3538,8 +3542,8 @@ struct Placed {
     /// Why the checkout's hooks were not looked at where they were: its `.git` is a file, or
     /// the checkout itself is no longer a folder there.
     elsewhere: Option<String>,
-    /// The completeness and reason the reading says, where its reader gives them.
-    coverage: Option<(&'static str, Option<String>)>,
+    /// The completeness, reason and cause the reading says, where its reader gives them.
+    coverage: Option<(&'static str, Option<String>, Option<Cause>)>,
     /// What the reading held about checkouts it did not look into, made again as it was.
     kept: Vec<Statement>,
     /// The checkouts it looks into, by their paths as ids name them: the one whose hooks it
@@ -3661,8 +3665,9 @@ fn watch_places(
     args: &Args,
     checkouts: &[checkouts::Checkout],
     only: Option<&BTreeSet<watch::Reading>>,
+    walk_failure: Option<&str>,
 ) -> Result<(Rows, usize), Box<dyn Error>> {
-    let (rows, seen) = read_watched(run, args, checkouts, only)?;
+    let (rows, seen) = read_watched(run, args, checkouts, only, walk_failure)?;
     let mut opened = findings::detect(run.tx, run.run_id, run.at, &seen)?;
     opened += usize::from(findings::first_read(
         run.tx,
@@ -3688,6 +3693,7 @@ fn read_watched(
     args: &Args,
     checkouts: &[checkouts::Checkout],
     only: Option<&BTreeSet<watch::Reading>>,
+    walk_failure: Option<&str>,
 ) -> Result<(Rows, Vec<findings::Observed>), Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let wanted = |scope: &str, kind: &str| {
@@ -3789,6 +3795,7 @@ fn read_watched(
     // so it is not made then; and what is held about a checkout not looked into is kept as
     // it was.
     let visited = Visited::of(run.tx, &machine, checkouts)?;
+    let omitted = !visited.held.is_subset(&visited.looked);
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
         if !wanted(&machine, &point.kind()) {
             continue;
@@ -3799,7 +3806,7 @@ fn read_watched(
                 Vec::new(),
                 Vec::new(),
             ),
-            _ if !visited.looked_for => continue,
+            _ if !visited.looked_for && walk_failure.is_none() => continue,
             _ => {
                 let reading = Reading {
                     reader: watched::READER,
@@ -3817,17 +3824,30 @@ fn read_watched(
                     ),
                     kept(run.tx, &reading, |unit| match unit {
                         Some(unit) => visited.unvisited(&unit.path),
-                        None => !visited.held.is_subset(&visited.looked),
+                        None => omitted,
                     })?,
                     rels.clone(),
                 )
             }
         };
+        let walk_failure = walk_failure.filter(|_| point.scope == autorun::Scope::Checkout);
+        let omitted = omitted && point.scope == autorun::Scope::Checkout;
+        let missed = walk_failure.or(omitted.then_some("known checkouts were not looked into"));
+        let (completeness, reason) = looked.coverage(point, missed);
+        let cause = (completeness != "full").then(|| {
+            if walk_failure.is_some() || !looked.look.failed().is_empty() {
+                Cause::Failed
+            } else if omitted {
+                Cause::NotGiven
+            } else {
+                looked.look.cause()
+            }
+        });
         placed.push(Placed {
             scope: machine.clone(),
             watched_as: point.watched_as().unwrap_or_default(),
             kind: point.kind(),
-            coverage: Some(looked.coverage(point)),
+            coverage: Some((completeness, reason, cause)),
             look: looked.look,
             elsewhere: None,
             kept,
@@ -3957,8 +3977,8 @@ fn read_watched(
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
                 other => other,
             }
-        } else if let Some(coverage) = &p.coverage {
-            coverage.clone()
+        } else if let Some((completeness, reason, _)) = &p.coverage {
+            (*completeness, reason.clone())
         } else {
             p.look.completeness()
         };
@@ -3971,6 +3991,8 @@ fn read_watched(
                 cause: Some(Cause::NoReader),
                 lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
             }
+        } else if let Some((_, _, cause)) = &p.coverage {
+            Gap::when(*cause)
         } else {
             Gap::when((completeness != "full").then(|| p.look.cause()))
         };

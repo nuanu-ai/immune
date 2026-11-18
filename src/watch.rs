@@ -1175,7 +1175,7 @@ fn read_held(
         readers: 0,
     };
     // The reading and the rules of `immune run`: a change seen here is a finding at once.
-    let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found, only)?;
+    let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found, only, None)?;
     // What needs a look after it, counted by the code `immune status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
     // The row says when every place was last read: only a reading of every place moves it.

@@ -568,7 +568,7 @@ mod tests {
         assert!(place.read_units().contains(&Unit::whole(".zshrc")));
         let mcp = row(".mcp.json", Scope::Checkout);
         let way = mac.way(".mcp.json", Scope::Checkout);
-        assert_eq!(way.coverage(mcp).0, "full");
+        assert_eq!(way.coverage(mcp, None).0, "full");
         assert!(
             way.look
                 .read_units()
@@ -587,7 +587,11 @@ mod tests {
                 place.completeness().1,
                 place.cause(),
             ),
-            (way.coverage(mcp).0, way.coverage(mcp).1, way.look.cause()),
+            (
+                way.coverage(mcp, None).0,
+                way.coverage(mcp, None).1,
+                way.look.cause(),
+            ),
         ] {
             assert_eq!(completeness, "none");
             assert!(reason.is_some_and(|r| r.starts_with("could not be read: ")));

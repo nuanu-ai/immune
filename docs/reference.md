@@ -18,7 +18,7 @@ A match of a rule marked below high, or of a rule whose set states no level, rai
 |---|---|---|
 | Places where persistence lives: launch agents and daemons, login and logout hooks, zsh and bash startup files, `~/.ssh/config`, `authorized_keys` and `rc`, the system's SSH configuration, PAM policies and modules, authorization plugins, git hooks in every project | A checksum of each file, never its content; for login hooks, a checksum of the hook alone | Within seconds while the watcher runs, otherwise at a full check |
 | Software changed in place: app bundles, Homebrew kegs, global npm packages, code that apps keep under Application Support | The app's code signature, verified by macOS; for the rest, a digest of file paths and change times | At every full check |
-| Files that make a tool run code by itself: install scripts in `package.json`, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | The part of the file that runs code, as a checksum. 13 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | At every full check, and within seconds for most while the watcher runs |
+| Files that make a tool run code by itself: package install scripts and pnpm hooks, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | A checksum of the file or the part that runs code. 14 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | At every full check, and within seconds for most while the watcher runs |
 | Dependencies in `package-lock.json`, `pnpm-lock.yaml` and `Cargo.lock` | Matched against OSV's data for npm and crates.io and against CISA's catalogue | At every full check |
 | The user's running programs and their internet connections | Read without administrator rights. An interpreter given code on its command line and left running without a terminal is a finding | Every 30 seconds while the watcher runs |
 | Every program start and every file created or renamed, with the collector | Checked against 198 published rules for macOS: the 75 of SigmaHQ, and 66 of Elastic's detection rules and 57 of its behaviour rules translated into Sigma. 175 are evaluated in full and 23 in part | About every 10 seconds while the watcher runs, and at every check |
@@ -136,15 +136,20 @@ Every row names where it was taken from: the tool's or Apple's documentation, a 
 
 What an earlier run read and this version has no row for, a kind no row reads any more or a file or key a row no longer lists, is closed by the next full reading as `retired`, with why: never counted as watched, never told as removed, and said once by the run, in its text and its line on the pages, with how many facts were set aside. A watcher's first reading of every place closes them the same way when it comes before the run, and the next run says them; `last_finished_run.set_aside` in the status counts the facts set aside since the check before, by the check or by a watcher in between. Each one present is recorded as `holds_autorun_point` on its checkout, or on the machine for the home folder, whether it is read or not. The ones present and not read are named in the readings `other ways a checkout runs code by itself` and `other places in the home folder where a tool's settings run code by itself`, and the status says how many of the known ways this version reads.
 
-Read in a project (13 of 41):
+Read in a project (14 of 41):
 
 | File | The part that counts | Rule |
 |---|---|---|
 | `.vscode/tasks.json` | the whole file, while a `runOn` in it holds `folderOpen` | `autorun.folder-open` |
 | `.vscode/settings.json`, `*.code-workspace`, `.devcontainer/devcontainer.json`, `.devcontainer.json` | settings that name an executable or approve tools; a dev container's commands | `autorun.editor-open` |
 | `package.json` | the scripts run on install | `autorun.package-install` |
+| `.pnpmfile.cjs`, `.pnpmfile.mjs` | the checksum of all bytes in each file at a checkout root | `autorun.package-install` |
 | `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`, `.gemini/settings.json` | hooks, MCP servers, tools allowed without asking | `autorun.agent-start` |
 | `.git/hooks` | each entry, read as a watched place | `watched.git-hook` |
+
+Immune checks both pnpm filenames at every known checkout root. It records the file's presence and digest without running its code or resolving which file pnpm would load. Coverage is limited to those two paths per checkout. That leaves out hooks in workspace packages without their own tracked checkout, including packages with separate lockfiles (`sharedWorkspaceLockfile: false`), and other files configured through `pnpmfile`, `globalPnpmfile` or config dependencies. See the [pnpm hook documentation](https://pnpm.io/pnpmfile).
+
+Each checkout row reports coverage across the known checkouts. A check that skips a known checkout or cannot complete its walk leaves the row incomplete. The store keeps the last digest of any file in a skipped checkout.
 
 Read in the home folder (7 of 11): Claude Code's `~/.claude/settings.json` and `~/.claude.json`, Claude Desktop's `claude_desktop_config.json`, Cursor's `~/.cursor/mcp.json` and `~/.cursor/hooks.json`, Gemini CLI's `~/.gemini/settings.json` (all `autorun.agent-settings`), and VS Code's extensions in `~/.vscode/extensions`, each by publisher and name (`autorun.editor-extension`). Named and not read: Claude Code's skills, commands and agents, Continue, Codex, JetBrains plugins.
 

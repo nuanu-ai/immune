@@ -133,8 +133,7 @@ pub enum Part {
     Folders(Ident),
     /// The whole file while a property of this name holds this value, in any case, anywhere.
     WholeWhen(Format, &'static str, &'static str),
-    /// No row of this version is read whole yet; a test reads a row of it.
-    #[allow(dead_code)]
+    /// The whole file's checksum, without interpreting its contents.
     Bytes,
     /// JSON pointers into a file of this format; a `*` in a segment is any run of characters.
     Select(Format, &'static [&'static str]),
@@ -581,7 +580,7 @@ pub static POINTS: [Point; 87] = [
     row(&["package.json"], Select(Strict, PACKAGE_SCRIPTS), InstallPackages, "npm, pnpm, Yarn, Bun", Never, (INSTALLER, "high", "low"), "https://docs.npmjs.com/cli/v11/using-npm/scripts"),
     row(&[".npmrc"], Present, EveryCommand, "npm", Never, (EVENT, "high", "low"), "https://docs.npmjs.com/cli/v11/using-npm/config"),
     row(&[".yarnrc.yml"], Present, EveryCommand, "Yarn", Never, (EVENT, "high", "low"), "https://yarnpkg.com/configuration/yarnrc"),
-    row(&[".pnpmfile.cjs", ".pnpmfile.mjs"], Present, InstallPackages, "pnpm", Never, (INSTALLER, "high", "low"), "https://pnpm.io/pnpmfile"),
+    row(&[".pnpmfile.cjs", ".pnpmfile.mjs"], Bytes, InstallPackages, "pnpm", Never, (INSTALLER, "high", "low"), "https://pnpm.io/pnpmfile"),
     row(&["bunfig.toml"], Present, BuildOrTest, "Bun", Never, (EVENT, "high", "low"), "https://bun.sh/docs/runtime/bunfig"),
     row(&[".venv/lib/*/site-packages/*.pth"], Present, InterpreterStart, "Python", Never, (EVENT, "high", "medium"), "https://docs.python.org/3/library/site.html"),
     row(&["conftest.py"], Present, BuildOrTest, "pytest", Never, (EVENT, "high", "low"), "https://docs.pytest.org/en/stable/how-to/writing_plugins.html"),
@@ -769,6 +768,12 @@ impl Point {
             (_, Select(..), Scope::Home) => format!("none of the keys read is in {}", self.name()),
             (_, Select(..), _) => {
                 format!("no checkout's {} holds any of the keys read", self.name())
+            }
+            (_, Bytes, Scope::Checkout) => {
+                format!(
+                    "none of the checkouts checked has {}",
+                    self.paths.join(" or ")
+                )
             }
             (_, Folders(_), _) => format!("no folder in {}", self.name()),
             _ => format!("no checkout has {}", self.name()),
@@ -1026,7 +1031,11 @@ pub struct Looked {
 
 impl Looked {
     /// The completeness of the reading and its reason or note.
-    pub fn coverage(&self, p: &Point) -> (&'static str, Option<String>) {
+    pub fn coverage(
+        &self,
+        p: &Point,
+        missed_checkouts: Option<&str>,
+    ) -> (&'static str, Option<String>) {
         let whole = (!self.whole.is_empty()).then(|| {
             let files: Vec<String> = self
                 .whole
@@ -1035,12 +1044,28 @@ impl Looked {
                 .collect();
             format!("read whole, not by key: {}", files.join("; "))
         });
-        match (self.look.completeness(), whole) {
-            (("full", _), Some(whole)) => ("full", Some(whole)),
-            (("full", _), None) if self.look.entries.is_empty() => ("full", Some(p.nothing())),
-            ((c, Some(reason)), Some(whole)) => (c, Some(format!("{reason}; {whole}"))),
-            (other, _) => other,
+        let (mut completeness, mut reason) = self.look.completeness();
+        if completeness == "full" {
+            reason =
+                (whole.is_none() && missed_checkouts.is_none() && self.look.entries.is_empty())
+                    .then(|| p.nothing());
+            if missed_checkouts.is_some() {
+                completeness = if self.look.read_units().is_empty() {
+                    "none"
+                } else {
+                    "partial"
+                };
+            }
         }
+        let reasons: Vec<_> = reason
+            .into_iter()
+            .chain(whole)
+            .chain(missed_checkouts.map(str::to_string))
+            .collect();
+        (
+            completeness,
+            (!reasons.is_empty()).then(|| reasons.join("; ")),
+        )
     }
 }
 
@@ -1665,11 +1690,9 @@ mod tests {
     }
 
     #[test]
-    fn a_store_an_earlier_build_wrote_finds_every_row_under_the_names_counts_and_levels_it_had() {
-        // A store keeps its history, and raises nothing new, only while every kind of reading,
-        // every literal of what a thing is watched as, every rule's levels and every count is
-        // spelled as the build before the one table spelled it. The file was written by that
-        // build, from its two lists.
+    fn the_table_keeps_its_public_names_counts_and_levels() {
+        // The store keeps its history under these coverage kinds and watched_as literals.
+        // The sample also pins what the status and watch report about these rows.
         let before = include_str!("../tests/autorun-points-main.txt");
         let now = names();
         for (was, is) in before.lines().zip(now.lines()) {

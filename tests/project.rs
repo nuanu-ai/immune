@@ -193,8 +193,18 @@ fn unknown_known_and_quiet_and_known_but_not_read_are_three_different_answers() 
     let walk = find(&unknown, "checkouts", "checkouts under the home folder").unwrap();
     assert_eq!(walk.scope_text, "machine:mac");
 
-    assert_eq!(standing(&quiet), (v1::Presence::Held, true));
+    assert_eq!(quiet.presence(), v1::Presence::Held);
     assert!(quiet.findings.is_empty());
+    // Readings of every checkout are partial because the Documents checkout was skipped.
+    for reading in &quiet.coverage {
+        if reading.completeness() != v1::Completeness::Full {
+            assert_eq!(reading.scope_text, "machine:mac");
+            assert_eq!(
+                reading.reason_text.as_deref(),
+                Some("known checkouts were not looked into")
+            );
+        }
+    }
     // A reading of the project that found nothing is in the answer as well as one that did.
     let hooks = find(
         &quiet,
@@ -271,6 +281,64 @@ fn a_project_that_was_removed_is_gone_not_unknown() {
     assert_eq!(k.presence(), v1::Presence::Gone);
     assert!(k.facts.is_empty());
     assert_eq!(k.thing.unwrap().id_text, "checkout:machine:mac/dev/old");
+}
+
+#[test]
+fn a_pnpmfile_in_a_skipped_checkout_keeps_its_digest_without_claiming_fresh_coverage() {
+    let h = Home::new("skipped-pnpm");
+    h.checkout("dev/shop");
+    h.checkout("work/cli");
+    h.put("dev/shop/.pnpmfile.cjs", "module.exports = {}\n");
+    h.run(&[]);
+    let project = || h.known("checkout:machine:mac/dev/shop");
+    let digest = |known: &v1::Known| {
+        known
+            .facts
+            .iter()
+            .find(|f| f.subject_text.ends_with("/.pnpmfile.cjs") && f.predicate == "has_content")
+            .unwrap()
+            .object_text
+            .clone()
+    };
+    let previous = digest(&project());
+    h.put("dev/shop/.pnpmfile.cjs", "module.exports = { hooks: {} }\n");
+    let kind = ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself";
+    for (root, completeness, cause, reason) in [
+        (
+            "missing",
+            v1::Completeness::None,
+            v1::Cause::Failed,
+            "the checkout walk could not open its root folder",
+        ),
+        (
+            "work",
+            v1::Completeness::Partial,
+            v1::Cause::NotGiven,
+            "known checkouts were not looked into",
+        ),
+    ] {
+        h.run(&["--checkouts-root", h.path().join(root).to_str().unwrap()]);
+        let known = project();
+        let coverage = find(&known, "watched-places", kind).unwrap();
+        assert_eq!(coverage.completeness(), completeness);
+        assert_eq!(coverage.cause(), cause);
+        assert_eq!(coverage.reason_text.as_deref(), Some(reason));
+        assert_eq!(digest(&known), previous);
+        assert!(known.findings.is_empty());
+    }
+    h.run(&[]);
+    let known = project();
+    assert_eq!(
+        find(&known, "watched-places", kind).unwrap().completeness(),
+        v1::Completeness::Full
+    );
+    assert_ne!(digest(&known), previous);
+    assert!(
+        known
+            .findings
+            .iter()
+            .any(|f| f.rule.as_deref() == Some("autorun.package-install"))
+    );
 }
 
 /// Every fact says what it rests on: the reader, the basis and where it was read. A reading that
