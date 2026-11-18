@@ -95,11 +95,10 @@ impl Drop for Dir {
     }
 }
 
-/// Runs Immune with only the brew reader's input and returns the report line.
-/// The other readers are pointed at folders that do not exist.
+/// Runs Immune with the brew sample and a temporary home with no checkouts.
 fn immune(store: &Path, input: &Path) -> String {
     let absent = store.parent().unwrap().join("absent");
-    immune_all(store, input, &absent, &absent)
+    immune_home(store, input, &absent)
 }
 
 /// Runs Immune with every reader's input and returns the report line.
@@ -388,7 +387,7 @@ fn second_run_on_unchanged_input_reports_no_changes_and_writes_no_events() {
     let second = immune(&dir.store(), &input);
     assert!(
         second.starts_with(
-            "1 reader, 0 checkouts, 6 components. No servers known. \
+            "3 readers, 0 checkouts, 6 components. No servers known. \
              Since last run: no changes."
         ),
         "{second}"
@@ -1255,8 +1254,6 @@ fn without_homebrew_the_brew_reading_has_nothing_to_read_and_is_not_a_failure() 
         .arg("--brew")
         .arg(dir.0.join("nowhere").join("brew"))
         .arg("--servers-input")
-        .arg(&absent)
-        .arg("--checkouts-root")
         .arg(&absent));
 
     assert_eq!(
@@ -1843,7 +1840,7 @@ impl Home {
         self.dir.0.join("store").join("store.db")
     }
 
-    /// `immune run` with the given server files and tailscale, and no checkouts.
+    /// `immune run` with the given server files and tailscale in a home with no checkouts.
     fn run(&self, servers: &Path, tailscale: &Path) -> String {
         let brew = put(&self.dir.0, "brew.txt", SAMPLE);
         ok(immune_run(&self.home, &self.store())
@@ -1851,8 +1848,6 @@ impl Home {
             .arg(brew)
             .arg("--servers-input")
             .arg(servers)
-            .arg("--checkouts-root")
-            .arg(self.dir.0.join("absent"))
             .arg("--tailscale")
             .arg(tailscale))
     }
@@ -3652,10 +3647,9 @@ fn a_standing_partial_reading_without_assertions_still_lets_the_report_say_no_ch
     let store = dir.store();
     let brew = dir.input("brew.txt", SAMPLE);
     let servers = dir.0.join("servers");
-    let absent = dir.0.join("absent");
     put(&servers, "web-1.txt", WEB_1);
-    immune_all(&store, &brew, &servers, &absent);
-    let report = immune_all(&store, &brew, &servers, &absent);
+    immune_home(&store, &brew, &servers);
+    let report = immune_home(&store, &brew, &servers);
 
     assert!(report.contains("Since last run: no changes."), "{report}");
     assert!(!report.contains("partial"), "{report}");
@@ -8666,6 +8660,7 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
             ".gemini/settings.json of each checkout, the part that runs by itself",
             ".mcp.json of each checkout, the part that runs by itself",
+            ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself",
             ".vscode/mcp.json of each checkout, the part that runs by itself",
             ".vscode/settings.json of each checkout, the part that runs by itself",
             "PAM policies and modules, and authorization plugins",
