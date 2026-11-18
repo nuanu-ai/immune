@@ -1,4 +1,4 @@
-//! Promises of `immune verdict`. The first is the foundation: the core's findings are the same
+//! Promises of `immunity verdict`. The first is the foundation: the core's findings are the same
 //! whether or not verdicts are sent. The rest are the promises of the finding a suspicious
 //! verdict raises, of what is refused, and of the sender's text staying data. Each test runs the
 //! real binary over an invented home folder and system root, with log lines as the collector's
@@ -6,7 +6,7 @@
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -16,9 +16,9 @@ use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 const H00: &str = "exec-20261004T00.jsonl";
 
 /// "Binary Padding - MacOS", high: the core raises a finding of it.
@@ -49,7 +49,7 @@ impl Mac {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "immune-verdict-{tag}-{}-{nanos}",
+            "immunity-verdict-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home/dev/shop/.git", "root", "store", "empty"] {
@@ -131,7 +131,7 @@ impl Mac {
         let plist = self.root().join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
-            Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
+            Path::new(SCRIPTS).join("ai.nuanu.immunity.core.eslogger.plist"),
             &plist,
         )
         .unwrap();
@@ -157,14 +157,14 @@ impl Mac {
         offset
     }
 
-    /// A line's position as `immune matches` prints it.
+    /// A line's position as `immunity matches` prints it.
     fn position(&self, offset: usize) -> String {
         let inode = std::fs::metadata(self.log().join(H00)).unwrap().ino();
         format!("20261004T00-{inode}-{offset}")
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -263,7 +263,7 @@ impl Mac {
             .collect()
     }
 
-    /// What `immune status --json` shows of a finding in what needs a look.
+    /// What `immunity status --json` shows of a finding in what needs a look.
     fn shown(&self, id: &str) -> Option<Value> {
         looks(&self.status())
             .as_array()
@@ -367,7 +367,7 @@ impl Mac {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
-    /// The page, as `immune view` writes it.
+    /// The page, as `immunity view` writes it.
     fn page(&self) -> String {
         let out = self.command(&["view", "--no-open"]).output().unwrap();
         assert!(out.status.success());
@@ -930,8 +930,8 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
     let both = row(&page, &padding);
     assert!(
         both.contains(&format!("<div class=\"also\" id=\"{own}\">"))
-            && both.contains(&format!("immune finding {padding} --json"))
-            && both.contains(&format!("immune finding {own} --json"))
+            && both.contains(&format!("immunity finding {padding} --json"))
+            && both.contains(&format!("immunity finding {own} --json"))
             && !both.contains("Your agent"),
         "{both}"
     );
@@ -966,7 +966,7 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
     assert!(
         both[..both.len() - also.len()].contains("<div class=\"vn\">Your agent</div>")
             && !also.contains("Your agent")
-            && also.contains(&format!("immune finding {own} --json")),
+            && also.contains(&format!("immunity finding {own} --json")),
         "{both}"
     );
     assert!(
@@ -978,7 +978,7 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
     );
 }
 
-/// The findings whose answer hides them now, by id, as `immune findings --all` lists them.
+/// The findings whose answer hides them now, by id, as `immunity findings --all` lists them.
 fn answered_ids(mac: &Mac) -> std::collections::BTreeSet<String> {
     mac.json(&["findings", "--all"])["findings"]
         .as_array()
@@ -1014,8 +1014,8 @@ fn drawn_rows(page: &str) -> Vec<Vec<String>> {
 
 /// What the page says it holds and what it draws, each read on its own. Said: the band's
 /// numbers (what needs the person now, what is to look at) and the three tabs, as written.
-/// Drawn: the rows, each by the findings in it, weighed by what `immune status` says needs a
-/// look and is urgent, and what `immune findings --all` says is answered; not by the classes
+/// Drawn: the rows, each by the findings in it, weighed by what `immunity status` says needs a
+/// look and is urgent, and what `immunity findings --all` says is answered; not by the classes
 /// the page gives its rows. Every finding open or answered is drawn, in exactly one row.
 fn said_and_drawn(mac: &Mac, page: &str) -> ([usize; 5], [usize; 5]) {
     let between = |from: &str, to: &str| -> String {
@@ -1445,9 +1445,9 @@ fn a_verdict_finding_about_a_rule_a_later_build_drops_stays_listed_and_can_be_op
 }
 
 #[test]
-fn a_position_in_a_log_file_named_by_run_and_second_is_taken_as_immune_matches_printed_it() {
+fn a_position_in_a_log_file_named_by_run_and_second_is_taken_as_immunity_matches_printed_it() {
     // The collector names a file by its run and the second it began, so the name holds a dash.
-    // A verdict names a match by the position `immune matches` printed, whole.
+    // A verdict names a match by the position `immunity matches` printed, whole.
     let mac = Mac::new("named-by-second");
     std::fs::write(
         mac.log().join("exec-20261004T000013-20261004T000000.jsonl"),
@@ -1932,10 +1932,10 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
 }
 
 /// What the core's meaning of a finding raised by a late verdict says, and the page's voice of it.
-const GONE_MEANING: &str = "whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it.";
+const GONE_MEANING: &str = "whose event is no longer in the event log, so Immunity Core could not read that event again or check that the rule matched it.";
 const GONE_SHORT: &str = "Judged suspicious, event not checked";
 const GONE_VOICE: &str =
-    "Its event was no longer in the log, so Immune could not check that the rule matched it";
+    "Its event was no longer in the log, so Immunity Core could not check that the rule matched it";
 
 #[test]
 fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule_not_shipped_or_a_harmless_kind()
@@ -1979,7 +1979,7 @@ fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule
         ),
         // A rule this build does not ship.
         (suspicious(gone, GONE), "no_such_match"),
-        // Not a position `immune matches` prints.
+        // Not a position `immunity matches` prints.
         (suspicious("20261003T00-01-0", SW_VERS), "no_such_match"),
         // A harmless verdict about a line that is gone has no match to stand beside.
         (about_match(&store, gone, SW_VERS, "harmless"), "match_gone"),
@@ -2431,7 +2431,7 @@ fn a_refusal_or_an_answer_about_what_was_asked_prints_no_secret_it_was_asked_in_
     // A store asked for at a path that holds a secret, and is not there.
     let missing = mac.0.join(&token);
     for form in [&["--json"][..], &[][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", mac.home())
             .args(["owner", "a", "retired", "--reason", "x", "--store"])
             .arg(&missing)
@@ -2481,7 +2481,7 @@ fn loses(shape: &str) -> bool {
     shape == EVENT
 }
 
-/// The marks Immune made in a text as the contract shows it, where a source's backslash is
+/// The marks Immunity Core made in a text as the contract shows it, where a source's backslash is
 /// `\u{5c}`: each kind and length, in order.
 fn made(kept: &str) -> Vec<(String, u64)> {
     kept.split("\\cut{")
@@ -2508,7 +2508,7 @@ fn quoted_marks(q: &str) -> Vec<String> {
 /// finding of the response layer's own; and everything the response layer could honestly
 /// quote of the core's cut output about them: each match's arguments joined, as a JSON array
 /// and as the JSON value, each argument bare and in either quotes, the whole event, the same
-/// from the binary answer, the lines of `immune matches`, of a finding and of the findings for
+/// from the binary answer, the lines of `immunity matches`, of a finding and of the findings for
 /// a person that hold a mark, and the finding as JSON. A quote longer than a reason may be is
 /// taken in pieces, each ending at a comma. Also the store's id and the first match's position.
 fn quoting(name: &str) -> (Mac, String, String, Vec<(&'static str, String)>) {
@@ -2671,7 +2671,7 @@ fn every_quote_of_the_core_s_cut_output_in_a_verdict_s_reason_lands_and_keeps_th
     // to what follows it in its word, and that is cut as it would be after a real value; the
     // marks it quoted stay as they were, and `reason_cuts` says what was cut.
     let (mac, store, first, quotes) = quoting("quotes");
-    // The text of `immune matches` names the program and not its arguments, so the lines a
+    // The text of `immunity matches` names the program and not its arguments, so the lines a
     // person quotes come from the findings.
     assert!(quotes.len() >= 120, "{}", quotes.len());
     let mut tally: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
@@ -2723,13 +2723,13 @@ fn a_secret_in_a_reason_alone_or_beside_a_mark_is_cut_where_kept_and_wherever_pr
     let token = format!("{}{}", ["gh", "p_"].concat(), invented(32, 36));
     let aws = ["AK", "IA", "QZ7WK4RM2TX3PD5N"].concat();
     let gcp = ["AI", "za", "SyQz7Wk4Rm2Tx9Pd3Vn6Bc1Hd5Js0Ga7KLm"].concat();
-    let m = "\\cut{immune:flag-value 11}";
+    let m = "\\cut{immunity:flag-value 11}";
     let cut = |kind: &str, length: u64| v1::Cut {
         argument: 0,
         kind: kind.to_string(),
         length,
     };
-    let (fv, pat) = ("immune:flag-value", "gitleaks:github-pat");
+    let (fv, pat) = ("immunity:flag-value", "gitleaks:github-pat");
     let named: Vec<(String, Vec<v1::Cut>)> = vec![
         (format!("ran tool --password {pw} next"), vec![cut(fv, 11)]),
         (format!("{token}{m} was printed"), vec![cut(pat, 40)]),
@@ -2767,8 +2767,8 @@ fn a_secret_in_a_reason_alone_or_beside_a_mark_is_cut_where_kept_and_wherever_pr
         format!("ran tool --password '{m}'{pw}"),
         format!("ran tool --password \\{m}{m}{pw}"),
         format!("ran tool --password \\\\{m}{pw}"),
-        format!("sent Authorization: Bearer \\cut{{immune:authorization 12}}{pw}"),
-        format!("ran mysql -p\\cut{{immune:mysql-password 8}}{pw} db"),
+        format!("sent Authorization: Bearer \\cut{{immunity:authorization 12}}{pw}"),
+        format!("ran mysql -p\\cut{{immunity:mysql-password 8}}{pw} db"),
         format!("ran {m}{token}"),
         format!("ran https://u:{m}{pw}@h.invalid/r"),
         format!("ran {m}\n--password {pw}"),
@@ -2782,7 +2782,7 @@ fn a_secret_in_a_reason_alone_or_beside_a_mark_is_cut_where_kept_and_wherever_pr
         format!("it ran --password={m},{pw} then"),
         format!("it ran --password={m}]{pw} then"),
         format!("Authorization: Bearer {m} {pw}"),
-        format!("ran immune:mysql-password={pw}"),
+        format!("ran immunity:mysql-password={pw}"),
     ];
     for reason in &beside {
         for proto in [false, true] {
@@ -2919,7 +2919,7 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
         answered["answer"]["reason_cuts"],
         json!([
             { "argument": 0, "kind": "gitleaks:github-pat", "length": 40 },
-            { "argument": 0, "kind": "immune:flag-value", "length": 11 }
+            { "argument": 0, "kind": "immunity:flag-value", "length": 11 }
         ]),
         "{answered:#}"
     );
@@ -2962,7 +2962,7 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
     let words = String::from_utf8_lossy(&again.stdout);
     assert!(
         words.contains(
-            "Its reason held what Immune recognises as a secret, and is kept with it cut."
+            "Its reason held what Immunity Core recognises as a secret, and is kept with it cut."
         ),
         "{words}"
     );
@@ -3007,16 +3007,16 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
     let r = Refusable::new("format");
     // A person is told an older or a newer one in the one wording every command gives it.
     let told: &[&str] = &[
-        "error: this store was made by another build of Immune",
+        "error: this store was made by another build of Immunity Core",
         "It was left unchanged. Move it aside or pass another --store;",
     ];
     for (version, said, what_to_do, told) in [
-        ("6", "is from an older format (6)", START_OVER, Some(told)),
+        ("8", "is from an older format (8)", START_OVER, Some(told)),
         ("5", "is from an older format (5)", START_OVER, Some(told)),
         (
-            "9",
-            "is from a newer format (9)",
-            "Use the version of Immune that made it",
+            "10",
+            "is from a newer format (10)",
+            "Use the version of Immunity Core that made it",
             Some(told),
         ),
         (
@@ -3037,7 +3037,7 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
 fn a_store_that_lacks_a_table_a_column_or_its_id_or_holds_one_too_many_is_refused_by_every_command_and_left_unchanged()
  {
     // A store of this format holds exactly the schema this build makes, and its id. One that
-    // does not was changed by something other than Immune: every command, reading or writing,
+    // does not was changed by something other than Immunity Core: every command, reading or writing,
     // refuses it as damaged before anything else, and none makes again, empty, what was lost.
     // The reviewer's probe: with the table of findings dropped, a run used to make it again and
     // the findings in the store were gone for good.
@@ -3071,7 +3071,7 @@ fn a_store_that_lacks_a_table_a_column_or_its_id_or_holds_one_too_many_is_refuse
 #[test]
 fn a_store_without_any_one_table_of_its_schema_is_refused_by_a_reader_and_by_a_writer() {
     // Driven by the schema itself, as a store made from empty holds it, so a table added later is
-    // covered: whichever table is missing, `immune status` and `immune run` refuse the store and
+    // covered: whichever table is missing, `immunity status` and `immunity run` refuse the store and
     // leave it as it was.
     let r = Refusable::new("each-table");
     let tables: Vec<String> = {
@@ -3147,7 +3147,7 @@ fn two_first_commands_at_once_and_one_killed_part_way_leave_no_store_or_a_whole_
     let fresh = r.mac.0.join("fresh");
     let store = fresh.join("store.db");
     let sample = |kill_after: Option<u64>| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.env("HOME", r.mac.home())
             .args([
                 "sample",
@@ -3171,7 +3171,7 @@ fn two_first_commands_at_once_and_one_killed_part_way_leave_no_store_or_a_whole_
         let _ = std::fs::remove_dir_all(&fresh);
         let _ = sample(Some(ms)).wait();
         if std::fs::symlink_metadata(&store).is_ok() {
-            let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
                 .env("HOME", r.mac.home())
                 .args(["status", "--json", "--store"])
                 .arg(&store)
@@ -3301,7 +3301,7 @@ fn a_store_whose_id_or_format_has_another_form_is_refused() {
              CREATE TABLE meta (key TEXT, value TEXT NOT NULL);
              INSERT INTO meta SELECT * FROM old_meta;
              DROP TABLE old_meta;
-             INSERT INTO meta VALUES ('format_version', '8');",
+             INSERT INTO meta VALUES ('format_version', '10');",
             "does not name exactly one format",
         ),
         (
@@ -3370,7 +3370,7 @@ struct Refusable {
     id: String,
     verdict: String,
     before: Vec<u8>,
-    /// A reading of no processes, for `immune sample`.
+    /// A reading of no processes, for `immunity sample`.
     sample: String,
 }
 
@@ -3776,7 +3776,7 @@ fn paired(tag: &str) -> (Mac, String, String, String, String) {
     (mac, core, verdict, other, earlier)
 }
 
-/// What a read gives to answer with: the `journal_seq` of `immune findings`, as a flag's value.
+/// What a read gives to answer with: the `journal_seq` of `immunity findings`, as a flag's value.
 fn read(mac: &Mac) -> String {
     mac.findings()["journal_seq"].as_i64().unwrap().to_string()
 }
@@ -3917,7 +3917,7 @@ fn refused_answer(mac: &Mac, id: &str, answer: &[&str], code: &str, detail: Opti
     let said = String::from_utf8(out.stderr).unwrap();
     let next = said
         .lines()
-        .find_map(|l| l.strip_prefix("  immune "))
+        .find_map(|l| l.strip_prefix("  immunity "))
         .unwrap_or_else(|| panic!("{said}"));
     match (code, detail) {
         ("unknown_finding", None) => assert_eq!(next, "findings --all", "{said}"),
@@ -4006,7 +4006,7 @@ fn one_answer_expected_from_the_response_layer_s_finding_marks_both_until_the_sa
     );
     assert!(
         text.contains(&format!(
-            "{core} is Immune's own finding about the same thing, now expected"
+            "{core} is Immunity Core's own finding about the same thing, now expected"
         )),
         "{text}"
     );
@@ -4185,7 +4185,7 @@ fn who_gave_an_answer_or_a_statement_is_said_once() {
     assert!(std::fs::read(mac.store()).unwrap() == bytes);
 }
 
-/// A rule no build of Immune ships: what a store is left with when a later build drops a rule.
+/// A rule no build of Immunity Core ships: what a store is left with when a later build drops a rule.
 const GONE: &str = "sigma:00000000-0000-4000-8000-000000000000";
 
 #[test]
@@ -4271,7 +4271,7 @@ fn an_open_finding_of_a_rule_this_build_does_not_have_is_counted_shown_read_and_
     )
     .unwrap();
     let id = "fkept0000001";
-    // Counted and shown in the status, in Immune's own words, with its levels not known and so
+    // Counted and shown in the status, in Immunity Core's own words, with its levels not known and so
     // not urgent.
     let (total, urgent, item) = needs(&mac, id);
     let item = item.expect("shown in what needs a look");
@@ -4389,7 +4389,7 @@ fn when_the_second_answer_is_refused_the_first_is_not_kept() {
     let said = String::from_utf8(out.stderr).unwrap();
     assert!(
         said.lines()
-            .any(|l| l.starts_with(&format!("  immune finding {core} reopen --store "))),
+            .any(|l| l.starts_with(&format!("  immunity finding {core} reopen --store "))),
         "{said}"
     );
     let seq = read(&mac);
@@ -4652,7 +4652,7 @@ fn an_answer_through_an_agent_names_the_read_it_rests_on_and_is_refused_when_it_
         let why = v["errors"][0]["detail_text"].as_str().unwrap();
         assert!(
             why.contains("an answer through an agent needs --journal-seq <n>")
-                && why.contains("immune finding <id> --json"),
+                && why.contains("immunity finding <id> --json"),
             "{why}"
         );
         assert!(std::fs::read(mac.store()).unwrap() == bytes);

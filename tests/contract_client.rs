@@ -1,4 +1,4 @@
-//! Promises of the example client of the crate `immune-contract`, `contract/examples/client.rs`,
+//! Promises of the example client of the crate `immunity-contract`, `contract/examples/client.rs`,
 //! to the engineer of a program that runs the core and starts from it: it runs against the core
 //! as built, reads the matches, and sends a verdict whose repeat is the first one. The real
 //! binary and the example run over an invented home folder, system root, event log and store.
@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 const H00: &str = "exec-20261004T00.jsonl";
 /// "Binary Padding - MacOS", high: the core raises a finding of it.
 const PADDING: &str = "sigma:95361ce5-c891-4b0a-87ca-e24607884a96";
@@ -42,14 +42,21 @@ const SW_VERS_START: &str = concat!(
 /// target folder, from the lockfile and without the network, and takes the path cargo reports.
 /// With the test profile and both packages named, cargo resolves the features and builds the
 /// crate as the tests' own build did, so it compiles the example alone, in under a second;
-/// naming `immune-contract` alone would compile prost, serde and the crate a second time.
+/// naming `immunity-contract` alone would compile prost, serde and the crate a second time.
 fn client() -> &'static Path {
     static CLIENT: OnceLock<PathBuf> = OnceLock::new();
     CLIENT.get_or_init(|| {
         let out = Command::new(env!("CARGO"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args(["build", "--frozen", "--quiet", "--message-format=json"])
-            .args(["--profile", "test", "-p", "immune", "-p", "immune-contract"])
+            .args([
+                "--profile",
+                "test",
+                "-p",
+                "immunity-core",
+                "-p",
+                "immunity-contract",
+            ])
             .args(["--example", "client"])
             .output()
             .unwrap();
@@ -101,7 +108,7 @@ impl Mac {
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts/event-level/ai.nuanu.immune.eslogger.plist"),
+                .join("scripts/event-level/ai.nuanu.immunity.core.eslogger.plist"),
             &plist,
         )
         .unwrap();
@@ -116,15 +123,15 @@ impl Mac {
         std::fs::write(system.join(LOG).join(H00), format!("{DD}{SW_VERS_START}")).unwrap();
     }
 
-    /// The position of the log's line at `offset`, as `immune matches` prints it.
+    /// The position of the log's line at `offset`, as `immunity matches` prints it.
     fn position(&self, offset: usize) -> String {
         let log = self.path("system").join(LOG).join(H00);
         let inode = std::fs::metadata(log).unwrap().ino();
         format!("20261004T00-{inode}-{offset}")
     }
 
-    fn immune(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_immune"))
+    fn immunity(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env_clear()
             .env("HOME", self.path("home"))
             .env("PATH", "/usr/bin:/bin")
@@ -154,7 +161,7 @@ impl Mac {
         ] {
             args.extend([flag, value.to_str().unwrap()]);
         }
-        let out = self.immune(&args);
+        let out = self.immunity(&args);
         assert!(
             out.status.success(),
             "{}",
@@ -180,8 +187,8 @@ impl Mac {
         let system = self.path("system");
         let store = self.path("store.db");
         let out = self.client(&[
-            "--immune",
-            env!("CARGO_BIN_EXE_immune"),
+            "--immunity",
+            env!("CARGO_BIN_EXE_immunity"),
             "--store",
             store.to_str().unwrap(),
             "--judge-first",
@@ -199,7 +206,7 @@ impl Mac {
     }
 
     fn finding(&self, id: &str) -> Value {
-        let out = self.immune(&["finding", id, "--json"]);
+        let out = self.immunity(&["finding", id, "--json"]);
         assert!(out.status.success());
         serde_json::from_slice(&out.stdout).unwrap()
     }
@@ -281,7 +288,7 @@ fn without_a_store_the_client_refuses_and_runs_nothing() {
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     // A stand-in for the core that leaves a mark if it is ever run.
-    let fake = dir.join("immune");
+    let fake = dir.join("immunity");
     std::fs::write(&fake, "#!/bin/sh\n/usr/bin/touch \"$0.ran\"\n").unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let out = Command::new(client())
@@ -289,7 +296,7 @@ fn without_a_store_the_client_refuses_and_runs_nothing() {
         .env("HOME", &home)
         .env("PATH", "/usr/bin:/bin")
         .current_dir(&dir)
-        .args(["--immune", fake.to_str().unwrap(), "--judge-first"])
+        .args(["--immunity", fake.to_str().unwrap(), "--judge-first"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
@@ -297,7 +304,7 @@ fn without_a_store_the_client_refuses_and_runs_nothing() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("--store <path> is required"), "{said}");
     assert!(said.contains("never uses the default store"), "{said}");
-    assert!(!dir.join("immune.ran").exists(), "the core was run");
+    assert!(!dir.join("immunity.ran").exists(), "the core was run");
     assert_eq!(
         std::fs::read_dir(&home).unwrap().count(),
         0,

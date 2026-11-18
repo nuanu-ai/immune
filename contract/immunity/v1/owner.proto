@@ -1,4 +1,4 @@
-// The person's word about a machine: that it is retired, or not theirs. The answers to `immune
+// The person's word about a machine: that it is retired, or not theirs. The answers to `immunity
 // owner`. Version 1 of the contract between the core and a program that runs it. How a message
 // is printed and read, and the conventions for text, references, times and changes, are in
 // `common.proto`.
@@ -9,12 +9,12 @@
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/event.proto";
-import "immune/v1/findings.proto";
+import "immunity/v1/event.proto";
+import "immunity/v1/findings.proto";
 
-// The answer to `immune owner` without a statement: the statements that stand.
+// The answer to `immunity owner` without a statement: the statements that stand.
 message Statements {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
   reserved 1000 to 1099;
@@ -30,7 +30,7 @@ message Statements {
 
 // A statement that stands.
 message Statement {
-  // The machine by the name the statement was made under, and its whole id, which `immune owner`
+  // The machine by the name the statement was made under, and its whole id, which `immunity owner`
   // takes back by. Whole.
   string machine_text = 1;
   string entity_text = 2;
@@ -58,7 +58,7 @@ message SeenAfter {
   string what_text = 2;
 }
 
-// The answer to `immune owner <name> retired|not-mine|withdraw`: what was said or withdrawn.
+// The answer to `immunity owner <name> retired|not-mine|withdraw`: what was said or withdrawn.
 message StatementMade {
   // As in `Statements`.
   reserved 1000 to 1099;

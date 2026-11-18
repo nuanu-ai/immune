@@ -1,9 +1,9 @@
-//! `immune verdict`: the response layer's verdict about a rule match or a finding, read as the
+//! `immunity verdict`: the response layer's verdict about a rule match or a finding, read as the
 //! contract's `Verdict` message on standard input, recorded, and answered with `VerdictRecorded`
-//! (`contract/immune/v1/verdict.proto`).
+//! (`contract/immunity/v1/verdict.proto`).
 //!
 //! A verdict never writes into a finding the core raised. A `suspicious` verdict is an event of
-//! one rule of Immune's own, `verdict.suspicious` (`RULE`), and goes through the path every rule
+//! one rule of Immunity Core's own, `verdict.suspicious` (`RULE`), and goes through the path every rule
 //! that finds an event goes through (`findings::occur`, `events::keep`), with no case of its own:
 //! its finding is about the rule the verdict names and the thing that rule's findings are about
 //! on this Mac, so its rule as the store keeps it is `verdict.suspicious:<that rule>` (`PREFIX`).
@@ -13,7 +13,7 @@
 //! What is shown beside a finding is read when asked, by what the verdicts are about: counted in
 //! SQL, and listed at most the first and the latest `LISTED`.
 //!
-//! A match is named by the position `immune matches` printed and its rule's name. The core reads
+//! A match is named by the position `immunity matches` printed and its rule's name. The core reads
 //! the one line at that position from the collector's log again and evaluates it at the one place
 //! an event is evaluated (`events::at_line`), so a verdict is about what the core matched. The log
 //! keeps about a day: a `suspicious` verdict about a line no longer in it is recorded all the same,
@@ -67,9 +67,9 @@ fn token(id: &str) -> bool {
 pub const LISTED: i64 = 20;
 /// How the run id of a verdict begins, in the journal.
 const RUN_PREFIX: &str = "verdict-";
-const EXAMPLE: &str = "immune verdict --json < verdict.json";
+const EXAMPLE: &str = "immunity verdict --json < verdict.json";
 
-/// The rule of Immune's own that a `suspicious` verdict is an event of, and how its findings'
+/// The rule of Immunity Core's own that a `suspicious` verdict is an event of, and how its findings'
 /// rule begins in the store: `verdict.suspicious:<the rule the verdict is about>`.
 pub const RULE: &str = "verdict.suspicious";
 pub const PREFIX: &str = "verdict.suspicious:";
@@ -79,14 +79,14 @@ pub const KIND: &str = "verdict of the response layer";
 pub const WORDS: Words = Words {
     title: "The response layer judged something on this Mac suspicious.",
     short: "Judged suspicious by the response layer",
-    meaning: "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
-    advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
+    meaning: "Another program that runs Immunity Core, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
+    advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immunity Core's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
 /// The core's words for an occurrence raised by a verdict whose line had left the log
-/// (`event_gone`): the response layer names a match Immune could no longer check.
+/// (`event_gone`): the response layer names a match Immunity Core could no longer check.
 pub const WORDS_EVENT_GONE: Words = Words {
     short: "Judged suspicious, event not checked",
-    meaning: "Another program that runs Immune, the response layer, judged suspicious a match of this rule whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
+    meaning: "Another program that runs Immunity Core, the response layer, judged suspicious a match of this rule whose event is no longer in the event log, so Immunity Core could not read that event again or check that the rule matched it. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
     ..WORDS
 };
 
@@ -381,13 +381,13 @@ pub fn verdicts(
     })
 }
 
-/// `immune verdict`.
+/// `immunity verdict`.
 pub struct VerdictArgs {
     pub store: PathBuf,
     /// The form it reads and answers in, `--proto` or `--json`: never text, since a message is
     /// not typed as text.
     pub form: answer::Form,
-    /// The folder the collector's log is read under: `/` unless given another, as for `immune run`.
+    /// The folder the collector's log is read under: `/` unless given another, as for `immunity run`.
     pub system_root: PathBuf,
 }
 
@@ -408,7 +408,7 @@ pub fn parse(
     let form = options.form();
     if form == answer::Form::Text {
         return Err(
-            "immune verdict reads one message and answers in the same form, which is never text: name it, --proto or --json"
+            "immunity verdict reads one message and answers in the same form, which is never text: name it, --proto or --json"
                 .to_string(),
         );
     }
@@ -546,7 +546,7 @@ fn read(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
     if bytes.len() > CAP {
         return Err(refused(
             "too_large",
-            "the verdict is larger than immune verdict reads, and it is never cut; nothing was recorded",
+            "the verdict is larger than immunity verdict reads, and it is never cut; nothing was recorded",
             format!("more than {CAP} bytes"),
         ));
     }
@@ -667,7 +667,7 @@ fn parsed(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
 fn holds_secret(field: &str) -> Refusal {
     refused(
         "holds_secret",
-        "a key of the verdict holds what Immune recognises as a secret, and a key is never rewritten; nothing was recorded",
+        "a key of the verdict holds what Immunity Core recognises as a secret, and a key is never rewritten; nothing was recorded",
         field,
     )
 }
@@ -675,7 +675,7 @@ fn holds_secret(field: &str) -> Refusal {
 fn unchecked(holds: Result<bool, &'static str>) -> Result<bool, Refusal> {
     holds.map_err(|_| Refusal {
         code: "secrets_unchecked",
-        message: "the patterns Immune recognises secrets by did not load, so the verdict cannot be checked; nothing was recorded",
+        message: "the patterns Immunity Core recognises secrets by did not load, so the verdict cannot be checked; nothing was recorded",
         detail: String::new(),
         exit: 1,
     })
@@ -737,7 +737,7 @@ fn unknown_key(sent: &Value, back: &Value, at: &str) -> Option<String> {
     })
 }
 
-/// Answers `immune verdict` with a `VerdictRecorded` or a `Failure` in the form named.
+/// Answers `immunity verdict` with a `VerdictRecorded` or a `Failure` in the form named.
 pub fn verdict_cmd(args: &VerdictArgs) -> ExitCode {
     match take(args) {
         // The form is binary or JSON (`parse`), so there is no text to give.
@@ -764,7 +764,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         return Err(refused(
             "usage",
-            "standard input is a terminal; immune verdict reads one message from a program and asks nothing",
+            "standard input is a terminal; immunity verdict reads one message from a program and asks nothing",
             "",
         ));
     }
@@ -954,13 +954,13 @@ fn check(
 }
 
 /// A match a verdict names, checked against the log: the rule is one this build ships, the
-/// position is one `immune matches` prints, and the event on the line there, read again and
+/// position is one `immunity matches` prints, and the event on the line there, read again and
 /// evaluated at the one place the core evaluates an event, matched the rule.
 ///
 /// The log keeps about a day, and a decision can take longer. When the line is no longer in it,
 /// a `suspicious` verdict is not lost: it is taken with no event (`Line::Gone`), as long as the
 /// time its position's file was started is a real one and not later than now, since
-/// `immune matches` never printed any other (`LineAt::start`). A `harmless` one is refused: it
+/// `immunity matches` never printed any other (`LineAt::start`). A `harmless` one is refused: it
 /// is a record beside a match, and there is no match to keep it beside.
 fn checked_match(
     args: &VerdictArgs,
@@ -981,7 +981,7 @@ fn checked_match(
     }
     let Some(at) = LineAt::parse(position) else {
         return Err(no_match(format!(
-            "{position} is not a position immune matches printed"
+            "{position} is not a position immunity matches printed"
         )));
     };
     let hit = match events::at_line(&args.system_root, &at, now) {

@@ -1,20 +1,20 @@
-//! Promises of the crate `immune-contract` to the response layer, which reads what the core's
+//! Promises of the crate `immunity-contract` to the response layer, which reads what the core's
 //! commands print with that crate and no code of the core. A reader here uses the crate's public
 //! API alone, and serde_json as its JSON parser, as the crate leaves the parser to the reader.
 //! The real binary runs over an invented home folder, system root and store.
 
 mod common;
 
-use immune_contract::prost::Message;
-use immune_contract::v1;
+use immunity_contract::prost::Message;
+use immunity_contract::v1;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 const T0: &str = "2026-10-04T00:00:02.000002Z";
 
 /// An invented estate: a home folder, a system root and a store beside them.
@@ -27,7 +27,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "immune-contract-crate-{tag}-{}-{nanos}",
+            "immunity-contract-crate-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home", "system", "empty"] {
@@ -50,9 +50,9 @@ impl Estate {
         std::fs::write(path, text).unwrap();
     }
 
-    /// `immune <args> --store <this store>`, as it ran.
-    fn immune(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_immune"))
+    /// `immunity <args> --store <this store>`, as it ran.
+    fn immunity(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -81,7 +81,7 @@ impl Estate {
         ] {
             args.extend([flag, value.to_str().unwrap()]);
         }
-        let out = self.immune(&args);
+        let out = self.immunity(&args);
         assert!(
             out.status.success(),
             "{}",
@@ -93,7 +93,7 @@ impl Estate {
     fn answer(&self, args: &[&str], form: &str) -> Vec<u8> {
         let mut args = args.to_vec();
         args.push(form);
-        let out = self.immune(&args);
+        let out = self.immunity(&args);
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -109,7 +109,7 @@ impl Estate {
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts/event-level/ai.nuanu.immune.eslogger.plist"),
+                .join("scripts/event-level/ai.nuanu.immunity.core.eslogger.plist"),
             &plist,
         )
         .unwrap();

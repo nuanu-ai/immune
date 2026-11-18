@@ -1,10 +1,10 @@
-//! `immune machine [<what>]`: what the store knows of one machine, this Mac or another the store
+//! `immunity machine [<what>]`: what the store knows of one machine, this Mac or another the store
 //! knows (a server, a tailnet peer), printed as the contract's `Known` message. The answer is
 //! built by `known::known_of`; what is particular to a machine is how the question names it and
 //! which readings find machines.
 //!
 //! Without `<what>` it is this Mac. Otherwise `<what>` is a machine's name as the store shows it,
-//! a name or address the store knows it by, or its id: found the way `immune owner` finds one,
+//! a name or address the store knows it by, or its id: found the way `immunity owner` finds one,
 //! so the two commands name machines alike. A name that fits several machines not known to be
 //! one is refused with their ids, and an id the store holds of another type is refused as not a
 //! machine.
@@ -21,7 +21,7 @@
 //!
 //! Its parts are one level: what is `part_of` or `located_on` the machine, such as its
 //! containers, packages, checkouts and watched files. Their own parts are not given; a project
-//! is asked about with `immune project`. Its findings are of every depth (`known.rs`).
+//! is asked about with `immunity project`. Its findings are of every depth (`known.rs`).
 
 use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
@@ -38,10 +38,10 @@ const FOUND_BY: [(&str, &str); 3] = [
     (tailnet::READER, tailnet::KIND),
 ];
 
-/// What `immune machine` takes as a machine.
-const WHAT: &str = "immune machine takes nothing for this Mac, or one machine: its name as the store shows it, a name or address it is known by, or its id, beginning with machine:";
+/// What `immunity machine` takes as a machine.
+const WHAT: &str = "immunity machine takes nothing for this Mac, or one machine: its name as the store shows it, a name or address it is known by, or its id, beginning with machine:";
 
-/// `immune machine [<what>]`.
+/// `immunity machine [<what>]`.
 pub struct MachineArgs {
     pub store: PathBuf,
     pub form: crate::answer::Form,
@@ -70,7 +70,7 @@ pub fn parse(
     })
 }
 
-/// Answers `immune machine`.
+/// Answers `immunity machine`.
 pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
     known::command(
         "machine",
@@ -88,7 +88,7 @@ pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
                         return Ok(Err(Refused {
                             code: "several_machines",
                             message: "the name fits several machines the store does not know to be one; nothing was answered",
-                            example: "ask for one of them by its id, as in: immune machine <id> --json",
+                            example: "ask for one of them by its id, as in: immunity machine <id> --json",
                             ids: groups.into_iter().flatten().collect(),
                         }));
                     }
@@ -176,7 +176,7 @@ fn not_a_machine(id: &str) -> Refused {
     Refused {
         code: "not_a_machine",
         message: "the store holds this id, and it is not a machine",
-        example: "immune project asks about a project, immune program about a program",
+        example: "immunity project asks about a project, immunity program about a program",
         ids: vec![id.to_string()],
     }
 }

@@ -511,7 +511,7 @@ pub fn write_live(folder: &std::path::Path, l: Option<&Level>, now: i64) -> std:
     let path = folder.join(LIVE_FILE);
     std::fs::create_dir_all(path.parent().unwrap_or(folder))?;
     let part = path.with_extension("js.part");
-    std::fs::write(&part, format!("window.immuneLive = {};\n", live(l, now)))?;
+    std::fs::write(&part, format!("window.immunityLive = {};\n", live(l, now)))?;
     std::fs::rename(&part, &path)
 }
 
@@ -1364,7 +1364,7 @@ var document = {{
   getElementById: function (id) {{ return id === "as-it-happens" ? sec : null; }},
   createElement: function () {{ return {{ remove: function () {{}} }}; }},
   head: {{ appendChild: function (s) {{
-    if (LIVE) {{ LIVE.written_at_seconds = Date.now() / 1000 - {age}; window.immuneLive = LIVE; }}
+    if (LIVE) {{ LIVE.written_at_seconds = Date.now() / 1000 - {age}; window.immunityLive = LIVE; }}
     LIVE ? s.onload() : s.onerror();
   }} }},
 }};
@@ -1383,7 +1383,7 @@ print(JSON.stringify(out));
     fn run_js(stand_in: &str) -> Value {
         static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "immune-happens-{}-{}.js",
+            "immunity-happens-{}-{}.js",
             std::process::id(),
             RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

@@ -1128,7 +1128,7 @@ pub fn stale_at(conn: &Connection, now: i64) -> rusqlite::Result<HashMap<&'stati
 }
 
 /// An answer as it stands when asked for a project with a place not wholly read
-/// (`unread_places`): "not affected" becomes "don't know", as `immune vulnerability` gives it.
+/// (`unread_places`): "not affected" becomes "don't know", as `immunity vulnerability` gives it.
 fn untold_now<'a>(answer: &'a str, reason: &'a str, untold: bool) -> (&'a str, &'a str) {
     if answer == "not_affected" && untold {
         ("unknown", PLACE_NOT_READ)
@@ -1423,7 +1423,7 @@ pub fn at_shown(at: &str) -> String {
 }
 
 /// The totals as the contract gives them, with each feed and whether it is current now: the
-/// status's part about known vulnerabilities, and the totals of `immune vulnerabilities`.
+/// status's part about known vulnerabilities, and the totals of `immunity vulnerabilities`.
 /// Absent when matching never ran on this store: nothing was counted, so nothing reads as 0.
 pub fn totals_message(
     conn: &Connection,
@@ -1494,10 +1494,10 @@ pub fn projects_found(conn: &Connection) -> rusqlite::Result<v1::ProjectsFound> 
 /// Why the totals and the "affects" answers are absent from a store that has them not.
 pub const NEVER_MATCHED: &str = "the projects' lockfiles have never been matched against vulnerability data in this store; the next check does";
 
-/// The most "affects me" answers `immune vulnerabilities` lists; the total is always given.
+/// The most "affects me" answers `immunity vulnerabilities` lists; the total is always given.
 pub const SHOWN: usize = 200;
 
-/// A record the data holds, as `immune vulnerability` reads it.
+/// A record the data holds, as `immunity vulnerability` reads it.
 struct Held {
     source: String,
     id: String,
@@ -1744,7 +1744,7 @@ type Place = (
 /// The version of the contract this build prints.
 const FORMAT: u32 = 1;
 
-/// `immune vulnerabilities`: the "affects" answers, most severe first, at most `SHOWN`, with the
+/// `immunity vulnerabilities`: the "affects" answers, most severe first, at most `SHOWN`, with the
 /// totals. Without a store there is nothing to count, and `not_computed` says so.
 pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnerabilities> {
     let mut out = v1::Vulnerabilities {
@@ -1851,7 +1851,7 @@ fn affected_message(
     }
 }
 
-/// `immune vulnerability <id>`: the answer for one record id or CVE id in every checkout whose
+/// `immunity vulnerability <id>`: the answer for one record id or CVE id in every checkout whose
 /// lockfiles were read, with what it rests on. An id the data does not hold is said as such,
 /// never as "not affected".
 pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1::Vulnerability> {

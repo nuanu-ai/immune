@@ -1,5 +1,5 @@
-//! What Immune says about its own command line: `immune --help`, the full form of one command
-//! (`immune help <command>`, `immune <command> --help`), and a misuse, told as an error with the
+//! What Immunity Core says about its own command line: `immunity --help`, the full form of one command
+//! (`immunity help <command>`, `immunity <command> --help`), and a misuse, told as an error with the
 //! right form of the command the person typed.
 //!
 //! What is adopted, from the common practice of mature command-line tools (clig.dev, rustc's
@@ -10,7 +10,7 @@
 //! The commands of the binary are `COMMANDS`, and the parser takes no other (`main::parse_args`),
 //! so a command cannot be added without its line here.
 //!
-//! The help is Immune's own text and holds nothing from a source. A misuse shows what the
+//! The help is Immunity Core's own text and holds nothing from a source. A misuse shows what the
 //! person typed in its right form: each word they gave is cut of secrets and escaped
 //! (`secrets::said`), and the line is one command, never read as marks.
 
@@ -33,7 +33,7 @@ pub const COMMANDS: &[Command] = &[
         name: "status",
         purpose: "what needs a look, and what was not judged",
         forms: &[&[
-            "immune status",
+            "immunity status",
             "[--coverage]",
             "[--store <path>]",
             "[--json | --proto]",
@@ -46,7 +46,7 @@ pub const COMMANDS: &[Command] = &[
         name: "findings",
         purpose: "the open findings, the most urgent first",
         forms: &[&[
-            "immune findings",
+            "immunity findings",
             "[--all]",
             "[--store <path>]",
             "[--json | --proto]",
@@ -60,12 +60,12 @@ pub const COMMANDS: &[Command] = &[
         purpose: "one finding whole, or an answer to it",
         forms: &[
             &[
-                "immune finding <id>",
+                "immunity finding <id>",
                 "[--store <path>]",
                 "[--json | --proto]",
             ],
             &[
-                "immune finding <id> expected",
+                "immunity finding <id> expected",
                 "--reason <text>",
                 "[--days <n>]",
                 "[--via app|agent]",
@@ -75,7 +75,7 @@ pub const COMMANDS: &[Command] = &[
                 "[--json | --proto]",
             ],
             &[
-                "immune finding <id> seen",
+                "immunity finding <id> seen",
                 "[--reason <text>]",
                 "[--via app|agent]",
                 "[--with <id>]",
@@ -84,7 +84,7 @@ pub const COMMANDS: &[Command] = &[
                 "[--json | --proto]",
             ],
             &[
-                "immune finding <id> reopen",
+                "immunity finding <id> reopen",
                 "[--via app|agent]",
                 "[--with <id>]",
                 "[--journal-seq <n>]",
@@ -104,9 +104,9 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "project",
-        purpose: "what Immune knows of one project",
+        purpose: "what Immunity Core knows of one project",
         forms: &[&[
-            "immune project <path or id>",
+            "immunity project <path or id>",
             "[--store <path>]",
             "[--json | --proto]",
         ]],
@@ -118,7 +118,7 @@ pub const COMMANDS: &[Command] = &[
         name: "program",
         purpose: "the same for an installed program",
         forms: &[&[
-            "immune program <path, name or id>",
+            "immunity program <path, name or id>",
             "[--store <path>]",
             "[--json | --proto]",
         ]],
@@ -130,7 +130,7 @@ pub const COMMANDS: &[Command] = &[
         name: "machine",
         purpose: "the same for this Mac or another machine",
         forms: &[&[
-            "immune machine",
+            "immunity machine",
             "[<name or id>]",
             "[--store <path>]",
             "[--json | --proto]",
@@ -144,13 +144,13 @@ pub const COMMANDS: &[Command] = &[
         purpose: "the published rules and what they matched",
         forms: &[
             &[
-                "immune rules",
+                "immunity rules",
                 "[--all]",
                 "[--store <path>]",
                 "[--json | --proto]",
             ],
             &[
-                "immune rules --over-log",
+                "immunity rules --over-log",
                 "[--system-root <dir>]",
                 "[--json | --proto]",
             ],
@@ -166,7 +166,7 @@ pub const COMMANDS: &[Command] = &[
         name: "vulnerabilities",
         purpose: "known vulnerabilities in your projects",
         forms: &[&[
-            "immune vulnerabilities",
+            "immunity vulnerabilities",
             "[--store <path>]",
             "[--json | --proto]",
         ]],
@@ -177,7 +177,7 @@ pub const COMMANDS: &[Command] = &[
         name: "vulnerability",
         purpose: "one vulnerability in every project",
         forms: &[&[
-            "immune vulnerability <record id or CVE id>",
+            "immunity vulnerability <record id or CVE id>",
             "[--store <path>]",
             "[--json | --proto]",
         ]],
@@ -187,9 +187,13 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "servers",
         purpose: "lists known servers, writes the sweep script",
-        forms: &[&["immune servers", "[--store <path>]", "[--tailscale <path>]"]],
+        forms: &[&[
+            "immunity servers",
+            "[--store <path>]",
+            "[--tailscale <path>]",
+        ]],
         about: "The servers this Mac knows, and the read-only sweep script for you to run. \
-                Immune itself never connects to a server.",
+                Immunity Core itself never connects to a server.",
         note: "",
     },
     Command {
@@ -197,13 +201,13 @@ pub const COMMANDS: &[Command] = &[
         purpose: "machines set aside as retired or not yours",
         forms: &[
             &[
-                "immune owner",
+                "immunity owner",
                 "[--store <path>]",
                 "[--tailscale <path>]",
                 "[--json | --proto]",
             ],
             &[
-                "immune owner <name> retired|not-mine",
+                "immunity owner <name> retired|not-mine",
                 "--reason <text>",
                 "[--via app|agent]",
                 "[--store <path>]",
@@ -211,7 +215,7 @@ pub const COMMANDS: &[Command] = &[
                 "[--json | --proto]",
             ],
             &[
-                "immune owner <name> withdraw",
+                "immunity owner <name> withdraw",
                 "[--via app|agent]",
                 "[--store <path>]",
                 "[--tailscale <path>]",
@@ -228,7 +232,7 @@ pub const COMMANDS: &[Command] = &[
         name: "matches",
         purpose: "every rule match, with the event it matched",
         forms: &[&[
-            "immune matches",
+            "immunity matches",
             "[--after <place>]",
             "[--limit <n>]",
             "[--store <path>]",
@@ -244,7 +248,7 @@ pub const COMMANDS: &[Command] = &[
         name: "verdict",
         purpose: "records a verdict read on standard input",
         forms: &[&[
-            "immune verdict",
+            "immunity verdict",
             "(--json | --proto)",
             "[--store <path>]",
             "[--system-root <dir>]",
@@ -258,7 +262,7 @@ pub const COMMANDS: &[Command] = &[
         name: "watch",
         purpose: "watches; one JSON line per event",
         forms: &[&[
-            "immune watch",
+            "immunity watch",
             "[--store <path>]",
             "[--system-root <dir>]",
             "[--sample-input <file>]",
@@ -275,17 +279,17 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "on",
-        purpose: "keeps Immune checking in the background",
+        purpose: "runs checks in the background",
         forms: &[&[
-            "immune on",
+            "immunity on",
             "[--launchctl <path> --home <dir>]",
             "[--json | --proto]",
         ]],
-        about: "Turn Immune on for your account: the background check starts and keeps \
-                running. Registers the core as your login job ai.nuanu.immune.watch, which runs immune \
+        about: "Turn Immunity Core on for your account: the background check starts and keeps \
+                running. Registers the core as your login job ai.nuanu.immunity.core.watch, which runs immunity \
                 watch --background, and says whether it started. A core only root can replace \
                 is run where it is; any other, such as a build, is copied to \
-                ~/Library/Application Support/ai.nuanu.immune/bin/immune and the job runs the \
+                ~/Library/Application Support/ai.nuanu.immunity.core/bin/immunity and the job runs the \
                 copy. Run it again from a new build to update. Run it as the user being \
                 watched, without sudo. --launchctl and --home are for tests and go together.",
         note: "",
@@ -294,11 +298,11 @@ pub const COMMANDS: &[Command] = &[
         name: "off",
         purpose: "stops that; keeps the store",
         forms: &[&[
-            "immune off",
+            "immunity off",
             "[--launchctl <path> --home <dir>]",
             "[--json | --proto]",
         ]],
-        about: "Turn Immune off for your account. The store, findings and answers are kept. \
+        about: "Turn Immunity Core off for your account. The store, findings and answers are kept. \
                 Stops the login job and removes it with the copy of the core; a core run where \
                 it is stays. The event collector is kept too.",
         note: "",
@@ -307,7 +311,7 @@ pub const COMMANDS: &[Command] = &[
         name: "run",
         purpose: "one full check now",
         forms: &[&[
-            "immune run",
+            "immunity run",
             "[--store <path>]",
             "[--machine-name <name>]",
             "[--brew <path>]",
@@ -324,7 +328,7 @@ pub const COMMANDS: &[Command] = &[
             "[--indicators <file>]",
             "[--json | --proto]",
         ]],
-        about: "One full check now; with --json or --proto it answers as immune status does. \
+        about: "One full check now; with --json or --proto it answers as immunity status does. \
                 The flags after --store are for tests and special cases, and docs/reference.md \
                 describes each.",
         note: "",
@@ -333,7 +337,7 @@ pub const COMMANDS: &[Command] = &[
         name: "sample",
         purpose: "one sample of processes and connections",
         forms: &[&[
-            "immune sample",
+            "immunity sample",
             "[--store <path>]",
             "[--sample-input <file>]",
             "[--json | --proto]",
@@ -345,7 +349,7 @@ pub const COMMANDS: &[Command] = &[
         name: "view",
         purpose: "writes the pages and opens the summary",
         forms: &[&[
-            "immune view",
+            "immunity view",
             "[--store <path>]",
             "[--no-open]",
             "[--if-stale]",
@@ -370,15 +374,15 @@ const GROUPS: &[(&str, &[Entry])] = &[
         "See what needs a look",
         &[
             (
-                "immune status [--coverage]",
+                "immunity status [--coverage]",
                 "what needs a look, and what was not judged",
             ),
             (
-                "immune findings [--all]",
+                "immunity findings [--all]",
                 "the open findings, the most urgent first",
             ),
             (
-                "immune finding <id>",
+                "immunity finding <id>",
                 "one finding whole, with its evidence",
             ),
         ],
@@ -387,46 +391,46 @@ const GROUPS: &[(&str, &[Entry])] = &[
         "Answer a finding",
         &[
             (
-                "immune finding <id> expected --reason <text> [--days <n>]",
+                "immunity finding <id> expected --reason <text> [--days <n>]",
                 "out of what needs a look for 30 days or <n>",
             ),
             (
-                "immune finding <id> seen [--reason <text>]",
+                "immunity finding <id> seen [--reason <text>]",
                 "closes it; a new occurrence opens a new one",
             ),
-            ("immune finding <id> reopen", "takes an answer back"),
+            ("immunity finding <id> reopen", "takes an answer back"),
         ],
     ),
     (
         "Ask about a project, a program, a machine",
         &[
             (
-                "immune project <path or id>",
-                "what Immune knows of one project",
+                "immunity project <path or id>",
+                "what Immunity Core knows of one project",
             ),
             (
-                "immune program <path, name or id>",
+                "immunity program <path, name or id>",
                 "the same for an installed program",
             ),
             (
-                "immune machine [<name or id>]",
+                "immunity machine [<name or id>]",
                 "the same for this Mac or another machine",
             ),
         ],
     ),
     (
-        "What Immune looks for",
+        "What Immunity Core looks for",
         &[
             (
-                "immune rules [--all | --over-log]",
+                "immunity rules [--all | --over-log]",
                 "the published rules and what they matched",
             ),
             (
-                "immune vulnerabilities",
+                "immunity vulnerabilities",
                 "known vulnerabilities in your projects",
             ),
             (
-                "immune vulnerability <id>",
+                "immunity vulnerability <id>",
                 "one vulnerability in every project",
             ),
         ],
@@ -435,40 +439,40 @@ const GROUPS: &[(&str, &[Entry])] = &[
         "Servers",
         &[
             (
-                "immune servers",
+                "immunity servers",
                 "lists known servers, writes the sweep script",
             ),
-            ("immune owner", "the machines set aside"),
+            ("immunity owner", "the machines set aside"),
             (
-                "immune owner <name> retired|not-mine --reason <text>",
+                "immunity owner <name> retired|not-mine --reason <text>",
                 "sets a machine aside",
             ),
-            ("immune owner <name> withdraw", "takes that back"),
+            ("immunity owner <name> withdraw", "takes that back"),
         ],
     ),
     (
         "For the response layer",
         &[
             (
-                "immune matches [--after <place>] [--limit <n>]",
+                "immunity matches [--after <place>] [--limit <n>]",
                 "every rule match, with the event it matched",
             ),
             (
-                "immune verdict (--json | --proto)",
+                "immunity verdict (--json | --proto)",
                 "records a verdict read on standard input",
             ),
-            ("immune watch", "watches; one JSON line per event"),
+            ("immunity watch", "watches; one JSON line per event"),
         ],
     ),
     (
         "Setup",
         &[
-            ("immune on", "keeps Immune checking in the background"),
-            ("immune off", "stops that; keeps the store"),
-            ("immune run", "one full check now"),
-            ("immune sample", "one sample of processes and connections"),
+            ("immunity on", "runs checks in the background"),
+            ("immunity off", "stops that; keeps the store"),
+            ("immunity run", "one full check now"),
+            ("immunity sample", "one sample of processes and connections"),
             (
-                "immune view [--no-open] [--if-stale]",
+                "immunity view [--no-open] [--if-stale]",
                 "writes the pages and opens the summary",
             ),
         ],
@@ -478,17 +482,17 @@ const GROUPS: &[(&str, &[Entry])] = &[
 /// The column a line of the help says what its command does in.
 const DOES_AT: usize = 36;
 
-/// `immune --help`: what Immune is and what to run first, then the commands in groups, one line
+/// `immunity --help`: what Immunity Core is and what to run first, then the commands in groups, one line
 /// each, then the forms of an answer and where the rest is described. No line is wider than 80
 /// columns. On a terminal commands are cyan and the labels bold; in a pipe it is plain.
 pub fn help(screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     out.extend(screen.marked(
-        "Immune watches this Mac for signs of attack and says what needs a look.",
+        "Immunity Core watches this Mac for signs of attack and says what needs a look.",
         None,
     ));
     out.extend(screen.marked(
-        "Start with `immune on`, then `immune status` and `immune findings`.",
+        "Start with `immunity on`, then `immunity status` and `immunity findings`.",
         None,
     ));
     for (label, entries) in GROUPS {
@@ -500,9 +504,9 @@ pub fn help(screen: &Screen) -> String {
     }
     out.push(String::new());
     for line in [
-        "Every command but `immune servers`, `immune view` and `immune watch` answers in",
+        "Every command but `immunity servers`, `immunity view` and `immunity watch` answers in",
         "text, as JSON with --json, or as binary protobuf with --proto.",
-        "Every command takes --store <path>. `immune help <command>` shows all the flags",
+        "Every command takes --store <path>. `immunity help <command>` shows all the flags",
         "of one; the flags for tests are described in docs/reference.md.",
     ] {
         out.extend(screen.marked(line, None));
@@ -522,7 +526,7 @@ fn entry(screen: &Screen, command: &str, does: &str) -> Vec<String> {
     }
 }
 
-/// `immune help <command>` and `immune <command> --help`: every form of one command with every
+/// `immunity help <command>` and `immunity <command> --help`: every form of one command with every
 /// flag, cyan on a terminal, then what it does. `None` for a name that is no command.
 pub fn command_help(name: &str, screen: &Screen) -> Option<String> {
     let c = COMMANDS.iter().find(|c| c.name == name)?;
@@ -572,9 +576,9 @@ fn lines(out: &[String]) -> String {
 /// purpose, and where each is told whole. `asked` is the word as typed.
 pub fn unknown(asked: Option<&str>, screen: &Screen) -> String {
     let cause = match asked {
-        None => "immune needs a command".to_string(),
+        None => "immunity needs a command".to_string(),
         Some(word) => format!(
-            "{} is not a command of immune",
+            "{} is not a command of immunity",
             crate::text::quoted(&crate::secrets::said(word))
         ),
     };
@@ -585,7 +589,7 @@ pub fn unknown(asked: Option<&str>, screen: &Screen) -> String {
         .max()
         .unwrap_or(0);
     for c in COMMANDS {
-        let command = format!("immune {}", c.name);
+        let command = format!("immunity {}", c.name);
         out.push_str(&format!(
             "  {}{}{}\n",
             screen.paint(CYAN, &command),
@@ -594,7 +598,7 @@ pub fn unknown(asked: Option<&str>, screen: &Screen) -> String {
         ));
     }
     for l in screen.marked(
-        "`immune --help` shows each with its arguments.",
+        "`immunity --help` shows each with its arguments.",
         screen.fits(),
     ) {
         out.push_str(&format!("  {l}\n"));
@@ -602,7 +606,7 @@ pub fn unknown(asked: Option<&str>, screen: &Screen) -> String {
     out
 }
 
-/// A misuse of `op`, told to a person: the cause in Immune's words, then the command as typed in
+/// A misuse of `op`, told to a person: the cause in Immunity Core's words, then the command as typed in
 /// its right form, the person's own values kept and the missing part shown as a placeholder
 /// (`right_form`). `args` are the words after the command; `said` is what the parser said.
 pub fn misuse(op: &str, args: &[String], said: &str, screen: &Screen) -> String {
@@ -610,7 +614,7 @@ pub fn misuse(op: &str, args: &[String], said: &str, screen: &Screen) -> String 
     screen.error(&cause, &form.steps(), &[])
 }
 
-/// A command Immune prints for a person to paste, made from what was typed: every word typed is
+/// A command Immunity Core prints for a person to paste, made from what was typed: every word typed is
 /// either in it exactly as typed (`text::shell_word`) or, where it cannot be shown exactly, its
 /// placeholder; and then the sentence that says which were left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -620,7 +624,7 @@ pub struct Pasted {
 }
 
 impl Pasted {
-    /// A command made only of Immune's own words.
+    /// A command made only of Immunity Core's own words.
     pub fn own(command: &str) -> Pasted {
         Pasted {
             command: command.to_string(),
@@ -683,7 +687,7 @@ enum Role<'a> {
     Value(&'a str),
 }
 
-/// A word of a command line: as the person typed it, or a placeholder Immune put in.
+/// A word of a command line: as the person typed it, or a placeholder Immunity Core put in.
 #[derive(Clone, Debug, PartialEq)]
 enum Word {
     Typed(String),
@@ -852,7 +856,7 @@ impl Typed {
     /// (`text::shell_word`); a word that cannot be shown exactly is never echoed in it: its
     /// placeholder takes its place, and a sentence says what was left out.
     fn line(&self, op: &str) -> Pasted {
-        let mut out = format!("immune {op}");
+        let mut out = format!("immunity {op}");
         let mut left: Vec<String> = Vec::new();
         for (w, role) in self.ordered() {
             out.push(' ');
@@ -911,7 +915,7 @@ pub enum FindingNext {
     List,
 }
 
-/// The command a refusal of `immune finding <id> <answer>` gives a person to run next. `args`
+/// The command a refusal of `immunity finding <id> <answer>` gives a person to run next. `args`
 /// are the words typed after `finding`; the id and `--store` are kept as typed, each word cut of
 /// secrets and escaped (`Typed::line`).
 pub fn finding_next(args: &[String], next: FindingNext) -> Pasted {
@@ -923,7 +927,7 @@ pub fn finding_next(args: &[String], next: FindingNext) -> Pasted {
             .map_or(Word::Placeholder("<id>"), |&at| typed.0[at].clone()),
     ];
     let verb = match next {
-        FindingNext::List => return Pasted::own("immune findings --all"),
+        FindingNext::List => return Pasted::own("immunity findings --all"),
         FindingNext::OtherId => {
             let mut typed = typed;
             typed.value("--with");
@@ -954,10 +958,10 @@ const HINTS: &[&str] = &[
     ": <name>",
     "; for a place",
     ": the job runs",
-    "; immune vulnerability <id> does",
+    "; immunity vulnerability <id> does",
 ];
 
-/// The cause of a misuse in Immune's words and the command as typed in its right form: the one
+/// The cause of a misuse in Immunity Core's words and the command as typed in its right form: the one
 /// thing wrong mended, every other word kept. Where the parser's words name no mending this
 /// knows, the command's own form.
 fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
@@ -974,7 +978,7 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
     // The form of the verb typed, such as `seen` or `retired`, else the command's first.
     let fallback = || {
         let Some(c) = COMMANDS.iter().find(|c| c.name == op) else {
-            return format!("immune {op}");
+            return format!("immunity {op}");
         };
         let names_verb = |f: &&&[&str]| {
             f[0].split([' ', '|'])
@@ -990,7 +994,7 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
     };
     let verb_at = |typed: &Typed| typed.operands().get(1).copied();
     if let Some(arg) = said.strip_prefix("unexpected argument: ") {
-        cause = format!("immune {op} does not take {}", quoted(arg));
+        cause = format!("immunity {op} does not take {}", quoted(arg));
         if let Some(at) = typed
             .0
             .iter()
@@ -1070,20 +1074,20 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
     } else if said.starts_with("--reason and --via go with a statement") {
         typed.0.insert(0, Word::Placeholder("retired|not-mine"));
         typed.0.insert(0, Word::Placeholder("<name>"));
-    } else if said.starts_with("immune finding takes an id") {
+    } else if said.starts_with("immunity finding takes an id") {
         typed.keep_operands(2);
         typed.operands_at_least(&["<id>"]);
-    } else if said.starts_with("immune owner takes a name and what the owner says") {
+    } else if said.starts_with("immunity owner takes a name and what the owner says") {
         typed.keep_operands(2);
         typed.operands_at_least(&["<name>", "retired|not-mine|withdraw"]);
-    } else if said.starts_with("immune vulnerability takes one record id") {
+    } else if said.starts_with("immunity vulnerability takes one record id") {
         typed.keep_operands(1);
         typed.operands_at_least(&["<id>"]);
-    } else if said.starts_with("immune vulnerabilities takes no id") {
+    } else if said.starts_with("immunity vulnerabilities takes no id") {
         typed.keep_operands(0);
-    } else if said.starts_with("immune project takes")
-        || said.starts_with("immune program takes")
-        || said.starts_with("immune machine takes")
+    } else if said.starts_with("immunity project takes")
+        || said.starts_with("immunity program takes")
+        || said.starts_with("immunity machine takes")
     {
         let shown = match op {
             "project" => "<path or id>",
@@ -1099,7 +1103,7 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
         }
     } else if said.starts_with("--after takes") {
         typed.remove("--after", 0);
-    } else if said == "--system-root is for immune rules --over-log" {
+    } else if said == "--system-root is for immunity rules --over-log" {
         typed.0.insert(0, Word::Typed("--over-log".to_string()));
     } else if said.ends_with("takes no --store: the job runs with the store in its usual place") {
         typed.remove("--store", 0);
@@ -1109,8 +1113,8 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
         } else {
             "--home"
         });
-    } else if said.starts_with("immune verdict reads one message") {
-        cause = "immune verdict needs a form, --json or --proto".to_string();
+    } else if said.starts_with("immunity verdict reads one message") {
+        cause = "immunity verdict needs a form, --json or --proto".to_string();
         typed.0.push(Word::Placeholder("--json|--proto"));
     } else {
         return (crate::secrets::said(said), Pasted::own(&fallback()));
@@ -1133,73 +1137,73 @@ mod tests {
                 "finding",
                 &["f0123456789", "expected"],
                 "expected needs a reason: --reason <text>",
-                "immune finding f0123456789 expected --reason <text>",
+                "immunity finding f0123456789 expected --reason <text>",
             ),
             (
                 "finding",
                 &["f0123456789", "dismiss"],
                 "the owner can answer expected or seen, or reopen, not dismiss",
-                "immune finding f0123456789 expected|seen|reopen",
+                "immunity finding f0123456789 expected|seen|reopen",
             ),
             (
                 "findings",
                 &["--frob", "--all"],
                 "unexpected argument: --frob",
-                "immune findings --all",
+                "immunity findings --all",
             ),
             (
                 "owner",
                 &["box", "retired", "--reason", ""],
                 "a statement needs a reason: --reason <text>",
-                "immune owner box retired --reason <text>",
+                "immunity owner box retired --reason <text>",
             ),
             (
                 "finding",
                 &["f0123456789", "seen", "--via", "agent", "--reason", "ok"],
                 "an answer through an agent needs --journal-seq <n>, the journal_seq of the answer",
-                "immune finding f0123456789 seen --via agent --reason ok --journal-seq <n>",
+                "immunity finding f0123456789 seen --via agent --reason ok --journal-seq <n>",
             ),
             (
                 "finding",
                 &["f0123456789", "seen", "--days", "3"],
                 "seen takes no days",
-                "immune finding f0123456789 seen",
+                "immunity finding f0123456789 seen",
             ),
             (
                 "matches",
                 &["--limit", "0"],
                 "--limit takes a whole number of at least 1",
-                "immune matches --limit <n>",
+                "immunity matches --limit <n>",
             ),
             (
                 "status",
                 &["--store"],
                 "--store needs a value",
-                "immune status --store <path>",
+                "immunity status --store <path>",
             ),
             (
                 "finding",
                 &["f0123456789", "seen", "--with", "a", "--with", "b"],
                 "--with is given once",
-                "immune finding f0123456789 seen --with a",
+                "immunity finding f0123456789 seen --with a",
             ),
             (
                 "rules",
                 &["--system-root", "/x"],
-                "--system-root is for immune rules --over-log",
-                "immune rules --over-log --system-root /x",
+                "--system-root is for immunity rules --over-log",
+                "immunity rules --over-log --system-root /x",
             ),
             (
                 "finding",
                 &[],
-                "immune finding takes an id, as in: immune finding f0123456789 seen",
-                "immune finding <id>",
+                "immunity finding takes an id, as in: immunity finding f0123456789 seen",
+                "immunity finding <id>",
             ),
             (
                 "finding",
                 &["f0123456789", "--reason", "my reason"],
                 "--reason, --days, --via, --with and --journal-seq go with an answer: expected, seen or reopen",
-                "immune finding f0123456789 expected|seen|reopen --reason 'my reason'",
+                "immunity finding f0123456789 expected|seen|reopen --reason 'my reason'",
             ),
         ];
         for (op, args, said, form) in cases {
@@ -1215,19 +1219,19 @@ mod tests {
                 "finding",
                 &["f0", "seen", "--with", ""],
                 "--with needs a value that is not empty",
-                "immune finding f0 seen --with <id>",
+                "immunity finding f0 seen --with <id>",
             ),
             (
                 "status",
                 &["--json", "--proto"],
                 "--json and --proto each name the form of the answer; give one",
-                "immune status --json",
+                "immunity status --json",
             ),
             (
                 "run",
                 &["--machine-name", ""],
                 "--machine-name needs a name",
-                "immune run --machine-name <name>",
+                "immunity run --machine-name <name>",
             ),
             // Whatever order they were typed in, the command's own words come first, then its
             // flags, then the store, then the form.
@@ -1235,128 +1239,128 @@ mod tests {
                 "finding",
                 &["--json", "--store", "/s", "f0", "--with", "", "seen"],
                 "--with needs a value that is not empty",
-                "immune finding f0 seen --with <id> --store /s --json",
+                "immunity finding f0 seen --with <id> --store /s --json",
             ),
             (
                 "finding",
                 &["f0", "seen", "--journal-seq", "x"],
                 "--journal-seq takes the journal_seq an answer gave, a number",
-                "immune finding f0 seen --journal-seq <n>",
+                "immunity finding f0 seen --journal-seq <n>",
             ),
             (
                 "finding",
                 &["f0", "expected", "--reason", "r", "--days", "0"],
                 "--days takes a number of days from 1 to 3650",
-                "immune finding f0 expected --reason r --days <n>",
+                "immunity finding f0 expected --reason r --days <n>",
             ),
             (
                 "watch",
                 &["--sample-every", "0"],
                 "--sample-every takes a number of seconds from 1 to 3600",
-                "immune watch --sample-every <seconds>",
+                "immunity watch --sample-every <seconds>",
             ),
             (
                 "finding",
                 &["f0", "seen", "--via", "x"],
                 "--via takes app or agent",
-                "immune finding f0 seen --via app|agent",
+                "immunity finding f0 seen --via app|agent",
             ),
             (
                 "finding",
                 &["f0", "reopen", "--reason", "r", "--days", "2"],
                 "reopen takes no reason and no days",
-                "immune finding f0 reopen",
+                "immunity finding f0 reopen",
             ),
             (
                 "owner",
                 &["box", "withdraw", "--reason", "r"],
                 "a withdrawal takes no reason",
-                "immune owner box withdraw",
+                "immunity owner box withdraw",
             ),
             (
                 "owner",
                 &["box", "gone"],
                 "the owner can say retired or not-mine, or withdraw, not gone",
-                "immune owner box retired|not-mine|withdraw",
+                "immunity owner box retired|not-mine|withdraw",
             ),
             (
                 "owner",
                 &["--reason", "r"],
                 "--reason and --via go with a statement: <name> retired, not-mine or withdraw",
-                "immune owner <name> retired|not-mine --reason r",
+                "immunity owner <name> retired|not-mine --reason r",
             ),
             (
                 "owner",
                 &["box"],
-                "immune owner takes a name and what the owner says",
-                "immune owner box retired|not-mine|withdraw",
+                "immunity owner takes a name and what the owner says",
+                "immunity owner box retired|not-mine|withdraw",
             ),
             // A flag's value is never taken for an operand.
             (
                 "owner",
                 &["--reason", "r", "box"],
-                "immune owner takes a name and what the owner says",
-                "immune owner box retired|not-mine|withdraw --reason r",
+                "immunity owner takes a name and what the owner says",
+                "immunity owner box retired|not-mine|withdraw --reason r",
             ),
             (
                 "vulnerability",
                 &["a", "b", "c"],
-                "immune vulnerability takes one record id or CVE id, as in: immune vulnerability CVE-2023-4863",
-                "immune vulnerability a",
+                "immunity vulnerability takes one record id or CVE id, as in: immunity vulnerability CVE-2023-4863",
+                "immunity vulnerability a",
             ),
             (
                 "vulnerability",
                 &["a", "b"],
-                "immune vulnerability takes one record id or CVE id, as in: immune vulnerability CVE-2023-4863",
-                "immune vulnerability a",
+                "immunity vulnerability takes one record id or CVE id, as in: immunity vulnerability CVE-2023-4863",
+                "immunity vulnerability a",
             ),
             (
                 "vulnerabilities",
                 &["a"],
-                "immune vulnerabilities takes no id; immune vulnerability <id> does",
-                "immune vulnerabilities",
+                "immunity vulnerabilities takes no id; immunity vulnerability <id> does",
+                "immunity vulnerabilities",
             ),
             (
                 "project",
                 &["dev/shop"],
-                "immune project takes a path on this Mac",
-                "immune project <path or id>",
+                "immunity project takes a path on this Mac",
+                "immunity project <path or id>",
             ),
             (
                 "program",
                 &[],
-                "immune program takes a path on this Mac",
-                "immune program <path, name or id>",
+                "immunity program takes a path on this Mac",
+                "immunity program <path, name or id>",
             ),
             (
                 "machine",
                 &["a", "b"],
-                "immune machine takes nothing for this Mac, or one machine",
-                "immune machine <name or id>",
+                "immunity machine takes nothing for this Mac, or one machine",
+                "immunity machine <name or id>",
             ),
             (
                 "matches",
                 &["--after", "zz", "--limit", "2"],
-                "--after takes the place an answer of immune matches printed; for a place this version cannot read",
-                "immune matches --limit 2",
+                "--after takes the place an answer of immunity matches printed; for a place this version cannot read",
+                "immunity matches --limit 2",
             ),
             (
                 "on",
                 &["--store", "x"],
-                "immune on takes no --store: the job runs with the store in its usual place",
-                "immune on",
+                "immunity on takes no --store: the job runs with the store in its usual place",
+                "immunity on",
             ),
             (
                 "on",
                 &["--home", "/h"],
                 "--home and --launchctl are for tests and go only together",
-                "immune on --home /h --launchctl <path>",
+                "immunity on --home /h --launchctl <path>",
             ),
             (
                 "verdict",
                 &[],
-                "immune verdict reads one message and answers in the same form, which is never text: name it, --proto or --json",
-                "immune verdict --json|--proto",
+                "immunity verdict reads one message and answers in the same form, which is never text: name it, --proto or --json",
+                "immunity verdict --json|--proto",
             ),
         ];
         for (op, args, said, form) in cases {
@@ -1382,7 +1386,7 @@ mod tests {
             &words(&["x\u{1b}[31m"]),
             "unexpected argument: x\u{1b}[31m",
         );
-        assert_eq!(cause, r#"immune findings does not take "x\u{1b}[31m""#);
+        assert_eq!(cause, r#"immunity findings does not take "x\u{1b}[31m""#);
     }
 
     #[test]
@@ -1390,7 +1394,7 @@ mod tests {
         let (cause, form) = right_form("finding", &words(&["f0", "seen"]), "something new");
         assert_eq!(cause, "something new");
         assert!(
-            form.command.starts_with("immune finding <id> seen"),
+            form.command.starts_with("immunity finding <id> seen"),
             "{form:?}"
         );
     }
@@ -1412,7 +1416,7 @@ mod tests {
                 assert!(!e.starts_with("unknown command"), "{}: {e}", c.name);
             }
             assert!(
-                help.contains(&format!("  immune {}", c.name)),
+                help.contains(&format!("  immunity {}", c.name)),
                 "{} is not in the help",
                 c.name
             );
@@ -1427,7 +1431,7 @@ mod tests {
         assert!(matches!(parsed, Err(e) if e == "unknown command: frobnicate"));
     }
 
-    /// `immune on` and `immune off` took the place of the earlier words, with no alias: those
+    /// `immunity on` and `immunity off` took the place of the earlier words, with no alias: those
     /// get what any word that is not a command gets. Below the command line, so a test never
     /// runs the real thing the day this broke.
     #[test]
@@ -1462,25 +1466,25 @@ mod tests {
         for (next, said) in [
             (
                 FindingNext::Read,
-                "immune finding f0123456789 --store /x/s.db",
+                "immunity finding f0123456789 --store /x/s.db",
             ),
             // Reopen takes --via, --with and --journal-seq: an agent's answer stays one.
             (
                 FindingNext::Reopen,
-                "immune finding f0123456789 reopen --via agent --with f7a76b7b86f --journal-seq 4 --store /x/s.db",
+                "immunity finding f0123456789 reopen --via agent --with f7a76b7b86f --journal-seq 4 --store /x/s.db",
             ),
             (
                 FindingNext::OtherId,
-                "immune finding f0123456789 seen --with <id> --journal-seq 4 --via agent --store /x/s.db",
+                "immunity finding f0123456789 seen --with <id> --journal-seq 4 --via agent --store /x/s.db",
             ),
-            (FindingNext::List, "immune findings --all"),
+            (FindingNext::List, "immunity findings --all"),
         ] {
             assert_eq!(finding_next(&typed, next).command, said, "{next:?}");
         }
         // Without an id typed, the place for one; without a store, none.
         assert_eq!(
             finding_next(&words(&["--reason", "r"]), FindingNext::Reopen).command,
-            "immune finding <id> reopen"
+            "immunity finding <id> reopen"
         );
     }
 
@@ -1559,7 +1563,7 @@ mod tests {
                 assert_eq!(
                     split,
                     [
-                        "immune", "finding", "f0", "seen", "--with", "<id>", "--store", value
+                        "immunity", "finding", "f0", "seen", "--with", "<id>", "--store", value
                     ],
                     "{form:?}"
                 );
@@ -1581,7 +1585,7 @@ mod tests {
             &words(&["f0\u{7}", "seen", "--with", ""]),
             "--with needs a value that is not empty",
         );
-        assert_eq!(form.command, "immune finding <id> seen --with <id>");
+        assert_eq!(form.command, "immunity finding <id> seen --with <id>");
         assert!(form.left_out.is_some_and(|l| l.contains("<id>")));
     }
 
@@ -1609,7 +1613,7 @@ mod tests {
                 if let Err(e) = parsed {
                     assert!(
                         e != format!("unexpected argument: {flag}"),
-                        "immune {} {flag}: {e}",
+                        "immunity {} {flag}: {e}",
                         c.name
                     );
                 }
@@ -1645,7 +1649,7 @@ mod tests {
     #[test]
     fn the_help_on_a_terminal_marks_commands_and_labels_and_in_a_pipe_nothing() {
         let painted = help(&Screen::terminal(80, true));
-        assert!(painted.contains("\u{1b}[36mimmune on\u{1b}[0m"));
+        assert!(painted.contains("\u{1b}[36mimmunity on\u{1b}[0m"));
         assert!(painted.contains("\u{1b}[1mAnswer a finding\u{1b}[0m"));
         assert!(!help(&Screen::pipe()).contains('\u{1b}'));
     }

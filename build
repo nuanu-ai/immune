@@ -9,7 +9,7 @@ rust_prerequisites
 
 # Respect CARGO_TARGET_DIR and cargo configuration by reading cargo's own artifact path.
 artifacts=$(cargo build --release --locked --message-format=json-render-diagnostics)
-immune=$(printf "%s\n" "$artifacts" | scripts/cargo-built.sh)
-[ -f "$immune" ] && [ -x "$immune" ] || missing "cargo finished without naming the immune it built"
-immune=$(cd "$(dirname "$immune")" && pwd -P)/$(basename "$immune")
-printf '%s\n' "$immune"
+immunity=$(printf "%s\n" "$artifacts" | scripts/cargo-built.sh)
+[ -f "$immunity" ] && [ -x "$immunity" ] || missing "cargo finished without naming the immunity executable"
+immunity=$(cd "$(dirname "$immunity")" && pwd -P)/$(basename "$immunity")
+printf '%s\n' "$immunity"

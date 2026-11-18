@@ -1,11 +1,11 @@
-//! Promises of `immune matches`, the queue of rule matches the response layer reads. The real
+//! Promises of `immunity matches`, the queue of rule matches the response layer reads. The real
 //! binary reads a temporary system root laid out as the event level's install lays out the real
 //! one, with log lines as the collector's filter writes them and invented content. Nothing here
 //! reads the real log or the real store.
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -15,9 +15,9 @@ use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 const CWD: &str = "/Users/example/dev/site";
 const T0: &str = "2026-10-04T00:00:02.000002Z";
 const H00: &str = "exec-20261004T00.jsonl";
@@ -44,7 +44,7 @@ impl Dir {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "immune-matches-{tag}-{}-{nanos}",
+            "immunity-matches-{tag}-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).unwrap();
@@ -82,7 +82,7 @@ impl Dir {
         let plist = self.root().join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
-            Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
+            Path::new(SCRIPTS).join("ai.nuanu.immunity.core.eslogger.plist"),
             plist,
         )
         .unwrap();
@@ -134,9 +134,9 @@ impl Dir {
         format!("{hour}-{}-{offset}", self.inode(name))
     }
 
-    /// `immune <args> <more> --store <this store>`, to be run.
+    /// `immunity <args> <more> --store <this store>`, to be run.
     fn command(&self, args: &[&str], more: &[&std::ffi::OsStr]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.env("HOME", self.0.join("home"))
             .current_dir(&self.0)
             .args(args)
@@ -202,7 +202,7 @@ impl Dir {
             .clone()
     }
 
-    /// `immune matches <args>` over this root and store, as it ran.
+    /// `immunity matches <args>` over this root and store, as it ran.
     fn matches_output(&self, args: &[&str]) -> Output {
         let root = self.root();
         let mut more: Vec<&std::ffi::OsStr> = vec![root.as_os_str()];
@@ -212,7 +212,7 @@ impl Dir {
             .unwrap()
     }
 
-    /// `immune matches <args> --json` over this root and store: its message.
+    /// `immunity matches <args> --json` over this root and store: its message.
     fn matches(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
@@ -225,7 +225,7 @@ impl Dir {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
-    /// `immune matches <args>` in binary: its stdout.
+    /// `immunity matches <args>` in binary: its stdout.
     fn matches_binary(&self, args: &[&str]) -> Vec<u8> {
         let mut args = args.to_vec();
         args.push("--proto");
@@ -431,7 +431,7 @@ fn owned(path: &str, pid: u64, version: u64, ids: [u64; 4]) -> Value {
     })
 }
 
-/// The one match's event of `immune matches` over `dir`, in each of its three forms: the JSON
+/// The one match's event of `immunity matches` over `dir`, in each of its three forms: the JSON
 /// message, the binary message, and the row of the text that lists the match one row each. The
 /// text names the program that acted; the event's detail is the program's, in the messages.
 fn match_forms(dir: &Dir) -> (Value, v1::Event, String) {
@@ -1113,7 +1113,7 @@ fn not_read_yet_is_no_promise_a_line_deleted_before_the_core_read_it_raises_noth
 }
 
 #[test]
-fn what_immune_matches_gives_and_what_the_core_s_reading_counts_agree_for_the_same_log() {
+fn what_immunity_matches_gives_and_what_the_core_s_reading_counts_agree_for_the_same_log() {
     // One way of evaluating: the queue and the core's own reading cannot disagree about what
     // matched, program starts and file events alike.
     let dir = Dir::new("agree");
@@ -1151,7 +1151,7 @@ fn what_immune_matches_gives_and_what_the_core_s_reading_counts_agree_for_the_sa
         "{given:?}"
     );
     // The core's reading of the log on disk without the store.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["rules", "--over-log", "--json", "--system-root"])
         .arg(dir.root())
         .output()
@@ -1564,7 +1564,7 @@ fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order
         failure["errors"][0]["detail_text"]
             .as_str()
             .unwrap()
-            .contains("run immune matches without --after"),
+            .contains("run immunity matches without --after"),
         "{failure}"
     );
     assert_eq!(failure.get("matches"), None);
@@ -1728,7 +1728,7 @@ fn without_a_store_the_answer_is_a_failure_that_never_parses_as_a_calm_message()
         (&json!(false), &json!("store_unreadable"), None)
     );
     let said = failure["errors"][0]["detail_text"].as_str().unwrap();
-    assert!(said.ends_with("`immune run` makes it"), "{said}");
+    assert!(said.ends_with("`immunity run` makes it"), "{said}");
     let parsed: v1::Matches = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed.format, 0);
     let out = dir.matches_output(&[]);
@@ -1808,7 +1808,7 @@ fn what_the_collector_printed_is_given_and_kept_with_its_secrets_cut() {
         format!("ERROR: es_new_client: tool --password {pw}\n"),
     )
     .unwrap();
-    let cut = "ERROR: es_new_client: tool --password \\cut{immune:flag-value 16}";
+    let cut = "ERROR: es_new_client: tool --password \\cut{immunity:flag-value 16}";
     assert_eq!(dir.matches(&[])["collector"]["said_text"], cut);
     dir.run();
     let status = dir.report(&["status"]);
@@ -1836,7 +1836,7 @@ fn a_mark_the_collector_printed_is_text_and_never_hides_the_secret_beside_it() {
         format!("ERROR: es_new_client: tool --password=\\cut{{a 1}}{pw}\n"),
     )
     .unwrap();
-    let cut = "ERROR: es_new_client: tool --password=\\cut{immune:flag-value 25}";
+    let cut = "ERROR: es_new_client: tool --password=\\cut{immunity:flag-value 25}";
     assert_eq!(dir.matches(&[])["collector"]["said_text"], cut);
     dir.run();
     let status = dir.report(&["status"]);
@@ -1903,7 +1903,7 @@ fn a_value_with_spaces_in_its_own_argument_is_cut_whole_wherever_it_is_shown_or_
         args.contains(&json!([
             "grep",
             "-r",
-            "--passphrase=\\cut{immune:flag-value 28}",
+            "--passphrase=\\cut{immunity:flag-value 28}",
             "password",
             "/etc"
         ])),
@@ -1914,7 +1914,7 @@ fn a_value_with_spaces_in_its_own_argument_is_cut_whole_wherever_it_is_shown_or_
             "grep",
             "-r",
             "password",
-            "--from-literal=password=\\cut{immune:flag-value 11}",
+            "--from-literal=password=\\cut{immunity:flag-value 11}",
             "/etc"
         ])),
         "{args:?}"
@@ -2020,7 +2020,7 @@ const PBPASTE: &str = "d7182e12-df8f-4ecf-b8f8-7cc0adcec425";
 fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed_over_with_its_rule()
  {
     // A translated rule is a published rule like SigmaHQ's: its high match raises one finding,
-    // named by its set and Elastic's rule id, and `immune matches` gives the match with the
+    // named by its set and Elastic's rule id, and `immunity matches` gives the match with the
     // rule as Elastic names it and the finding it went to. The same start under another parent
     // matches nothing of Elastic's.
     let dir = Dir::new("elastic");
@@ -2253,7 +2253,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
     rows_of(&String::from_utf8(out.stdout).unwrap());
 
     let replay = |json: bool| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.args(["rules", "--over-log", "--system-root"])
             .arg(dir.root());
         if json {
@@ -2336,8 +2336,8 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
 }
 
 #[test]
-fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason() {
-    // `immune rules` says where each set comes from, and names every upstream rule a translated
+fn immunity_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason() {
+    // `immunity rules` says where each set comes from, and names every upstream rule a translated
     // set did not take with the translation's reason and detail, and every translated rule in
     // part with what its left-out alternatives need.
     let dir = Dir::new("rules-sets");
@@ -2376,11 +2376,11 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     // behaviour rule could raise by itself, and says why it raises none.
     assert_eq!(
         said["rule"],
-        "sigma:<the rule's id> or elastic:<the rule's id> or immune:<the rule's id>"
+        "sigma:<the rule's id> or elastic:<the rule's id> or immunity:<the rule's id>"
     );
     assert_eq!(
         said["raised_by_sets"],
-        json!(["sigma", "elastic", "immune"])
+        json!(["sigma", "elastic", "immunity"])
     );
     assert_eq!(
         said["sets_that_raise_nothing"],

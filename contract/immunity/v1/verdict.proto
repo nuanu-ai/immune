@@ -1,17 +1,17 @@
-// The verdict the response layer gives back: what `immune verdict` reads on standard input, and
+// The verdict the response layer gives back: what `immunity verdict` reads on standard input, and
 // what it answers. Version 1 of the contract between the core and a program that runs it. How a
 // message is printed and read, and the conventions for text, references, times and changes, are in
 // `common.proto`.
 //
-// The response layer reads rule matches (`immune matches`) and findings (`immune findings`,
-// `immune finding <id>`), looks into them, and says what it concluded: `suspicious`, a person
+// The response layer reads rule matches (`immunity matches`) and findings (`immunity findings`,
+// `immunity finding <id>`), looks into them, and says what it concluded: `suspicious`, a person
 // should see it, or `harmless`.
 //
 // A verdict never writes into a finding the core raised: not its state, its occurrences, its
 // evidence, when it was last seen, its levels or whether it is urgent. The core's findings are the
 // same whether verdicts are sent or not.
 //
-// A `suspicious` verdict is an event of one rule of Immune's own, `verdict.suspicious`, and raises
+// A `suspicious` verdict is an event of one rule of Immunity Core's own, `verdict.suspicious`, and raises
 // a finding of that rule the way any rule that finds an event does. The finding is about what the
 // verdict is about: the rule it names (the match's rule, or the rule of the finding it names) and
 // the thing that rule's findings are about on this Mac. A verdict about a finding and one about a
@@ -19,7 +19,7 @@
 // `verdict.suspicious:<that rule>`. Open, it stays open as more come; marked expected, it stays so
 // until the mark ends; marked seen, the next `suspicious` verdict raises its next occurrence. The
 // core never clears it: only the person closes it. The person may answer it and the core's
-// finding of the same rule and thing with one command that names both, `immune finding <id>
+// finding of the same rule and thing with one command that names both, `immunity finding <id>
 // seen|expected --with <other id> --journal-seq <n>`, and take both answers back with
 // `reopen --with`. The command
 // records the person's answer on each of the two in one transaction, as two ordinary answers. No
@@ -34,7 +34,7 @@
 // recorded and raises its finding, with no event kept, and `RecordedVerdict.event_gone` says so:
 // the core did not read the event again and did not check that the rule matched it, and the
 // meaning of the finding it raises says so. The rule must still be one this build ships, the
-// position one `immune matches` prints, and the time its file's name gives a real one, not later
+// position one `immunity matches` prints, and the time its file's name gives a real one, not later
 // than now; any other is refused with `no_such_match`. A `harmless` verdict about such a match is
 // refused with `match_gone`: there is no match to keep it beside.
 //
@@ -57,7 +57,7 @@
 // the finding it went to is open. After the person answered that finding, the same message raises
 // the next occurrence, as a new match would. A `harmless` message is recorded once.
 //
-// Anyone who can run `immune verdict` as the person can send a verdict, and the core cannot tell
+// Anyone who can run `immunity verdict` as the person can send a verdict, and the core cannot tell
 // the response layer from another program: verdicts are not signed. That is why a verdict never
 // writes into the core's findings.
 //
@@ -76,7 +76,7 @@
 // verdict names, are never rewritten: one that holds a secret is refused with `holds_secret`,
 // naming the field and never what it holds.
 //
-// `immune verdict` reads the form it is told, `--proto` or `--json`, and answers in it. With no
+// `immunity verdict` reads the form it is told, `--proto` or `--json`, and answers in it. With no
 // form named it is refused as a misuse: a message is not typed as text.
 //
 // What this build does not read is refused, in either form: a field it does not know, a field
@@ -88,12 +88,12 @@
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/common.proto";
-import "immune/v1/event.proto";
+import "immunity/v1/common.proto";
+import "immunity/v1/event.proto";
 
-// A verdict, as the response layer sends it to `immune verdict`.
+// A verdict, as the response layer sends it to `immunity verdict`.
 message Verdict {
   // The version of this contract: 1. The core refuses another number.
   uint32 format = 1;
@@ -103,7 +103,7 @@ message Verdict {
   string store_id = 2;
   // What it is about: a match or a finding. Required.
   oneof about {
-    // A rule match, as `immune matches` named it.
+    // A rule match, as `immunity matches` named it.
     AboutMatch match = 3;
     // A finding, by its id.
     AboutFinding finding = 4;
@@ -130,13 +130,13 @@ message Verdict {
   optional string verdict_id = 10;
 }
 
-// A rule match, as `immune matches` names it: the position of the event's line and the rule's
+// A rule match, as `immunity matches` names it: the position of the event's line and the rule's
 // name, both as that answer printed them. The position names a line of the log under the
-// `--system-root` the command is given, as `immune run` reads the log under its own.
+// `--system-root` the command is given, as `immunity run` reads the log under its own.
 message AboutMatch {
-  // The opaque token `immune matches` gave in `position`, whole.
+  // The opaque token `immunity matches` gave in `position`, whole.
   string position = 1;
-  // The rule's `name`, as `immune matches` printed it: `sigma:<id>`, `elastic:<rule_id>` or
+  // The rule's `name`, as `immunity matches` printed it: `sigma:<id>`, `elastic:<rule_id>` or
   // `elastic-behaviour:<rule_id>`. A rule whose set states no level can be named like any other.
   string rule = 2;
 }
@@ -194,7 +194,7 @@ message Verdicts {
   FindingRef verdict_finding = 4;
 }
 
-// The answer to `immune verdict`: what was recorded.
+// The answer to `immunity verdict`: what was recorded.
 message VerdictRecorded {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
   reserved 1000 to 1099;

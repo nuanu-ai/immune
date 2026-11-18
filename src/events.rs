@@ -92,7 +92,7 @@
 //! before any line, not yet known. Only the lines of the file the collector is writing now
 //! speak of it (`writing`), so lines an earlier or later collector left in other files, read in
 //! whatever order, never do. Only the core's reading tells it, since only it reads every file to
-//! its end; `immune matches` gives what the latest one stored. A rule that reads one watches
+//! its end; `immunity matches` gives what the latest one stored. A rule that reads one watches
 //! only while it arrives, and is otherwise named as not watching, with which.
 
 use crate::sigma::{Match, Meta, Rules, Subject};
@@ -112,10 +112,11 @@ pub const KIND: &str = "program starts on this Mac, from Apple's eslogger";
 pub const KIND_FILES: &str = "file events on this Mac, from Apple's eslogger";
 /// The installer's record of what the collector records: the eslogger arguments of the
 /// installed launch daemon, as Apple's `plutil` extracts them, a JSON array of strings.
-pub const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+pub const COLLECTS: &str =
+    "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 /// The tidy job's launch daemon. Its fourth argument is the cap of the log in bytes, which only
 /// the installer writes there.
-pub const TIDY_PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
+pub const TIDY_PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist";
 /// Why the cap of the log is not known while the collector is installed and its tidy job is not.
 pub const NO_TIDY: &str = "the tidy job's launch daemon is not installed, so nothing keeps the log under a cap; installing the event level again puts it back";
 /// The file events collected, as `eslogger` names them.
@@ -182,7 +183,7 @@ pub const NEVER_FILLED: &str =
     "the collector installed here keeps it, and no line read has carried a value for it yet";
 pub const NO_LONGER: &str = "the collector installed here keeps it, and lines gave values for it and then stopped: the latest ones read carry none, as when a macOS update changed the field, or a Mac runs nothing that has it";
 pub const NOT_YET_KNOWN: &str = "no line that would carry it has been read yet, so whether the collector installed here keeps it is not yet known";
-/// Why a rule that reads one of `KEEPS` judged only some of the lines an answer of `immune
+/// Why a rule that reads one of `KEEPS` judged only some of the lines an answer of `immunity
 /// matches` read, whatever the core's latest reading says arrives (`Lacked`).
 pub const NOT_IN_LINES: &str = "some lines this answer read do not give it: they lack it, as an earlier collector writes them, or carry it with no value; the rule judged none of them by it";
 /// The fields rules are given that only a collector that keeps one of `KEEPS` fills, by the
@@ -199,9 +200,9 @@ pub const LEVEL: &str = "Apple's eslogger as administrator";
 /// How the run id of a watcher's reading begins.
 pub const RUN_PREFIX: &str = "events-";
 /// The launch daemon's property list, under the system root: there when the level is installed.
-pub const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
+pub const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
 /// The log folder, under the system root.
-pub const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
+pub const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
 /// What `eslogger` prints, and what the root side's own scripts print, in the log folder.
 pub const ESLOGGER_SAID: &str = "eslogger.err";
 pub const SCRIPTS_SAID: &str = "scripts.err";
@@ -333,7 +334,7 @@ CREATE TABLE event_files (
     last_create INTEGER,
     last_rename INTEGER
 );
--- Which finding each match of a rule that raises one went to, so `immune matches` says it
+-- Which finding each match of a rule that raises one went to, so `immunity matches` says it
 -- exactly: the line, by its log file's name and inode and the offset where it begins; the rule
 -- by its name, its set and its id; and the finding. Only rules marked high or critical raise
 -- one. A row of a log file the reading no longer finds is removed, so a row lives as long as its
@@ -1280,7 +1281,7 @@ fn log_cap(root: &Path) -> Result<u64, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NO_TIDY.to_string()),
         Err(e) => return Err(failed(&e)),
     };
-    // `immune watch` reads the log every few seconds, and `plutil` started each time would be a
+    // `immunity watch` reads the log every few seconds, and `plutil` started each time would be a
     // program start the collector records: the answer is kept while the file is the same.
     type Seen = Option<(
         (std::path::PathBuf, u64, i64, i64, u64),
@@ -1667,9 +1668,9 @@ struct Into<'a> {
     version: &'a mut Option<u64>,
     /// What the lines say of each of `KEEPS`, taken on line by line, while the core's reading
     /// reads the file the collector is writing now (`writing`); `None` for any other file, and
-    /// always for `immune matches`, which tells what the core's latest reading stored.
+    /// always for `immunity matches`, which tells what the core's latest reading stored.
     arrivals: Option<&'a mut Arrivals>,
-    /// For `immune matches`: what of `KEEPS` the lines it judged did not give.
+    /// For `immunity matches`: what of `KEEPS` the lines it judged did not give.
     lacked: Option<&'a mut Lacked>,
     /// Markers read whose number in eslogger's numbering no gap has taken in yet.
     pending: &'a mut u64,
@@ -1680,14 +1681,14 @@ struct Into<'a> {
     /// The log file being read, by its name and inode: where each line evaluated is.
     file: String,
     inode: u64,
-    /// For `immune matches`: every event that matched, with where its line is, and when to
+    /// For `immunity matches`: every event that matched, with where its line is, and when to
     /// stop. The core's own reading keeps none.
     queue: Option<&'a mut Sink>,
 }
 
 impl Into<'_> {
     /// Evaluates one event against the rules of its kind. This is the one place an event is
-    /// evaluated: what the core's reading counts and raises, and what `immune matches` gives,
+    /// evaluated: what the core's reading counts and raises, and what `immunity matches` gives,
     /// both come from this call, so the two cannot disagree on what matched. `line` is where
     /// the event's line begins and `len` its length. Returns whether the queue is full.
     fn judge(&mut self, subject: Subject, line: u64, len: usize) -> bool {
@@ -1843,7 +1844,7 @@ struct FileRead {
 }
 
 /// Reads one log file of `dir` from the offset `from` gives for it, as the core's reading and
-/// `immune matches` both do. `over` says that its hour is over (`LogFile::over`). `None` when
+/// `immunity matches` both do. `over` says that its hour is over (`LogFile::over`). `None` when
 /// the root side deleted it between the listing and now. A failure is the reason, in the
 /// program's words.
 fn read_file(
@@ -2669,7 +2670,7 @@ pub fn replay(root: &Path, now: i64) -> Replay {
     }
 }
 
-// ---- The queue of matches: `immune matches` reads the log again from a caller's place. ----
+// ---- The queue of matches: `immunity matches` reads the log again from a caller's place. ----
 //
 // The store keeps no event. The queue is the day's log read again, evaluated by the same
 // `Into::judge` as the core's own reading, from a place the caller keeps. The place holds what
@@ -2678,7 +2679,7 @@ pub fn replay(root: &Path, now: i64) -> Replay {
 // leaves a file of a later hour while lines go on into an earlier one, a reinstall within an
 // hour starts a file of the same name again, and a file can be deleted before it was read.
 
-/// The most bytes of matched lines one answer of `immune matches` holds, each line counted once
+/// The most bytes of matched lines one answer of `immunity matches` holds, each line counted once
 /// for every rule it matched. An argument list is never cut and can be a megabyte, so the
 /// count of matches alone does not keep an answer small.
 pub const BYTES: usize = 4 << 20;
@@ -2702,7 +2703,7 @@ pub struct LineAt {
     pub offset: u64,
 }
 
-/// A line's place as `immune matches` gives it in `position`: its file's name without `exec-`
+/// A line's place as `immunity matches` gives it in `position`: its file's name without `exec-`
 /// and `.jsonl`, the file's inode and the offset, such as
 /// `20261004T000013-20261004T000000-48151623-4096`, or `20261004T00-48151623-4096` in a file an
 /// earlier collector named by its hour. The core's own words, for a reader to keep and compare
@@ -2719,7 +2720,7 @@ impl std::fmt::Display for LineAt {
 }
 
 impl LineAt {
-    /// A position exactly as `immune matches` printed it; `None` for any other text. The name
+    /// A position exactly as `immunity matches` printed it; `None` for any other text. The name
     /// must be one a collector gives a log file, and the text must be what this build prints for the
     /// place it reads, so a sign, a leading zero or anything left over is refused. A position
     /// names no path: the file is the log file of that hour, looked up in the log folder.
@@ -2740,7 +2741,7 @@ impl LineAt {
     /// When its file was started, by its name, in UTC seconds: the later of the run and the start
     /// for a name of a later collector, the start of the hour for an earlier one's. `None` for a
     /// name that is no real time since 1970, such as 31 February or the year 1. A position that
-    /// starts later than now, or at no real time, was never printed by `immune matches`.
+    /// starts later than now, or at no real time, was never printed by `immunity matches`.
     pub fn start(&self) -> Option<i64> {
         let key = key_of(&self.file)?;
         utc_second(match key.run {
@@ -2797,7 +2798,7 @@ pub enum AtLine {
 }
 
 /// Reads the one line at `at` in the log under `root` and evaluates its event at the one place
-/// an event is evaluated (`Into::judge`), as the core's own reading and `immune matches` do, so a
+/// an event is evaluated (`Into::judge`), as the core's own reading and `immunity matches` do, so a
 /// verdict about a match is about what they matched. Nothing is read from the store or written
 /// to it. A failure is the reason, in the program's words.
 pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
@@ -2878,12 +2879,12 @@ pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
     }))))
 }
 
-/// A caller's place in the log, as `immune matches` prints it in `continue_after` and takes it
+/// A caller's place in the log, as `immunity matches` prints it in `continue_after` and takes it
 /// in `--after`: for each log file, where its name puts it (`Key`), its inode, how far it was
 /// read, and whether it was over (`LogFile::over`) when it was read to its end; the last number
 /// eslogger gave each kind of event read, and the filter's markers no gap has taken in yet, so
 /// that a gap at the seam between two answers is counted once. What arrives is not in it:
-/// `immune matches` tells what the core's latest reading stored.
+/// `immunity matches` tells what the core's latest reading stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
     /// The last `seq_num` of a program start, a file created and a file renamed.
@@ -2947,7 +2948,7 @@ impl Place {
         bytes
     }
 
-    /// A place as `immune matches` prints it; `None` for any other text, a place of another
+    /// A place as `immunity matches` prints it; `None` for any other text, a place of another
     /// version of the encoding among them. Read strictly: at most `MAX_FILES` files, each of a
     /// key some log file's name can give and later than the one before, and the text exactly as
     /// this build prints the place it reads. That last check also holds the text to lower-case
@@ -3012,7 +3013,7 @@ pub struct Hit {
     pub matched: Vec<(&'static str, &'static Meta)>,
 }
 
-/// What `immune matches` collects while it reads, and when it stops.
+/// What `immunity matches` collects while it reads, and when it stops.
 struct Sink {
     hits: Vec<Hit>,
     matches: usize,
@@ -3020,7 +3021,7 @@ struct Sink {
     limit: usize,
 }
 
-/// What `immune matches` read of the log after a place.
+/// What `immunity matches` read of the log after a place.
 #[derive(Debug)]
 pub struct Stretch {
     pub hits: Vec<Hit>,
@@ -3046,7 +3047,7 @@ pub struct Stretch {
     pub lacked: Lacked,
 }
 
-/// What `immune matches` found.
+/// What `immunity matches` found.
 #[derive(Debug)]
 pub enum Queue {
     /// The collector is not installed. Uninstalling deletes the log, so lines a place had not
@@ -3275,7 +3276,7 @@ pub fn read_up_to(conn: &Connection) -> rusqlite::Result<BTreeMap<String, (u64, 
 }
 
 /// The level's state as the latest reading left it, with when that reading was made: what
-/// `immune status` serves. `None` before any reading.
+/// `immunity status` serves. `None` before any reading.
 pub fn state_read(conn: &Connection) -> rusqlite::Result<Option<(String, i64)>> {
     conn.query_row(
         "SELECT state, read_at FROM event_level WHERE id = 1",
@@ -3964,7 +3965,7 @@ pub fn in_words(said: &Said) -> Value {
 
 /// The level for a person: a short state, the count of program starts while it records them,
 /// and each caveat as a short sentence of its own, so that a surface shows the state at a
-/// glance and the caveats under it, quieter, or folded. The page's row, `immune status` and
+/// glance and the caveats under it, quieter, or folded. The page's row, `immunity status` and
 /// anything else that tells the level take these words. None names `eslogger`: a person reads
 /// "the collector".
 pub struct Said {
@@ -4177,17 +4178,18 @@ mod tests {
     #[test]
     fn the_cap_is_read_again_only_when_the_tidy_job_s_launch_daemon_changed_and_a_failure_is_never_kept()
      {
-        // `immune watch` reads the log every few seconds, and each `plutil` it started would be
+        // `immunity watch` reads the log every few seconds, and each `plutil` it started would be
         // a program start in the log: the same file, by inode, size and time, is not read again.
         // A reading that failed is not kept: the next one runs plutil again, even on a file
         // that looks the same.
         use std::io::Write;
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-cap-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-cap-{}", std::process::id())),
         );
         let plist = dir.join(TIDY_PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
-        let shipped = include_str!("../scripts/event-level/ai.nuanu.immune.event-tidy.plist");
+        let shipped =
+            include_str!("../scripts/event-level/ai.nuanu.immunity.core.event-tidy.plist");
         // Writes `text` over the file in place, then gives it back the times it had before, so
         // it keeps its inode, its size when `text` is as long, and its time.
         let rewrite = |text: &str| {
@@ -5073,7 +5075,7 @@ mod tests {
     fn counts_older_than_two_days_are_deleted_so_the_store_does_not_grow_with_the_readings() {
         // The watcher reads at every sample for as long as the Mac runs.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-keep-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-keep-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
@@ -5106,7 +5108,7 @@ mod tests {
         // A click after new program starts writes the pages that count them again; a reading
         // every ten seconds that took nothing writes nothing, or every click would.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-basis-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-basis-{}", std::process::id())),
         );
         let log = dir.join("root").join(LOG);
         std::fs::create_dir_all(&log).unwrap();
@@ -5148,7 +5150,7 @@ mod tests {
         // are kept by the hour of the reading, so the hour that holds the start of the span
         // counts whole, and an hour older than the week is deleted.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-hours-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-hours-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
@@ -5306,7 +5308,7 @@ mod tests {
         // rule. Measured and printed with `--nocapture`, with the share of the time the rules
         // take, measured over the same starts apart from the reading.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-speed-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-speed-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
@@ -5391,7 +5393,7 @@ mod tests {
         // finding's evidence is taken, and only the latest few are kept. Each file event is
         // asked only of the rules for file events.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-files-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-files-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
@@ -5501,8 +5503,8 @@ mod tests {
 
     #[test]
     fn the_status_serves_the_series_ending_when_asked_and_the_words_a_surface_shows() {
-        // The app holds no logic: it draws the series Immune gives, says where the day ends as
-        // Immune says, and takes "none lost" only from an empty list of caveats.
+        // The app holds no logic: it draws the series Immunity Core gives, says where the day ends as
+        // Immunity Core says, and takes "none lost" only from an empty list of caveats.
         let l = Level {
             state: RUNNING.to_string(),
             read_at: 1_000,
@@ -5898,7 +5900,7 @@ mod tests {
     /// A system root of its own for a test, with the collector installed and its log empty.
     fn installed(tag: &str) -> crate::common::Scratch {
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-{tag}-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-{tag}-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
@@ -6026,7 +6028,7 @@ mod tests {
         let run = most(SCRIPT);
         write_at(&root, name, &starts(1, run / 2), now - 2);
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-run-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
         let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
@@ -6084,7 +6086,7 @@ mod tests {
     #[test]
     fn a_stretch_names_what_its_lines_did_not_give_a_missing_key_or_an_empty_field_every_process_has()
      {
-        // What `immune matches` names beside the store's reading. A line of a kind without a
+        // What `immunity matches` names beside the store's reading. A line of a kind without a
         // mark's key was not judged by a rule that reads it; a line with the key and no value
         // was judged without it when every process has the field. Most starts run no script,
         // so a start with the script's key and no value is not named. Each kind stands for its
@@ -6126,7 +6128,7 @@ mod tests {
 
     #[test]
     fn every_kept_field_a_shipped_rule_reads_is_its_group_s_mark_and_filled_on_every_line() {
-        // `immune matches` names a rule whose group some line it read did not give (`Lacked`),
+        // `immunity matches` names a rule whose group some line it read did not give (`Lacked`),
         // and that is whole only for a field that is its group's mark and that every line of
         // its kind fills: one line without it is then the collector not filling it. A group
         // filled only on some lines by nature, as the script is, is judged by the core's latest
@@ -6185,7 +6187,7 @@ mod tests {
         let a = Arrival::Kept(Some(1)).after(&mut quiet, u64::MAX, true, false, 9);
         assert_eq!(a, Arrival::NoLonger(7));
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-events-forged-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
         let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();

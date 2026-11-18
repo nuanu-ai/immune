@@ -1,4 +1,4 @@
-//! The text for a person of `immune finding <id>` and of an answer to a finding, rendered from
+//! The text for a person of `immunity finding <id>` and of an answer to a finding, rendered from
 //! the message alone (`Finding`) for a screen (`screen.rs`), in
 //! the layout of the core's language for a person (`docs/how-it-works.md`).
 //!
@@ -12,8 +12,8 @@
 //! Text from a source is in a message's `_text` fields, already escaped one to one
 //! (`known::whole`), and every piece is escaped again as it reaches the screen, before it is
 //! measured, cut, broken into lines or styled (`screen.rs`). It is never placed at the start of
-//! a line: every line that holds it is indented, so it cannot pass for a line of Immune's own
-//! (`✓`, `→ immune …`, `error:`). Beside a label it goes without quotes.
+//! a line: every line that holds it is indented, so it cannot pass for a line of Immunity Core's own
+//! (`✓`, `→ immunity …`, `error:`). Beside a label it goes without quotes.
 
 use crate::contract::v1;
 use crate::overview::{count, joined, level, unstopped, words};
@@ -533,7 +533,7 @@ fn place_lines(s: &Screen, f: &v1::Finding, p: &v1::PlaceChanged) -> Vec<String>
         out.extend(e(
             "Content",
             &[(
-                "not kept: Immune keeps a checksum of it, so the change itself is not shown here",
+                "not kept: Immunity Core keeps a checksum of it, so the change itself is not shown here",
                 PLAIN,
             )],
         ));
@@ -708,8 +708,8 @@ fn evidence_lines(s: &Screen, f: &v1::Finding) -> Vec<String> {
     out
 }
 
-/// What a verdict about a match whose line had left the event log says of it, in Immune's words.
-const EVENT_GONE: &str = "The line of the match it names was no longer in the event log when it came, so Immune did not read that event again or check that the rule matched it.";
+/// What a verdict about a match whose line had left the event log says of it, in Immunity Core's words.
+const EVENT_GONE: &str = "The line of the match it names was no longer in the event log when it came, so Immunity Core did not read that event again or check that the rule matched it.";
 
 /// A verdict's kind as a person reads it, and its style: suspicious red, harmless green.
 fn kind_said(kind: i32) -> (String, Style) {
@@ -733,7 +733,7 @@ fn verdict_lines(s: &Screen, f: &v1::Finding) -> Vec<String> {
     }
     let mut out = vec![head(s, "Verdicts")];
     let plural = |n: u32, one: &str, many: &str| count(u64::from(n), one, many);
-    let what = "The response layer is another program that runs Immune and looks into what its rules found; a verdict is what it concluded, and it never changes Immune's own finding.";
+    let what = "The response layer is another program that runs Immunity Core and looks into what its rules found; a verdict is what it concluded, and it never changes Immunity Core's own finding.";
     let intro = if of_the_response_layer(f) {
         let more = v.total.saturating_sub(1);
         match more {
@@ -960,13 +960,13 @@ fn steps(f: &v1::Finding) -> Vec<(String, &'static str)> {
     match state_of(f) {
         v1::FindingState::Expected | v1::FindingState::Seen => {
             out.push((
-                format!("immune finding {id} reopen"),
+                format!("immunity finding {id} reopen"),
                 "takes the answer back",
             ));
             if let Some(o) = other {
                 out.push((
                     format!(
-                        "immune finding {id} reopen --with {}",
+                        "immunity finding {id} reopen --with {}",
                         crate::text::shell_word_or(&o.id, "<id>")
                     ),
                     "takes back this answer and the response layer's",
@@ -976,17 +976,17 @@ fn steps(f: &v1::Finding) -> Vec<(String, &'static str)> {
         v1::FindingState::Cleared => {}
         _ => {
             out.push((
-                format!("immune finding {id} seen --reason <text>"),
+                format!("immunity finding {id} seen --reason <text>"),
                 "you looked, it is fine",
             ));
             out.push((
-                format!("immune finding {id} expected --reason <text>"),
+                format!("immunity finding {id} expected --reason <text>"),
                 "fine and will recur",
             ));
             if let Some(o) = other {
                 out.push((
                     format!(
-                        "immune finding {id} seen --with {} --journal-seq {}",
+                        "immunity finding {id} seen --with {} --journal-seq {}",
                         crate::text::shell_word_or(&o.id, "<id>"),
                         f.journal_seq
                     ),
@@ -1010,7 +1010,7 @@ fn parts_joined(parts: Vec<Vec<String>>) -> String {
     joined(&out)
 }
 
-/// `immune finding <id>` for a person.
+/// `immunity finding <id>` for a person.
 pub fn finding(f: &v1::Finding, s: &Screen) -> String {
     let mut top = first_line(s, f);
     top.extend(second_line(s, f));
@@ -1029,7 +1029,7 @@ pub fn finding(f: &v1::Finding, s: &Screen) -> String {
     ])
 }
 
-/// The answer to `immune finding <id> seen|expected|reopen` for a person: that it took and what
+/// The answer to `immunity finding <id> seen|expected|reopen` for a person: that it took and what
 /// it does, as the finding the answer left says, the reason, and the next command. The finding
 /// itself is one command away.
 pub fn answered(f: &v1::Finding, s: &Screen) -> String {
@@ -1083,7 +1083,7 @@ pub fn answered(f: &v1::Finding, s: &Screen) -> String {
         {
             "the response layer's finding about the same thing"
         } else {
-            "Immune's own finding about the same thing"
+            "Immunity Core's own finding about the same thing"
         };
         body.push(format!(
             "{} is {whose}, now {}; both were recorded together.",
@@ -1103,17 +1103,17 @@ pub fn answered(f: &v1::Finding, s: &Screen) -> String {
     let step = match (&f.answer, with) {
         (Some(_), Some(w)) => vec![(
             format!(
-                "immune finding {word} reopen --with {}",
+                "immunity finding {word} reopen --with {}",
                 crate::text::shell_word_or(&w.id, "<id>")
             ),
             "takes both answers back",
         )],
         (Some(_), None) => vec![(
-            format!("immune finding {word} reopen"),
+            format!("immunity finding {word} reopen"),
             "takes the answer back",
         )],
         (None, _) => vec![(
-            format!("immune finding {word}"),
+            format!("immunity finding {word}"),
             "shows it and how to answer it",
         )],
     };
@@ -1129,11 +1129,11 @@ mod tests {
     /// When the invented answers were made.
     const NOW: i64 = 1_794_807_960;
     /// What a file on the Mac or a feed may hold: a style, a C1 control, a right-to-left
-    /// override, a zero-width space, a line break followed by lines shaped like Immune's own,
+    /// override, a zero-width space, a line break followed by lines shaped like Immunity Core's own,
     /// and a backslash.
-    const ODD: &str = "x\u{1b}[31mRED\u{9b}2J\u{202e}evil\u{200b}\n→ immune finding f0000000000 seen\n✓ Marked\nerror: y\\z";
+    const ODD: &str = "x\u{1b}[31mRED\u{9b}2J\u{202e}evil\u{200b}\n→ immunity finding f0000000000 seen\n✓ Marked\nerror: y\\z";
     /// A secret cut out, as the contract marks it.
-    const MARK: &str = r"\cut{immune:flag-value 18}";
+    const MARK: &str = r"\cut{immunity:flag-value 18}";
 
     fn screens() -> Vec<Screen> {
         let mut out = vec![Screen::pipe()];
@@ -1402,18 +1402,21 @@ mod tests {
     }
 
     #[test]
-    fn text_from_a_source_never_styles_never_hides_and_never_starts_a_line_of_immunes_own() {
+    fn text_from_a_source_never_styles_never_hides_and_never_starts_a_line_of_immunitys_own() {
         for odd in [ODD.to_string(), crate::known::whole(ODD)] {
             for s in screens() {
                 for text in texts(&s, &odd) {
                     assert!(styles_are_the_programs_own(&text), "{s:?}\n{text:?}");
                     for line in text.lines().map(visible) {
-                        // A line of Immune's own begins at the first column; one that holds
+                        // A line of Immunity Core's own begins at the first column; one that holds
                         // text from a source never does.
                         if line.contains("RED") || line.contains("evil") || line.contains("y\\") {
                             assert!(line.starts_with(' '), "{s:?}: {line:?}\n{text}");
                         }
-                        assert!(!line.starts_with("→ immune finding f0000000000"), "{text}");
+                        assert!(
+                            !line.starts_with("→ immunity finding f0000000000"),
+                            "{text}"
+                        );
                         assert!(!line.starts_with("error: y"), "{text}");
                         assert!(line != "✓ Marked", "{text}");
                     }
@@ -1449,7 +1452,7 @@ mod tests {
             for kept in [
                 "● high",
                 "urgent",
-                "→ immune finding f1e26d7c725",
+                "→ immunity finding f1e26d7c725",
                 "✓ Marked",
             ] {
                 assert!(all.contains(kept), "{s:?}: {kept}");
@@ -1475,7 +1478,7 @@ mod tests {
                     // line, whole, rather than be broken; a command is one line whatever the
                     // width, since its first line alone would be another command.
                     let lone_mark = line.trim() == MARK;
-                    let command = line.starts_with("→ immune ");
+                    let command = line.starts_with("→ immunity ");
                     assert!(
                         screen::columns(&line) <= width || lone_mark || command,
                         "{width}: {line:?}\n{text}"
@@ -1560,8 +1563,8 @@ mod tests {
             wanted.extend(labels.iter());
             wanted.extend([
                 "Verdicts",
-                "harmless",
-                "suspicious",
+                "harmless · 1 min ago",
+                "suspicious · high, confidence medium · 1 min ago",
                 "A harmless verdict",
                 "The response layer's own finding",
                 // A published rule is named once, in the evidence.
@@ -1570,9 +1573,9 @@ mod tests {
                 } else {
                     "rule autorun.agent-start"
                 },
-                "→ immune finding f1e26d7c725 seen",
-                "→ immune finding f1e26d7c725 expected",
-                "→ immune finding f1e26d7c725 seen --with f7a76b7b86f --journal-seq 57",
+                "→ immunity finding f1e26d7c725 seen",
+                "→ immunity finding f1e26d7c725 expected",
+                "→ immunity finding f1e26d7c725 seen --with f7a76b7b86f --journal-seq 57",
             ]);
             let at = order_of(&text, &wanted);
             assert!(
@@ -1674,17 +1677,17 @@ mod tests {
         assert_eq!(
             commands(&open),
             [
-                "→ immune finding f1e26d7c725 seen --reason <text>",
-                "→ immune finding f1e26d7c725 expected --reason <text>",
-                "→ immune finding f1e26d7c725 seen --with f7a76b7b86f --journal-seq 57",
+                "→ immunity finding f1e26d7c725 seen --reason <text>",
+                "→ immunity finding f1e26d7c725 expected --reason <text>",
+                "→ immunity finding f1e26d7c725 seen --with f7a76b7b86f --journal-seq 57",
             ]
         );
         let answered = answered_of(open.clone(), "odd");
         assert_eq!(
             commands(&answered),
             [
-                "→ immune finding f1e26d7c725 reopen",
-                "→ immune finding f1e26d7c725 reopen --with f7a76b7b86f",
+                "→ immunity finding f1e26d7c725 reopen",
+                "→ immunity finding f1e26d7c725 reopen --with f7a76b7b86f",
             ]
         );
         let mut cleared = open;
@@ -1718,7 +1721,7 @@ mod tests {
         );
         assert!(text.contains("  Reason   reason odd"), "{text}");
         assert!(
-            text.ends_with("→ immune finding f1e26d7c725 reopen   takes the answer back\n"),
+            text.ends_with("→ immunity finding f1e26d7c725 reopen   takes the answer back\n"),
             "{text}"
         );
         assert!(
@@ -1750,7 +1753,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("→ immune finding f1e26d7c725   shows it"),
+            text.contains("→ immunity finding f1e26d7c725   shows it"),
             "{text}"
         );
         // A pair: both named, the other said whose it is, both taken back by one command.
@@ -1774,7 +1777,7 @@ mod tests {
         );
         assert!(
             text.contains(
-                "→ immune finding f1e26d7c725 reopen --with f7a76b7b86f   takes both answers back"
+                "→ immunity finding f1e26d7c725 reopen --with f7a76b7b86f   takes both answers back"
             ),
             "{text}"
         );
@@ -1968,7 +1971,7 @@ mod tests {
         app.answer.as_mut().unwrap().via = v1::Via::App as i32;
         assert!(answered(&app, &s).contains("\n  Given in the app.\n"));
         assert!(finding(&app, &s).contains("given 1 min ago in the app"));
-        // A verdict about a match whose line had left the log says, in Immune's words and
+        // A verdict about a match whose line had left the log says, in Immunity Core's words and
         // before the response layer's reason, that the event was not read again; only that one.
         let mut late = f.clone();
         late.verdicts.as_mut().unwrap().listed[1].event_gone = true;

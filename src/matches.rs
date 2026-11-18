@@ -1,6 +1,6 @@
-//! `immune matches`: every match of the published rules over the collector's log, of every
+//! `immunity matches`: every match of the published rules over the collector's log, of every
 //! level, each with the event it matched, printed as the contract's `Matches` message
-//! (`contract/immune/v1/matches.proto`). The response layer reads it to look into what the core
+//! (`contract/immunity/v1/matches.proto`). The response layer reads it to look into what the core
 //! is not sure of.
 //!
 //! Nothing is written to the store. The queue is the day's log read again from the caller's
@@ -9,7 +9,7 @@
 //! matched. The place is the one the core's own reading keeps for itself, per log file its
 //! identity and how far it was read, printed as an opaque token (`events::Place`). The store is
 //! only read: whether the core's own reading has read a line yet, which finding its match went
-//! to, and the collector's state as `immune status` serves it.
+//! to, and the collector's state as `immunity status` serves it.
 //!
 //! No false calm. An answer with no matches says how many lines were read and evaluated, how
 //! many could not be, what eslogger's numbering says was lost, whether lines were deleted
@@ -41,12 +41,12 @@ const FORMAT: u32 = 1;
 /// small too.
 pub const LIMIT: usize = 1000;
 
-const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed; for a place this version cannot read, such as one an earlier version printed, run immune matches without --after to start from the oldest line kept";
+const AFTER: &str = "--after takes the place an answer of immunity matches printed in continue_after, whole and as printed; for a place this version cannot read, such as one an earlier version printed, run immunity matches without --after to start from the oldest line kept";
 
 /// Why rules for file events judge nothing while the collector is not installed.
 const NOT_INSTALLED: &str = "the event level is not installed";
 
-/// `immune matches`.
+/// `immunity matches`.
 pub struct MatchesArgs {
     pub store: PathBuf,
     pub form: answer::Form,
@@ -101,7 +101,7 @@ enum Failure {
     Log(String),
 }
 
-/// Answers `immune matches` in the form asked, or fails as every command of the contract does,
+/// Answers `immunity matches` in the form asked, or fails as every command of the contract does,
 /// with the exit codes the report commands use.
 pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
     let (code, message, why, exit) = match read(args, crate::now_secs()) {
@@ -123,7 +123,7 @@ pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
             1,
         ),
     };
-    let error = answer::error(code, message, "immune matches --json", &why);
+    let error = answer::error(code, message, "immunity matches --json", &why);
     answer::fail("matches", args.form, error, exit)
 }
 
@@ -278,7 +278,7 @@ fn raised(
     })
 }
 
-/// Every finding in the store, by id, as `immune project` and the others name one.
+/// Every finding in the store, by id, as `immunity project` and the others name one.
 fn finding_refs(conn: &Connection, now: i64) -> rusqlite::Result<BTreeMap<String, v1::FindingRef>> {
     let found = findings::all(conn, now)?;
     Ok(found
@@ -591,7 +591,7 @@ mod tests {
     use super::*;
     use crate::events::{NEVER_FILLED, NO_LONGER, NOT_KEPT, NOT_YET_KNOWN};
 
-    /// A reading of the log under `root` by the core, as `immune run` makes one, into `store`.
+    /// A reading of the log under `root` by the core, as `immunity run` makes one, into `store`.
     fn core_reads(store: &std::path::Path, root: &std::path::Path) {
         let mut conn = crate::store::open_or_make(store).unwrap();
         let tx = conn.transaction().unwrap();
@@ -675,10 +675,10 @@ mod tests {
                 (vec![], vec!["identity"], 0),
             ),
         ] {
-            let dir = crate::common::Scratch::at(
-                std::env::temp_dir()
-                    .join(format!("immune-matches-page-{tag}-{}", std::process::id())),
-            );
+            let dir = crate::common::Scratch::at(std::env::temp_dir().join(format!(
+                "immunity-matches-page-{tag}-{}",
+                std::process::id()
+            )));
             let root = dir.join("root");
             std::fs::create_dir_all(root.join(events::LOG)).unwrap();
             let plist = root.join(events::PLIST);
@@ -738,7 +738,7 @@ mod tests {
     /// A system root with the collector installed and established to record file events.
     fn installed_root(tag: &str) -> (crate::common::Scratch, std::path::PathBuf) {
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-matches-{tag}-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-matches-{tag}-{}", std::process::id())),
         );
         let root = dir.join("root");
         std::fs::create_dir_all(root.join(events::LOG)).unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
         // collector's carries it empty, and only a line that gives it a value lets the rule
         // judge; each is said in the collector's lists.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-matches-arrival-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-matches-arrival-{}", std::process::id())),
         );
         let root = dir.join("root");
         std::fs::create_dir_all(root.join(events::LOG)).unwrap();

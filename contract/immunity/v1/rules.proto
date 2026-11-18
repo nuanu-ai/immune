@@ -1,5 +1,5 @@
-// The published rules this build ships and the core's own: the answers to `immune rules` and
-// `immune rules --over-log`. Version 1 of the contract between the core and a program that runs
+// The published rules this build ships and the core's own: the answers to `immunity rules` and
+// `immunity rules --over-log`. Version 1 of the contract between the core and a program that runs
 // it. How a message is printed and read, and the conventions for text, references, times and
 // changes, are in `common.proto`; a rule is `Rule` in `event.proto`.
 //
@@ -14,14 +14,14 @@
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/common.proto";
-import "immune/v1/event.proto";
-import "immune/v1/matches.proto";
-import "immune/v1/status.proto";
+import "immunity/v1/common.proto";
+import "immunity/v1/event.proto";
+import "immunity/v1/matches.proto";
+import "immunity/v1/status.proto";
 
-// The answer to `immune rules`.
+// The answer to `immunity rules`.
 message Rules {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
   reserved 1000 to 1099;
@@ -241,7 +241,7 @@ message CauseWords {
   string advice = 6;
 }
 
-// The answer to `immune rules --over-log`: the rules evaluated over the event log on disk now,
+// The answer to `immunity rules --over-log`: the rules evaluated over the event log on disk now,
 // from the start of every file, the store neither read nor written. Per rule that matched, its
 // level and how many events matched; never a command line, a path or an argument.
 message Replay {

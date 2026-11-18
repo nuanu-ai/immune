@@ -7,11 +7,11 @@
     "reason_cuts": [
       {
         "argument": 0,
-        "kind": "immune:flag-value",
+        "kind": "immunity:flag-value",
         "length": 18
       }
     ],
-    "reason_text": "invented: my own tool, started as tool --password=\\cut{immune:flag-value 18}",
+    "reason_text": "invented: my own tool, started as tool --password=\\cut{immunity:flag-value 18}",
     "until_at": 1797406080,
     "via": "agent"
   },

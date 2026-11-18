@@ -10,7 +10,7 @@
 // for: binary protobuf with `--proto`, the same message as one line of JSON made by the
 // generated types with `--json`, and with neither, text for a person rendered from the same
 // message. A program names its form on every call. The binary form is standard protobuf, and a
-// program in another language reads that. The JSON is Immune's own and is not protobuf's JSON
+// program in another language reads that. The JSON is Immunity Core's own and is not protobuf's JSON
 // mapping. Field names in JSON are the names here, in snake_case. An enum value is named here
 // with its enum's name as a prefix, as protobuf's style asks (`CAUSE_NO_READER`); in JSON it
 // prints without the prefix and in lower case (`no_reader`), which is the store's own word. A
@@ -55,12 +55,12 @@
 //
 // Changing it. Within version 1 a field, a message or an enum value is only added, with a new
 // number. A field is retired by moving its number and name to `reserved`, never reused.
-// Renaming, removing or changing what a field means makes version 2: a new package `immune.v2`
+// Renaming, removing or changing what a field means makes version 2: a new package `immunity.v2`
 // and `format` 2.
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
 // A finding, by reference.
 message FindingRef {

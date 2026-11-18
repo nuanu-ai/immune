@@ -1646,7 +1646,7 @@ pub const EXAMPLES: usize = 3;
 /// a person needs by name to know what is left out.
 const EVERY_EXAMPLE: [&str; 1] = [OTHER_MANAGERS.id];
 
-/// Every cause with its words, as the catalogue of `immune rules` gives them. `{n}` stands for
+/// Every cause with its words, as the catalogue of `immunity rules` gives them. `{n}` stands for
 /// the count, `{what}` for what it is, as a list, `{date}` for a time, `{reasons}` for why and
 /// `{projects}` for the projects it speaks for.
 pub fn causes() -> Vec<crate::contract::v1::CauseWords> {

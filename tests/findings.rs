@@ -1,4 +1,4 @@
-//! Promises of `immune findings` and `immune finding <id>` as commands of the contract: the
+//! Promises of `immunity findings` and `immunity finding <id>` as commands of the contract: the
 //! core's own findings, whole, as the response layer reads them to give a verdict, and the id of
 //! the store every message of the contract carries. Each test runs the real binary over an
 //! invented home folder and system root, so nothing of the Mac it runs on is read and the
@@ -11,7 +11,7 @@
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "immune-findings-{tag}-{}-{nanos}",
+            "immunity-findings-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home", "system", "empty"] {
@@ -56,9 +56,9 @@ impl Estate {
         std::fs::write(path, text).unwrap();
     }
 
-    /// `immune <args> --store <this store>`, as it ran.
-    fn immune(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_immune"))
+    /// `immunity <args> --store <this store>`, as it ran.
+    fn immunity(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -72,7 +72,7 @@ impl Estate {
     /// A full run, with every outside source pointed at nothing.
     fn run(&self) {
         let (empty, none) = (self.0.join("empty"), self.0.join("none"));
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -109,7 +109,7 @@ impl Estate {
     fn json(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
-        let out = self.immune(&args);
+        let out = self.immunity(&args);
         assert!(
             out.status.success(),
             "{}",
@@ -123,9 +123,9 @@ impl Estate {
         self.json(&["finding", id])
     }
 
-    /// The result of `immune status --json`.
+    /// The result of `immunity status --json`.
     fn status(&self) -> Value {
-        let out = self.immune(&["status", "--json"]);
+        let out = self.immunity(&["status", "--json"]);
         serde_json::from_slice::<Value>(&out.stdout)
             .unwrap()
             .clone()
@@ -324,8 +324,11 @@ fn software_changed_in_place_says_what_its_seal_became_and_what_it_was() {
         became.as_str().unwrap().starts_with("does not verify"),
         "{became}"
     );
-    let text =
-        String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
+    let text = String::from_utf8(
+        e.immunity(&["finding", item["id"].as_str().unwrap()])
+            .stdout,
+    )
+    .unwrap();
     assert!(
         text.lines()
             .any(|l| l.trim_start().starts_with("Became       does not verify")),
@@ -378,8 +381,11 @@ fn an_indicator_match_names_the_indicators_it_matched_as_the_list_gives_them() {
         whole["evidence"]["indicator_matched"]["indicators_text"],
         item["value_text"]
     );
-    let text =
-        String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
+    let text = String::from_utf8(
+        e.immunity(&["finding", item["id"].as_str().unwrap()])
+            .stdout,
+    )
+    .unwrap();
     assert!(
         text.contains(&format!(
             "    Matched      [file:hashes.'SHA-256' = '{hash}']\n"
@@ -395,7 +401,7 @@ fn a_finding_the_person_answered_says_so_with_who_why_and_until_when_and_reopene
     let e = a_task_run_on_opening("answered");
     let id = id_of(&e, "autorun.folder-open");
     let read = e.finding(&id)["journal_seq"].to_string();
-    let out = e.immune(&[
+    let out = e.immunity(&[
         "finding",
         &id,
         "expected",
@@ -453,13 +459,13 @@ fn a_finding_the_person_answered_says_so_with_who_why_and_until_when_and_reopene
     }
 
     // Seen from the command line, with no reason: none is given, and no end.
-    assert!(e.immune(&["finding", &id, "reopen"]).status.success());
+    assert!(e.immunity(&["finding", &id, "reopen"]).status.success());
     let reopened = e.finding(&id);
     assert_eq!(
         (&reopened["finding"]["state"], &reopened["answer"]),
         (&json!("open"), &Value::Null)
     );
-    assert!(e.immune(&["finding", &id, "seen"]).status.success());
+    assert!(e.immunity(&["finding", &id, "seen"]).status.success());
     let seen = e.finding(&id)["answer"].clone();
     assert_eq!(
         (
@@ -496,7 +502,7 @@ fn the_list_carries_every_finding_in_every_state_whatever_all_says_and_a_person_
 {
     let e = a_task_run_on_opening("states");
     let id = id_of(&e, "autorun.folder-open");
-    assert!(e.immune(&["finding", &id, "seen"]).status.success());
+    assert!(e.immunity(&["finding", &id, "seen"]).status.success());
     for args in [&["findings"][..], &["findings", "--all"][..]] {
         let listed = e.json(args);
         let states: Vec<&Value> = listed["findings"]
@@ -507,10 +513,10 @@ fn the_list_carries_every_finding_in_every_state_whatever_all_says_and_a_person_
             .collect();
         assert_eq!(states, [&json!("seen")], "{args:?}");
     }
-    let text = String::from_utf8(e.immune(&["findings"]).stdout).unwrap();
+    let text = String::from_utf8(e.immunity(&["findings"]).stdout).unwrap();
     assert!(text.starts_with("✓ No open findings"), "{text}");
     assert!(!text.contains(&id), "{text}");
-    let text = String::from_utf8(e.immune(&["findings", "--all"]).stdout).unwrap();
+    let text = String::from_utf8(e.immunity(&["findings", "--all"]).stdout).unwrap();
     assert!(
         text.starts_with("✓ 1 finding, 0 open, none urgent") && text.contains(&id),
         "{text}"
@@ -523,7 +529,7 @@ fn the_binary_and_the_json_forms_are_one_message_for_the_list_and_for_one_findin
     let id = id_of(&e, "autorun.folder-open");
     // The two are asked apart, so the second in which each was answered may differ.
     let mut json = e.json(&["findings"]);
-    let binary = e.immune(&["findings", "--proto"]).stdout;
+    let binary = e.immunity(&["findings", "--proto"]).stdout;
     let mut decoded = v1::Findings::decode(binary.as_slice()).unwrap();
     decoded.answered_at = 0;
     json["answered_at"] = json!(0);
@@ -539,7 +545,7 @@ fn the_binary_and_the_json_forms_are_one_message_for_the_list_and_for_one_findin
     );
 
     let mut json = e.json(&["finding", &id]);
-    let binary = e.immune(&["finding", &id, "--proto"]).stdout;
+    let binary = e.immunity(&["finding", &id, "--proto"]).stdout;
     let mut decoded = v1::Finding::decode(binary.as_slice()).unwrap();
     decoded.answered_at = 0;
     json["answered_at"] = json!(0);
@@ -558,13 +564,13 @@ fn the_binary_and_the_json_forms_are_one_message_for_the_list_and_for_one_findin
 fn a_failure_never_parses_as_an_answer() {
     // A reader checks the exit code first; one that parses all the same reads format 0.
     let e = a_task_run_on_opening("failure");
-    let unknown = e.immune(&["finding", "f0000000000", "--json"]);
+    let unknown = e.immunity(&["finding", "f0000000000", "--json"]);
     assert_eq!(unknown.status.code(), Some(2));
     let v: Value = serde_json::from_slice(&unknown.stdout).unwrap();
     assert_eq!(v["errors"][0]["code"], "unknown_finding");
     let parsed: v1::Finding = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(parsed.format, 0);
-    let text = e.immune(&["finding", "f0000000000"]);
+    let text = e.immunity(&["finding", "f0000000000"]);
     assert_eq!(text.status.code(), Some(2));
     assert!(text.stdout.is_empty());
 
@@ -574,7 +580,7 @@ fn a_failure_never_parses_as_an_answer() {
         &["finding", "--json"][..],
         &["findings", "--json", "--proto"][..],
     ] {
-        let out = e.immune(args);
+        let out = e.immunity(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert!(v.get("format").is_none(), "{v}");
@@ -583,14 +589,14 @@ fn a_failure_never_parses_as_an_answer() {
         assert_eq!(parsed.format, 0);
     }
     // An answer fails with the same message.
-    let out = e.immune(&["finding", "f0000000000", "seen", "--json"]);
+    let out = e.immunity(&["finding", "f0000000000", "seen", "--json"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         (v.get("format"), &v["errors"][0]["code"]),
         (None, &json!("unknown_finding"))
     );
     let id = id_of(&e, "autorun.folder-open");
-    let out = e.immune(&["finding", &id, "seen", "--via", "agent", "--json"]);
+    let out = e.immunity(&["finding", &id, "seen", "--via", "agent", "--json"]);
     assert_eq!(out.status.code(), Some(2));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
@@ -598,7 +604,7 @@ fn a_failure_never_parses_as_an_answer() {
         (None, &json!("usage"))
     );
     // An answer asked in binary answers with the finding as it left it, in binary.
-    let out = e.immune(&["finding", &id, "seen", "--proto"]);
+    let out = e.immunity(&["finding", &id, "seen", "--proto"]);
     assert_eq!(out.status.code(), Some(0));
     let answered = v1::Finding::decode(out.stdout.as_slice()).unwrap();
     assert_eq!(answered.format, 1);
@@ -607,7 +613,10 @@ fn a_failure_never_parses_as_an_answer() {
         Some(v1::FindingState::Seen as i32)
     );
     assert_eq!(e.finding(&id)["finding"]["state"], "seen");
-    assert_eq!(e.immune(&["finding", &id, "reopen"]).status.code(), Some(0));
+    assert_eq!(
+        e.immunity(&["finding", &id, "reopen"]).status.code(),
+        Some(0)
+    );
     assert_eq!(e.finding(&id)["finding"]["state"], "open");
 
     // No store: a failure with exit code 3, never an empty list.
@@ -616,7 +625,7 @@ fn a_failure_never_parses_as_an_answer() {
         &["findings", "--json"][..],
         &["finding", "f0000000000", "--json"][..],
     ] {
-        let out = none.immune(args);
+        let out = none.immunity(args);
         assert_eq!(out.status.code(), Some(3), "{args:?}");
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(v["errors"][0]["code"], "store_unreadable");
@@ -634,7 +643,7 @@ fn a_store_without_the_table_of_findings_fails_as_damaged_rather_than_reading_as
         .unwrap()
         .execute_batch("DROP TABLE finding_basis; DROP TABLE rule_line; DROP TABLE rule_finding; DROP TABLE rule_evidence; DROP TABLE rule_file_evidence; DROP TABLE finding;")
         .unwrap();
-    let out = e.immune(&["findings", "--json"]);
+    let out = e.immunity(&["findings", "--json"]);
     assert_eq!(out.status.code(), Some(3));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(
@@ -676,7 +685,7 @@ fn every_message_of_one_store_carries_its_id_another_store_has_another_and_a_run
     );
     assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
     // The binary form carries the same.
-    let binary = e.immune(&["findings", "--proto"]).stdout;
+    let binary = e.immunity(&["findings", "--proto"]).stdout;
     assert_eq!(
         v1::Findings::decode(binary.as_slice()).unwrap().store_id,
         Some(first.clone())
@@ -706,7 +715,7 @@ fn every_command_of_the_contract_answers_in_binary_with_proto_and_refuses_two_fo
     ] {
         let mut proto = args.clone();
         proto.push("--proto");
-        let named = e.immune(&proto);
+        let named = e.immunity(&proto);
         assert!(named.status.success(), "{args:?}");
         let mut json = e.json(&args);
         // The time it was answered may differ by a second; the rest is the same message.
@@ -720,7 +729,7 @@ fn every_command_of_the_contract_answers_in_binary_with_proto_and_refuses_two_fo
         assert_eq!(decoded, json, "{args:?}");
         let mut both = args.clone();
         both.extend(["--json", "--proto"]);
-        let out = e.immune(&both);
+        let out = e.immunity(&both);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert!(v.get("format").is_none(), "{v}");

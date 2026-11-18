@@ -1,12 +1,12 @@
-//! Promises of `immune program` and `immune machine`, the questions of the contract beside
-//! `immune project`: what the store knows of one program installed on this Mac, and of one
+//! Promises of `immunity program` and `immunity machine`, the questions of the contract beside
+//! `immunity project`: what the store knows of one program installed on this Mac, and of one
 //! machine, each as the same `Known` message. Each test runs the real binary over an invented
 //! home folder, an invented system root and invented server files, so no test reads anything of
 //! the Mac it runs on or asks the network.
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "immune-questions-{tag}-{}-{nanos}",
+            "immunity-questions-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home", "system", "servers"] {
@@ -108,17 +108,17 @@ impl Estate {
     }
 
     /// The binary with this home folder as the home and the estate as the working folder.
-    fn immune(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
+    fn immunity(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immunity"));
         cmd.env("HOME", self.home()).current_dir(&self.0);
         cmd
     }
 
-    /// `immune run` for the machine `mac` on this estate alone.
+    /// `immunity run` for the machine `mac` on this estate alone.
     fn run(&self) {
         let at = |name: &str| self.0.join(name);
         let out = self
-            .immune()
+            .immunity()
             .args(["run", "--machine-name", "mac", "--store"])
             .arg(self.store())
             .arg("--system-root")
@@ -144,9 +144,9 @@ impl Estate {
         );
     }
 
-    /// `immune <question> [<what>]` on this store, with these arguments after.
+    /// `immunity <question> [<what>]` on this store, with these arguments after.
     fn ask(&self, question: &str, what: Option<&str>, extra: &[&str]) -> Output {
-        self.immune()
+        self.immunity()
             .arg(question)
             .args(what)
             .arg("--store")
@@ -279,8 +279,8 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
         finders,
         [
             ("brew", BREW),
-            ("immune", PLACES),
-            ("immune", LIMIT),
+            ("immunity", PLACES),
+            ("immunity", LIMIT),
             ("integrity", KEGS),
             ("integrity", BUNDLES),
             ("integrity", NPM),
@@ -546,7 +546,7 @@ const PLACES: &str = "places the readings that find programs look in";
 fn store_read(k: &v1::Known) -> Vec<v1::Coverage> {
     k.coverage
         .iter()
-        .filter(|c| !(c.reader == "immune" && c.kind == PLACES))
+        .filter(|c| !(c.reader == "immunity" && c.kind == PLACES))
         .cloned()
         .collect()
 }
@@ -577,7 +577,7 @@ fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read
         "invented\n",
     );
     e.put(
-        "home/Library/Application Support/ai.nuanu.immune/bin/immune",
+        "home/Library/Application Support/ai.nuanu.immunity.core/bin/immunity",
         "invented\n",
     );
     e.run();
@@ -585,7 +585,7 @@ fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read
         "~/Library/Application Support/Evil/payload.js",
         "~/Library/Application Support/Evil",
         "~/Library/Application Support/Tools/Helper.app",
-        "~/Library/Application Support/ai.nuanu.immune/bin/immune",
+        "~/Library/Application Support/ai.nuanu.immunity.core/bin/immunity",
         "file:machine:mac/Library/Application Support/Evil",
         // `..` in an id is resolved before the id is matched: this is not Editor's.
         "file:machine:mac/Library/Application Support/Editor/../Evil/payload.js",
@@ -1742,7 +1742,7 @@ fn a_failure_to_answer_a_program_or_a_machine_is_not_a_message_of_the_contract()
 fn unread(k: &v1::Known) -> Option<&v1::Coverage> {
     k.coverage
         .iter()
-        .find(|c| c.reader == "immune" && c.kind != LIMIT)
+        .find(|c| c.reader == "immunity" && c.kind != LIMIT)
 }
 
 /// The reading made by rule that every answer `unknown` carries: other package managers are
@@ -1908,7 +1908,7 @@ fn a_machine_the_owner_set_aside_says_it_is_no_longer_checked() {
     assert!(all_full(&e.machine(Some("web"))));
     let owner = |words: &[&str]| -> Value {
         let out = e
-            .immune()
+            .immunity()
             .arg("owner")
             .args(words)
             .args(["--json", "--store"])
@@ -2005,7 +2005,7 @@ fn a_program_not_known_carries_the_limit_that_other_package_managers_are_not_rea
         .coverage
         .iter()
         .find(|c| {
-            c.reader == "immune"
+            c.reader == "immunity"
                 && c.kind == "software of package managers this version does not look for"
         })
         .unwrap_or_else(|| panic!("{:?}", readings(&unknown)));
@@ -2104,7 +2104,7 @@ fn every_command_that_takes_a_path_answers_for_one_unit_however_the_place_is_spe
             assert_eq!(k.presence(), first.presence(), "{question} {what:?}");
             assert_eq!(finding_ids(&k), finding_ids(&first), "{question} {what:?}");
             let said = k.coverage.iter().any(|c| {
-                c.reader == "immune"
+                c.reader == "immunity"
                     && c.reason_text
                         .as_deref()
                         .is_some_and(|r| r.starts_with("the path is spelled otherwise"))

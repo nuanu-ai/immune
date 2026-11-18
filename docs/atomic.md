@@ -1,12 +1,12 @@
 # Attack simulations
 
-How much of a simulated attack Immune notices, measured run by run. The tests are [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team)'s for macOS, with a few controls of Immune's own, run inside a disposable virtual machine with Immune installed. Each run is one table in [`docs/atomic/`](atomic/), and this page keeps the totals, so a change in the collector or in the rules shows as a change in the numbers.
+How much of a simulated attack Immunity Core notices, measured run by run. The tests are [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team)'s for macOS, with a few controls of Immunity Core's own, run inside a disposable virtual machine with Immunity Core installed. Each run is one table in [`docs/atomic/`](atomic/), and this page keeps the totals, so a change in the collector or in the rules shows as a change in the numbers.
 
 The tests are not part of `./check`, and nobody should run them on a Mac they use. A table holds no command line: a test is named by its ATT&CK technique, its number and its identifier in Atomic Red Team, where the test itself is published.
 
 ## How to read a table
 
-One row is one check. `status` is what happened to the test: `executed` when its effect was confirmed, `failed`, `blocked` or `unavailable` when macOS or the image did not let it happen. `outcome` is what Immune made of it:
+One row is one check. `status` is what happened to the test: `executed` when its effect was confirmed, `failed`, `blocked` or `unavailable` when macOS or the image did not let it happen. `outcome` is what Immunity Core made of it:
 
 | Outcome | Meaning |
 |---|---|
@@ -36,18 +36,18 @@ One row is one check. `status` is what happened to the test: `executed` when its
 
 ## What the first run showed
 
-- Of the 9 findings, 7 came from Immune's own readers: a launch agent or daemon three times, a shell profile, the ssh access file, a signed app changed in place and an editor task set to run when a folder is opened. Two came from published rules marked high, and one of those matched a helper of the test bench and not the technique.
+- Of the 9 findings, 7 came from Immunity Core's own readers: a launch agent or daemon three times, a shell profile, the ssh access file, a signed app changed in place and an editor task set to run when a folder is opened. Two came from published rules marked high, and one of those matched a helper of the test bench and not the technique.
 - 27 confirmed checks were matched on the technique's own step and only below high: the 26 marked `technique` among `below_high`, and the one whose finding came from a helper. For 20 of them neither set has a rule marked high, so more rules would not turn them into findings. For 5 Elastic has a high rule that was not taken, because the collector lacks a field it reads.
 - The build held SigmaHQ's rules alone. Elastic's 66 were shipped after it and were not evaluated during the run. Going by the rule files, the remaining 2 of the 27 have a high rule among them.
-- The three checks that restarted or shut the machine down are not in the log: the collector went down with it. Immune reported the gap.
-- Places where a test left persistence and Immune raised nothing: StartupItems, the login window's preferences and the sudoers file are not watched places, and a launchd job with no file on disk is not read.
+- The three checks that restarted or shut the machine down are not in the log: the collector went down with it. Immunity Core reported the gap.
+- Places where a test left persistence and Immunity Core raised nothing: StartupItems, the login window's preferences and the sudoers file are not watched places, and a launchd job with no file on disk is not read.
 - Not recorded by the collector, and behind most of the checks that matched nothing: connections, a file opened, changes of a file's mode, owner or times, account and group changes, and logins.
 
 Test names and identifiers in the tables are Atomic Red Team's; see [`docs/atomic/NOTICE`](atomic/NOTICE).
 
 ## Replay of the 12 November logs
 
-The [replay table](atomic/2026-11-12-replay.tsv) uses Immune at `8aa8387`, with 75 SigmaHQ rules, 66 Elastic detection rules and 57 Elastic behaviour rules. The lab confirmed the effects of 55 Atomic Red Team checks. Of those, 52 had a saved event window. Published rules matched in 38 of the 52 windows, Elastic rules matched in 6, and a high or critical rule matched in 2. The 3 restart and shutdown checks had no window because the collector went down.
+The [replay table](atomic/2026-11-12-replay.tsv) uses Immunity Core at `8aa8387`, with 75 SigmaHQ rules, 66 Elastic detection rules and 57 Elastic behaviour rules. The lab confirmed the effects of 55 Atomic Red Team checks. Of those, 52 had a saved event window. Published rules matched in 38 of the 52 windows, Elastic rules matched in 6, and a high or critical rule matched in 2. The 3 restart and shutdown checks had no window because the collector went down.
 
 A window can include preparation, cleanup and unrelated activity. To attribute the following matches, each saved event in those windows was replayed on its own.
 
@@ -68,5 +68,5 @@ The replay covers only saved program starts and file creations and renames. Its 
 ### Replaying the lab archive
 
 1. For each check with a saved window, use the final `stage` in the archived `vm-results.tsv`. In `vm-inbox/<stage>/analysis.json`, find the matching `test` under `results` and take the `begin` and `end` entries in `markers`. The two offsets are byte positions in that stage's `log/exec-20261112T17.jsonl`. Check that both offsets fall on line boundaries, then copy the bytes strictly between the marker lines. The slice starts after the newline of `begin` and ends at the byte offset of `end`.
-2. In a temporary system root, copy the repository's `scripts/event-level/ai.nuanu.immune.eslogger.plist` to `Library/LaunchDaemons/`. Under `Library/Application Support/ai.nuanu.immune/event-level/`, write the plist's `ProgramArguments` as a JSON array in `collects`, then place the slice in `log/exec-20261112T17.jsonl`. Keep just that window in the log. The files are read as data without loading the daemon.
-3. Run `immune rules --over-log --system-root "$replay_root" --json` for each window. The `Replay` message gives event and loss counts and the published rule IDs, levels and counts. [Command reference](reference.md#commands)
+2. In a temporary system root, copy the repository's `scripts/event-level/ai.nuanu.immunity.core.eslogger.plist` to `Library/LaunchDaemons/`. Under `Library/Application Support/ai.nuanu.immunity.core/event-level/`, write the plist's `ProgramArguments` as a JSON array in `collects`, then place the slice in `log/exec-20261112T17.jsonl`. Keep just that window in the log. The files are read as data without loading the daemon.
+3. Run `immunity rules --over-log --system-root "$replay_root" --json` for each window. The `Replay` message gives event and loss counts and the published rule IDs, levels and counts. [Command reference](reference.md#commands)

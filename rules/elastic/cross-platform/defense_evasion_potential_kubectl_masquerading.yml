@@ -12,7 +12,7 @@ logsource: {"product": "macos", "category": "process_creation"}
 detection:
   s1: {"process.executable": ["/tmp/*", "/private/tmp/*", "/var/tmp/*", "/private/var/tmp/*", "/dev/shm/*", "/root/*", "/var/www/*", "/home/*", "/Users/*", "./kubectl"]}
   s2: {"process.name|cased": [".*"]}
-  s3: [{"process.args|contains": ["get po", "get deploy", "get node", "get svc", "get service", "get secret", "get clusterrole", "get ingress", "get configmap", "describe po", "describe deploy", "describe node", "describe svc", "describe service", "describe secret", "describe configmap", "describe clusterrole", "describe ingress", "exec -it", "exec --stdin", "exec --tty", "proxy --port", "run --image=", "expose", "auth can-i", "--kubeconfig", "--as ", "--as=", "--as-group", "--as-uid"]}, {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*port\\-forward[^\\x00]* \\x00"]}]
+  s3: [{"process.args|contains": ["get po", "get deploy", "get node", "get svc", "get service", "get secret", "get clusterrole", "get ingress", "get configmap", "describe po", "describe deploy", "describe node", "describe svc", "describe service", "describe secret", "describe configmap", "describe clusterrole", "describe ingress", "exec -it", "exec --stdin", "exec --tty", "proxy --port", "run --image=", "expose", "auth can-i", "--kubeconfig", "--as ", "--as=", "--as-group", "--as-uid"]}, {"immunity.folded.process.args|re": ["(?s)\\x00[^\\x00]*port\\-forward[^\\x00]* \\x00"]}]
   s4: {"process.executable|cased": ["/tmp/newroot/*"]}
   s5: {"process.name|cased": [".flatpak-wrapped"]}
   condition: "((s1 or s2) and s3 and (not s4 and not s5))"

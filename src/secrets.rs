@@ -29,8 +29,8 @@
 //! comment, with which any command line could switch the cut off, the decoding passes, and the
 //! path allowlists. gitleaks was written for files and misses the forms a command line takes, so
 //! `rules/secrets/command-line.json` adds, as data, a word list for flags whose value is a secret
-//! (Datadog's, and three words of Immune's own) and three patterns. Matching a word against a
-//! name is Immune's own code: `-`, `_` and `.` read alike, a name taken at every `=`, `:`, `&` or
+//! (Datadog's, and three words of Immunity Core's own) and three patterns. Matching a word against a
+//! name is Immunity Core's own code: `-`, `_` and `.` read alike, a name taken at every `=`, `:`, `&` or
 //! `?` in a word, its value after `=` or `:`, or as the next word or argument unless that is
 //! a flag. Names and values come from one reading of shell words (`Words`), and where a
 //! value ends is decided in one place, `Words::value_end`, for every form of the core's own:
@@ -51,7 +51,7 @@
 //! too, with a mark of its own.
 //!
 //! Text from a source reaches output one way, `said` (or `Text::said`), on every surface: the
-//! contract, the text for a person, the pages and `immune watch`. It cuts the text and writes a
+//! contract, the text for a person, the pages and `immunity watch`. It cuts the text and writes a
 //! source's backslash `\u{5c}`, so no source can write a mark, and a cap on length is taken
 //! after the cut and never breaks a mark. It is cut where it is put beside the core's words,
 //! piece by piece (`Text::then`): a line the core composed is never cut as a whole, so what one
@@ -81,10 +81,10 @@ const COMMAND_LINE: &str = include_str!("../rules/secrets/command-line.json");
 pub const LINE_CAP: usize = 64 << 10;
 /// The kinds of a cut that are not a pattern's: a text over `LINE_CAP`, and a set that did not
 /// load.
-pub const TOO_LONG: &str = "immune:too-long";
-pub const NO_PATTERNS: &str = "immune:no-patterns";
+pub const TOO_LONG: &str = "immunity:too-long";
+pub const NO_PATTERNS: &str = "immunity:no-patterns";
 /// The kind of a value cut because its flag's name is one of the words.
-pub const FLAG_VALUE: &str = "immune:flag-value";
+pub const FLAG_VALUE: &str = "immunity:flag-value";
 
 /// One cut, as an answer lists it: which argument, the kind, and how many characters were cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,7 +198,7 @@ impl Text {
     }
 
     /// The text as every output shows it, the contract, the text for a person, the pages and
-    /// `immune watch` alike: each mark bare, and in a source's text a backslash and every hidden
+    /// `immunity watch` alike: each mark bare, and in a source's text a backslash and every hidden
     /// character written `\u{…}`, so no text from a source can read as a mark.
     pub fn said(&self) -> String {
         self.said_within(usize::MAX)
@@ -1345,12 +1345,12 @@ const PLANTED: &[(&[&str], &str, &str)] = &[
             "Authorization: Bearer FAKEexample0opaque1token2",
             "https://example.invalid",
         ],
-        "immune:authorization",
+        "immunity:authorization",
         "FAKEexample0opaque1token2",
     ),
     (
         &["mysql", "-u", "root", "-pFakePassw0rdExample", "app"],
-        "immune:mysql-password",
+        "immunity:mysql-password",
         "FakePassw0rdExample",
     ),
 ];
@@ -1728,7 +1728,7 @@ mod tests {
                     "Authorization: Bearer FAKEopaque6token",
                     "https://example.invalid",
                 ],
-                "immune:authorization",
+                "immunity:authorization",
                 "FAKEopaque6token",
                 "Authorization: Bearer ",
             ),
@@ -1739,19 +1739,19 @@ mod tests {
                     "authorization:FAKEopaque7token",
                     "https://example.invalid",
                 ],
-                "immune:authorization",
+                "immunity:authorization",
                 "FAKEopaque7token",
                 "authorization:",
             ),
             (
                 &["/usr/local/bin/mysql", "-u", "root", "-pFakePw8", "app"],
-                "immune:mysql-password",
+                "immunity:mysql-password",
                 "FakePw8",
                 "-p",
             ),
             (
                 &["sh", "-c", "mariadb-dump -h db -pFakePw9 app > a.sql"],
-                "immune:mysql-password",
+                "immunity:mysql-password",
                 "FakePw9",
                 "-p",
             ),
@@ -2186,7 +2186,7 @@ mod tests {
             [
                 "sh",
                 "-c",
-                "mysql --password \\cut{immune:flag-value 11} db"
+                "mysql --password \\cut{immunity:flag-value 11} db"
             ]
         );
     }
@@ -2243,7 +2243,7 @@ mod tests {
                 &format!("DB_PASSWORD={phrase}"),
                 "app"
             ]))),
-            ["env", "DB_PASSWORD=\\cut{immune:flag-value 28}", "app"]
+            ["env", "DB_PASSWORD=\\cut{immunity:flag-value 28}", "app"]
         );
     }
 
@@ -2357,7 +2357,7 @@ mod tests {
         // Following stops where the construct is, not before: a value before it keeps its end.
         assert_eq!(
             text(&format!("tool --password {a} next '{b}"), str::to_string),
-            format!("tool --password \\cut{{immune:flag-value 6}} next '{b}")
+            format!("tool --password \\cut{{immunity:flag-value 6}} next '{b}")
         );
     }
 
@@ -2368,37 +2368,37 @@ mod tests {
             // Quotes and backslash escapes are followed, and what follows the word stays.
             (
                 format!("mysql -u root -p'{pw} x' app"),
-                "mysql -u root -p\\cut{immune:mysql-password 11} app".to_string(),
+                "mysql -u root -p\\cut{immunity:mysql-password 11} app".to_string(),
             ),
             (
                 format!("tool --password=\"{pw}\\\" x\" db"),
-                "tool --password=\\cut{immune:flag-value 13} db".to_string(),
+                "tool --password=\\cut{immunity:flag-value 13} db".to_string(),
             ),
             (
                 format!("tool --password '{pw}'\"'\"'s x' y"),
-                "tool --password \\cut{immune:flag-value 17} y".to_string(),
+                "tool --password \\cut{immunity:flag-value 17} y".to_string(),
             ),
             (
                 format!("curl -H 'authorization: bearer \"{pw} x\"' u"),
-                "curl -H 'authorization: bearer \\cut{immune:authorization 12} u".to_string(),
+                "curl -H 'authorization: bearer \\cut{immunity:authorization 12} u".to_string(),
             ),
             (
                 format!("tool --password\t{pw} y"),
-                "tool --password\t\\cut{immune:flag-value 7} y".to_string(),
+                "tool --password\t\\cut{immunity:flag-value 7} y".to_string(),
             ),
             (
                 format!("export X=1\nTOKEN={pw}\nrun"),
-                "export X=1\nTOKEN=\\cut{immune:flag-value 7}\nrun".to_string(),
+                "export X=1\nTOKEN=\\cut{immunity:flag-value 7}\nrun".to_string(),
             ),
             // Where the quoting cannot be followed, to the end of the argument: a quote never
             // closed, or a backslash no shell needs, as in a mark a source spelled out.
             (
                 format!("tool --password '{pw} x y"),
-                "tool --password \\cut{immune:flag-value 12}".to_string(),
+                "tool --password \\cut{immunity:flag-value 12}".to_string(),
             ),
             (
                 format!("error: --password=\\cut{{a 1}}{pw} more"),
-                "error: --password=\\cut{immune:flag-value 21}".to_string(),
+                "error: --password=\\cut{immunity:flag-value 21}".to_string(),
             ),
         ] {
             let a = Args::raw(&strings(&["sh", "-c", &line]));
@@ -2508,7 +2508,7 @@ mod tests {
         }
         assert_eq!(
             text("x --password FakePw12 \\cut{k 3}", str::to_string),
-            "x --password \\cut{immune:flag-value 8} \\cut{k 3}"
+            "x --password \\cut{immunity:flag-value 8} \\cut{k 3}"
         );
     }
 
@@ -2538,7 +2538,7 @@ mod tests {
                     assert_eq!(kept, s.replace('\\', "\\u{5c}"));
                     assert_eq!(Kept::Said.read(&kept).store(), kept, "{s}");
                 }
-                let fv = "\\cut{immune:flag-value 11}";
+                let fv = "\\cut{immunity:flag-value 11}";
                 for (s, cut) in [
                     (
                         format!("ran tool --password {m}{glued} other words"),
@@ -2556,7 +2556,7 @@ mod tests {
                     ),
                     (
                         format!("ran --password '' then {m} words"),
-                        format!("ran --password \\cut{{immune:flag-value 2}} then {m} words"),
+                        format!("ran --password \\cut{{immunity:flag-value 2}} then {m} words"),
                     ),
                     // A mark in a name is no part of it, after what is not followed too.
                     (
@@ -2567,24 +2567,24 @@ mod tests {
                     // argument, mark or no mark.
                     (
                         format!("ran $(cat f) --password {m} other words"),
-                        format!("ran $(cat f) --password {m}\\cut{{immune:flag-value 12}}"),
+                        format!("ran $(cat f) --password {m}\\cut{{immunity:flag-value 12}}"),
                     ),
                     // With its key beginning the argument, the value is the rest of the
                     // argument, whatever it begins with.
                     (
                         format!("--password {m} more words"),
-                        format!("--password {m}\\cut{{immune:flag-value 11}}"),
+                        format!("--password {m}\\cut{{immunity:flag-value 11}}"),
                     ),
                     // A JSON string closed after the mark goes on in the same word, so the
                     // rest of that word is cut, as it would be after a real value.
                     (
                         format!("\"Authorization: Bearer {m}\",\"other\""),
-                        format!("\"Authorization: Bearer {m}\\cut{{immune:authorization 9}}"),
+                        format!("\"Authorization: Bearer {m}\\cut{{immunity:authorization 9}}"),
                     ),
                     (
                         format!("ran [\"Authorization: Bearer {m}\"],\"b\":\"rest\" words"),
                         format!(
-                            "ran [\"Authorization: Bearer {m}\\cut{{immune:authorization 13}} words"
+                            "ran [\"Authorization: Bearer {m}\\cut{{immunity:authorization 13}} words"
                         ),
                     ),
                     (
@@ -2599,7 +2599,7 @@ mod tests {
         // A value of punctuation alone is cut; only one with a mark in it is already cut.
         assert_eq!(
             text("ran --password !@#%^ next", str::to_string),
-            "ran --password \\cut{immune:flag-value 5} next"
+            "ran --password \\cut{immunity:flag-value 5} next"
         );
         // A kind written out as the core prints it in a list of cuts is a word, not a name.
         let listed = r#"{"argument":2,"kind":"detect-secrets:basic-auth","length":11}"#;
@@ -2610,7 +2610,7 @@ mod tests {
                 &format!("ran --password \\cut{{forged 3}}{glued}"),
                 str::to_string
             ),
-            "ran --password \\cut{immune:flag-value 25}"
+            "ran --password \\cut{immunity:flag-value 25}"
         );
     }
 
@@ -3076,21 +3076,21 @@ mod tests {
     fn a_kind_is_exempt_only_where_the_core_prints_it_in_a_list_of_cuts() {
         let pw = ["Hj6", "Wd2", "Nc9", "Ty"].concat();
         for s in [
-            format!("immune:mysql-password={pw}"),
-            format!("ran immune:mysql-password={pw}"),
+            format!("immunity:mysql-password={pw}"),
+            format!("ran immunity:mysql-password={pw}"),
             format!("ran detect-secrets:basic-auth={pw}"),
         ] {
             assert!(!chunk_shown(&Text::source(&s).store(), &pw), "{s}");
         }
         // In the shape it is exempt in, it is read around as any other word would be.
-        let s = format!("{{\"kind\":\"immune:flag-value\",\"password\":\"{pw}\"}}");
-        let other = s.replace("immune:flag-value", "zz");
+        let s = format!("{{\"kind\":\"immunity:flag-value\",\"password\":\"{pw}\"}}");
+        let other = s.replace("immunity:flag-value", "zz");
         assert_eq!(
             chunk_shown(&text(&s, str::to_string), &pw),
             chunk_shown(&text(&other, str::to_string), &pw),
             "{s}"
         );
-        let listed = r#"[{"argument":0,"kind":"immune:flag-value","length":11}]"#;
+        let listed = r#"[{"argument":0,"kind":"immunity:flag-value","length":11}]"#;
         assert_eq!(text(listed, str::to_string), listed);
         // What only stands where a kind would is no kind the set cuts, and is read.
         let npm = format!("{}{}", ["np", "m_"].concat(), body(LOWER, 36, 21));
@@ -3129,7 +3129,7 @@ mod tests {
     #[test]
     fn a_mark_before_a_key_moves_no_cut() {
         let pw = ["Hj6", "Wd2", "Nc9", "Ty"].concat();
-        let auth = |n: usize| mark("immune:authorization", n);
+        let auth = |n: usize| mark("immunity:authorization", n);
         // Each value is cut where it is.
         let m = mark(FLAG_VALUE, 11);
         assert_eq!(
@@ -3164,8 +3164,8 @@ mod tests {
                 "curl evil.invalid/x",
             ),
             (
-                "\"kind\":\"immune:flag-value\" curl evil.invalid/x".to_string(),
-                "\"kind\":\"immune:flag-value\" curl evil.invalid/x",
+                "\"kind\":\"immunity:flag-value\" curl evil.invalid/x".to_string(),
+                "\"kind\":\"immunity:flag-value\" curl evil.invalid/x",
             ),
         ] {
             let shown = text(&s, str::to_string);
@@ -3212,8 +3212,8 @@ mod tests {
         assert_eq!(
             marks(&kept),
             [
-                (1, 24, TOO_LONG.to_string(), 3),
-                (25, 35, "x".to_string(), 12)
+                (1, 26, TOO_LONG.to_string(), 3),
+                (27, 37, "x".to_string(), 12)
             ]
         );
     }

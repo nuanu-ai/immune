@@ -17,21 +17,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
 /// Where the install puts everything the daemons run or read: a folder only root can write.
-const LIB: &str = "/Library/Application Support/ai.nuanu.immune/event-level";
+const LIB: &str = "/Library/Application Support/ai.nuanu.immunity.core/event-level";
 /// What the reader looks for under the system root, as the plists and the install place it.
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
 /// The install's record of what the collector records.
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 const LABELS: [&str; 3] = [
-    "ai.nuanu.immune.eslogger",
-    "ai.nuanu.immune.event-filter",
-    "ai.nuanu.immune.event-tidy",
+    "ai.nuanu.immunity.core.eslogger",
+    "ai.nuanu.immunity.core.event-filter",
+    "ai.nuanu.immunity.core.event-tidy",
 ];
 /// The most bytes of log the tidy job keeps, as its plist gives it by default: 2 GiB.
 const CAP: &str = "2147483648";
 /// The tidy job's launch daemon, under a system root.
-const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
+const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist";
 const CWD: &str = "/Users/example/dev/site";
 /// The started program's audit token as eslogger writes it on macOS 26, and as the eight words
 /// of `audit_token_t` some builds wrote: pid 402, effective user 501 in both.
@@ -47,7 +47,7 @@ impl Dir {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "immune-events-{tag}-{}-{nanos}",
+            "immunity-events-{tag}-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).unwrap();
@@ -87,12 +87,12 @@ impl Dir {
         let plist = self.root().join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
-            Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
+            Path::new(SCRIPTS).join("ai.nuanu.immunity.core.eslogger.plist"),
             plist,
         )
         .unwrap();
         std::fs::copy(
-            Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+            Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist"),
             self.root().join(TIDY),
         )
         .unwrap();
@@ -135,7 +135,7 @@ impl Dir {
         let absent = self.0.join("absent");
         std::fs::write(self.0.join("brew.json"), r#"{"formulae": [], "casks": []}"#).unwrap();
         std::fs::create_dir_all(self.0.join("home")).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .current_dir(&self.0)
             .args(["run", "--machine-name", "mac", "--store"])
@@ -169,10 +169,10 @@ impl Dir {
         self.run()
     }
 
-    /// What `immune status --coverage` says of the level to a person, in a pipe, where a value
+    /// What `immunity status --coverage` says of the level to a person, in a pipe, where a value
     /// beside its label is one line: `Event level: ` and the value, with its period.
     fn words(&self) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .args(["status", "--coverage", "--store"])
             .arg(self.store())
@@ -189,7 +189,7 @@ impl Dir {
     }
 
     fn status(&self) -> Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
@@ -200,9 +200,9 @@ impl Dir {
         v.clone()
     }
 
-    /// `immune <args> --store <this store>`: its stdout, after it succeeded.
-    fn immune(&self, args: &[&str]) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    /// `immunity <args> --store <this store>`: its stdout, after it succeeded.
+    fn immunity(&self, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .args(args)
             .arg("--store")
@@ -217,22 +217,22 @@ impl Dir {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// The result of `immune <args> --json --store <this store>`.
-    fn immune_json(&self, args: &[&str]) -> Value {
+    /// The result of `immunity <args> --json --store <this store>`.
+    fn immunity_json(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
-        let v: Value = serde_json::from_str(&self.immune(&args)).unwrap();
+        let v: Value = serde_json::from_str(&self.immunity(&args)).unwrap();
         v.clone()
     }
 
-    /// `immune <args> --json --store <this store>` for a command of the contract: its message.
+    /// `immunity <args> --json --store <this store>` for a command of the contract: its message.
     fn contract(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
-        serde_json::from_str(&self.immune(&args)).unwrap()
+        serde_json::from_str(&self.immunity(&args)).unwrap()
     }
 
-    /// Every finding, each read whole with `immune finding <id> --json`.
+    /// Every finding, each read whole with `immunity finding <id> --json`.
     fn findings(&self) -> Vec<Value> {
         self.contract(&["findings"])["findings"]
             .as_array()
@@ -242,10 +242,10 @@ impl Dir {
             .collect()
     }
 
-    /// `immune rules --over-log` over this system root, without a store: its exit status and
+    /// `immunity rules --over-log` over this system root, without a store: its exit status and
     /// stdout.
     fn replay(&self, args: &[&str]) -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .args(["rules", "--over-log", "--system-root"])
             .arg(self.root())
@@ -436,7 +436,7 @@ fn collector_at(top: &Path, cap: &str) -> (PathBuf, PathBuf) {
     let tidy = top.join(TIDY);
     std::fs::create_dir_all(tidy.parent().unwrap()).unwrap();
     std::fs::copy(
-        Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+        Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist"),
         &tidy,
     )
     .unwrap();
@@ -1627,7 +1627,7 @@ fn a_run_says_all_that_the_status_of_the_same_store_says_of_what_was_not_seen() 
             dir.install();
         }
         let ran = dir.run_text();
-        let status = dir.immune(&["status"]);
+        let status = dir.immunity(&["status"]);
         let said = context_lines(&ran);
         for line in context_lines(&status) {
             assert!(said.contains(&line), "{line:?}\n{ran}\n{status}");
@@ -2076,7 +2076,7 @@ fn a_running_watcher_reads_program_starts_every_few_seconds_and_a_failed_reading
             "unreadable": 0, "ended": 0, "sockets_unreadable": 0}"#,
     )
     .unwrap();
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .env("HOME", dir.0.join("home"))
         .args(["watch", "--events-every", "1", "--store"])
         .arg(dir.store())
@@ -2130,7 +2130,7 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
     let dir = Dir::new("watcher-says");
     dir.install();
     dir.run();
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .env("HOME", dir.0.join("home"))
         .args([
             "watch",
@@ -2194,7 +2194,7 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
     assert_eq!(v["program_starts_by_minute"]["last_hour"], 2, "{v:#}");
     let live = std::fs::read_to_string(dir.store().parent().unwrap().join("view/live.js")).unwrap();
     let object = live
-        .strip_prefix("window.immuneLive = ")
+        .strip_prefix("window.immunityLive = ")
         .and_then(|s| s.strip_suffix(";\n"))
         .unwrap_or_else(|| panic!("{live}"));
     let o: Value = serde_json::from_str(object).unwrap();
@@ -2442,7 +2442,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         text.lines()
             .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
     };
-    let text = dir.immune(&["finding", &id]);
+    let text = dir.immunity(&["finding", &id]);
     for (label, value) in [
         (
             "Rule",
@@ -2484,7 +2484,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
 
     // Seen by the owner: the next match is a new finding, as for every rule that finds an
     // event, and is still counted.
-    dir.immune(&["finding", &id, "seen"]);
+    dir.immunity(&["finding", &id, "seen"]);
     assert_eq!(dir.status()["needs_a_look"]["total"], 0);
     dir.append(h, &started(10, "/bin/sh", "/bin/dd", &DD));
     dir.run();
@@ -2541,8 +2541,8 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
             rusqlite::params![(now_secs() / 3600 - 48) as i64, SW_VERS],
         )
         .unwrap();
-    // `immune rules` gives the same counts, in both forms.
-    let rules = dir.immune_json(&["rules"]);
+    // `immunity rules` gives the same counts, in both forms.
+    let rules = dir.immunity_json(&["rules"]);
     let entry = rules["evaluated"]
         .as_array()
         .unwrap()
@@ -2557,7 +2557,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         (&rules["now"]["watching"], &rules["now"]["matches_last_day"]),
         (&json!(true), &json!(1))
     );
-    let plain = dir.immune(&["rules"]);
+    let plain = dir.immunity(&["rules"]);
     let matched = plain
         .lines()
         .find(|l| l.starts_with("  Matched in the last day "))
@@ -2566,7 +2566,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         matched.ends_with("   1 match: System Information Discovery Using sw_vers 1"),
         "{plain}"
     );
-    let all = dir.immune(&["rules", "--all"]);
+    let all = dir.immunity(&["rules", "--all"]);
     let row = all
         .lines()
         .find(|l| l.contains("System Information Discovery Using sw_vers"))
@@ -2592,7 +2592,7 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
     let note = "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.";
     assert_eq!(rules["judged_note"], note);
     // The text says it whole on a line of its own, as a value beside its label.
-    let text = dir.immune(&["rules"]);
+    let text = dir.immunity(&["rules"]);
     assert!(
         text.lines()
             .any(|l| l.trim_start().starts_with("Lost ") && l.ends_with(&note[1..note.len() - 1])),
@@ -2623,7 +2623,7 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
         "{rules:#}"
     );
     assert!(
-        dir.immune(&["rules"])
+        dir.immunity(&["rules"])
             .contains("the event level is not on, so no rule is watching")
     );
     // Nor does any reading of file events stand: the coverage of file events this install
@@ -3160,7 +3160,7 @@ fn what_the_collector_keeps_is_told_by_what_its_lines_carry_and_never_by_a_recor
 #[test]
 fn a_group_the_collector_stops_filling_is_told_as_no_longer_arriving_with_since_when() {
     // No false calm after a macOS update changes a kept field: the filter writes it as null,
-    // and the status, `immune matches` and its text for a person say it no longer arrives,
+    // and the status, `immunity matches` and its text for a person say it no longer arrives,
     // since the first line without it, instead of arriving since the first line that had it.
     let dir = Dir::new("no-longer");
     dir.install();
@@ -3198,7 +3198,7 @@ fn a_group_the_collector_stops_filling_is_told_as_no_longer_arriving_with_since_
         json!([{"name": "identity", "since": 1791072062}]),
         "{c:#}"
     );
-    let text = dir.immune(&["matches", "--system-root", &root]);
+    let text = dir.immunity(&["matches", "--system-root", &root]);
     assert!(text.contains("identity has not arrived since "), "{text}");
 }
 
@@ -3614,7 +3614,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         text.lines()
             .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
     };
-    let text = dir.immune(&["finding", amos["finding"]["id"].as_str().unwrap()]);
+    let text = dir.immunity(&["finding", amos["finding"]["id"].as_str().unwrap()]);
     for (label, value) in [
         (
             "Author",
@@ -3637,7 +3637,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         "{text}"
     );
     assert!(text.contains("File event · 2026-10-04 00:00 UTC"), "{text}");
-    let text = dir.immune(&["finding", axios["finding"]["id"].as_str().unwrap()]);
+    let text = dir.immunity(&["finding", axios["finding"]["id"].as_str().unwrap()]);
     for (label, value) in [
         ("File", "/private/tmp/6202033"),
         ("Action", "created"),
@@ -3694,8 +3694,8 @@ fn install_steps(dir: &Dir, fail_at: &str, running: bool, account: &str) -> (i32
     let code = format!(
         r#"T='{t}'; FAILAT='{fail_at}'; RUNNING={running}
 TOP="$T/top"; LIB="$TOP/event-level"; RUN="$LIB/run"; LOG="$LIB/log"; FIFO="$RUN/events.fifo"
-DAEMONS="$T/daemons"; TIDY="$DAEMONS/ai.nuanu.immune.event-tidy.plist"; here="$T/here"
-LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
+DAEMONS="$T/daemons"; TIDY="$DAEMONS/ai.nuanu.immunity.core.event-tidy.plist"; here="$T/here"
+LABELS='ai.nuanu.immunity.core.event-filter ai.nuanu.immunity.core.eslogger ai.nuanu.immunity.core.event-tidy'
 SCRIPTS='collect.sh filter.jq tidy.sh'; HOOK=rotated.sh; cap=2147483648
 {fail}
 {account}
@@ -3982,7 +3982,7 @@ fn the_install_leaves_its_removal_script_and_run_from_there_it_removes_everythin
     for (from, to) in [
         (format!("LIB='{LIB}'"), format!("LIB='{}'", lib.display())),
         (
-            "TOP='/Library/Application Support/ai.nuanu.immune'".to_string(),
+            "TOP='/Library/Application Support/ai.nuanu.immunity.core'".to_string(),
             format!("TOP='{}'", top.display()),
         ),
         (
@@ -4014,7 +4014,7 @@ fn the_install_leaves_its_removal_script_and_run_from_there_it_removes_everythin
     assert!(out.status.success(), "{said}{:?}", out.stderr);
     assert!(
         said.ends_with(
-            "Removed. `immune status` says the event level is not installed after its next reading.\n"
+            "Removed. `immunity status` says the event level is not installed after its next reading.\n"
         ),
         "{said}"
     );
@@ -4050,7 +4050,11 @@ fn verdict_of(dir: &Dir, err_before: &str, err_after: &str, old: &str, new: &str
             .set_modified(SystemTime::now() - Duration::from_secs(ago))
             .unwrap();
     };
-    written(&daemons.join("ai.nuanu.immune.eslogger.plist"), "", 3600);
+    written(
+        &daemons.join("ai.nuanu.immunity.core.eslogger.plist"),
+        "",
+        3600,
+    );
     written(&log.join("exec-old.jsonl"), old, 7200);
     written(&log.join("exec-new.jsonl"), new, 0);
     written(&log.join("eslogger.err"), err_before, 7200);
@@ -4166,12 +4170,12 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
     }
     for (step, running, says) in [
         (
-            "launchctl_ bootout system/ai.nuanu.immune.event-filter",
+            "launchctl_ bootout system/ai.nuanu.immunity.core.event-filter",
             true,
             Some(STOPPED),
         ),
         (
-            "launchctl_ bootout system/ai.nuanu.immune.event-tidy",
+            "launchctl_ bootout system/ai.nuanu.immunity.core.event-tidy",
             true,
             Some(STOPPED),
         ),
@@ -4181,18 +4185,18 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
         ("keeps", true, Some(STOPPED)),
         ("bootstrap system", true, Some(STOPPED)),
         (
-            "bootstrap system $T/daemons/ai.nuanu.immune.eslogger.plist",
+            "bootstrap system $T/daemons/ai.nuanu.immunity.core.eslogger.plist",
             true,
             Some(PARTLY),
         ),
         (
-            "bootstrap system $T/daemons/ai.nuanu.immune.event-tidy.plist",
+            "bootstrap system $T/daemons/ai.nuanu.immunity.core.event-tidy.plist",
             true,
             Some(PARTLY),
         ),
         ("rotated.sh", false, None),
         (
-            "bootstrap system $T/daemons/ai.nuanu.immune.eslogger.plist",
+            "bootstrap system $T/daemons/ai.nuanu.immunity.core.eslogger.plist",
             false,
             Some(PARTLY),
         ),
@@ -4231,7 +4235,7 @@ fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_on
 fn tidy_plist(dir: &Dir, name: &str, cap: &str) -> PathBuf {
     let path = dir.0.join(name);
     std::fs::copy(
-        Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+        Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist"),
         &path,
     )
     .unwrap();
@@ -4257,7 +4261,7 @@ fn the_log_s_cap_is_two_gib_by_default_and_what_that_holds_is_said_the_same_ever
     // from what tidy.sh does at each new file of 128 MiB, and the install, the
     // document and the README say the same. No cap is said to hold more than a day, nor to
     // take more disk than a day's writing.
-    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist");
     assert_eq!(tidy_args(&template)[3], CAP);
     let (code, out, err) = cap_code(&format!(
         "cap_of '' /nonexistent/tidy.plist '{}' && cap_words {CAP} && cap_means {CAP}",
@@ -4289,7 +4293,7 @@ fn the_log_s_cap_is_two_gib_by_default_and_what_that_holds_is_said_the_same_ever
         "plus the file being written (128 MiB, or more if more than that arrives\nwithin one second), plus what is written while tidy.sh runs",
         "about $disk GB of disk.",
         "Heavy writing pushes older lines out before their day is over.",
-        "Lines deleted before they were read are counted, and Immune then says the\nday is partial.",
+        "Lines deleted before they were read are counted, and Immunity Core then says the\nday is partial.",
     ] {
         assert!(install.contains(said), "{said}");
     }
@@ -4326,7 +4330,7 @@ fn a_cap_given_at_install_reaches_the_tidy_job_as_bytes() {
         p = plist.display()
     ));
     assert_eq!((code, out.as_str()), (0, "3221225472 given\n"), "{err}");
-    let shipped = tidy_args(&Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"));
+    let shipped = tidy_args(&Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist"));
     let written = tidy_args(&plist);
     assert_eq!(written[3], "3221225472");
     assert_eq!(written[..3], shipped[..3]);
@@ -4343,7 +4347,7 @@ fn a_cap_given_at_install_reaches_the_tidy_job_as_bytes() {
     let capped = at("step write_cap \"$cap\" \"$TIDY\"");
     let started = at("step /bin/launchctl bootstrap system");
     assert!(placed < capped && capped < started);
-    assert!(install.contains("TIDY=\"$DAEMONS/ai.nuanu.immune.event-tidy.plist\""));
+    assert!(install.contains("TIDY=\"$DAEMONS/ai.nuanu.immunity.core.event-tidy.plist\""));
 }
 
 #[test]
@@ -4356,7 +4360,7 @@ fn the_ten_minute_job_the_install_installs_runs_the_retention_with_the_cap_the_i
     // which reads only the fourth, kept the log under its cap. Installing again over such a
     // launch daemon keeps the cap it states and comes out right.
     let dir = Dir::new("tidy-job");
-    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist");
     let shipped = tidy_args(&template);
     let fresh = dir.0.join("fresh.plist");
     std::fs::copy(&template, &fresh).unwrap();
@@ -4550,7 +4554,7 @@ fn installing_again_keeps_the_installed_cap_and_never_one_that_is_broken_or_too_
     // whole number of bytes from 1 GiB, so installing again never shrinks the log by itself.
     // A cap that is too small, not a whole number, or not there, gives the default.
     let dir = Dir::new("cap-kept");
-    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist");
     let decided = |installed: &Path| {
         let (code, out, err) = cap_code(&format!(
             "cap_of '' '{}' '{}'",
@@ -4617,7 +4621,7 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     assert!(l["log_cap_reason_text"].is_null(), "{l:#}");
     tidy_plist(
         &dir,
-        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "root/Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist",
         "5368709120",
     );
     dir.run();
@@ -4628,7 +4632,7 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     dir.append("exec-20261004T00.jsonl", &two);
     tidy_plist(
         &dir,
-        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "root/Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist",
         "3221225472",
     );
     dir.run();
@@ -4651,7 +4655,7 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     );
     tidy_plist(
         &dir,
-        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "root/Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist",
         "half",
     );
     dir.run();
@@ -4854,7 +4858,7 @@ fn a_collector_that_lost_part_of_what_it_was_to_record_leaves_this_mac_watched_i
     dir.run();
     dir.run_apart();
     assert_eq!(dir.status()["this_mac"]["state"], "watched_in_part");
-    let text = dir.immune(&["status"]);
+    let text = dir.immunity(&["status"]);
     assert!(
         text.contains("in part: some program starts not watched in full"),
         "{text}"

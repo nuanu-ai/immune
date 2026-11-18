@@ -101,11 +101,11 @@ fn about(what: &str) -> &'static str {
 
 /// The summary page, a report read from the top: the state in the panel's words, with one line
 /// on what it rests on; the findings as a table, open, answered and all, each row opening in
-/// place to its evidence as `immune finding` gives it; what is watched, area by area, with its
+/// place to its evidence as `immunity finding` gives it; what is watched, area by area, with its
 /// state and when it was last read; "As it happens", every program start checked against
 /// published rules (`happens.rs`); what the person can fix, and what on this Mac was not judged;
 /// and a line of links to the other pages. Built from the state and the result
-/// `immune status --json` gives, so the two agree.
+/// `immunity status --json` gives, so the two agree.
 pub fn summary(
     conn: &Connection,
     st: &crate::status::State,
@@ -149,7 +149,7 @@ const GLYPH_PART: &str = "<svg class=\"glyph look\" viewBox=\"0 0 40 40\" aria-h
 const GLYPH_STALE: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5\"/><circle cx=\"20\" cy=\"20\" r=\"10\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4\"/><path d=\"M20 14v6.5l4 2.5\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
 const GLYPH_UNKNOWN: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5;stroke-dasharray:4 3\"/><path d=\"M15.8 16a4.3 4.3 0 1 1 6.1 3.9c-1.3.6-1.9 1.5-1.9 2.9v.7\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.6;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.2\" r=\"1.7\" style=\"fill:var(--quiet)\"/></svg>";
 
-/// "1 needs you now · 2 to look at": the findings Immune marked urgent, and the rest of its
+/// "1 needs you now · 2 to look at": the findings Immunity Core marked urgent, and the rest of its
 /// total, in the panel's words (`Panel.headline`).
 fn needs_you(urgent: u64, total: u64) -> String {
     let rest = total.saturating_sub(urgent);
@@ -290,7 +290,7 @@ impl FindingRow<'_> {
     }
 
     /// It needs the person now: an open finding in it, the core's or the response layer's,
-    /// is one Immune marks urgent.
+    /// is one Immunity Core marks urgent.
     fn urgent(&self) -> bool {
         (self.open && self.item.urgent()) || self.under.iter().any(|(c, open)| *open && c.urgent())
     }
@@ -432,14 +432,14 @@ fn findings_table(
         };
         writeln!(
             out,
-            "<p class=\"meta more open\">{} more, {which}; <span class=\"mono\">immune findings</span> lists them.</p>",
+            "<p class=\"meta more open\">{} more, {which}; <span class=\"mono\">immunity findings</span> lists them.</p>",
             grouped((counts.open - ITEMS_SHOWN) as i64)
         )?;
     }
     if done.len() > ITEMS_SHOWN {
         writeln!(
             out,
-            "<p class=\"meta more answered\">{} more answered; <span class=\"mono\">immune findings --all</span> lists them.</p>",
+            "<p class=\"meta more answered\">{} more answered; <span class=\"mono\">immunity findings --all</span> lists them.</p>",
             grouped((done.len() - ITEMS_SHOWN) as i64)
         )?;
     }
@@ -589,8 +589,8 @@ fn finding_row(
 }
 
 /// What one finding says in an opened row: on the left its facts, where first, then the evidence
-/// as `immune finding <id>` gives it; on the right who said what, each voice named: the rule's
-/// authors, the response layer, the person's answer, Immune's own words, and what to do. Under
+/// as `immunity finding <id>` gives it; on the right who said what, each voice named: the rule's
+/// authors, the response layer, the person's answer, Immunity Core's own words, and what to do. Under
 /// them, when it was seen and the command an agent reads it with.
 fn finding_body(
     out: &mut String,
@@ -623,7 +623,7 @@ fn finding_body(
     dl(out, &facts);
     out.push_str("</div>\n<div><p class=\"wsh2\">Who said what</p><div class=\"voices\">");
     voices.push(Voice {
-        name: "Immune".to_string(),
+        name: "Immunity Core".to_string(),
         said: esc(i.words.title),
         detail: esc(i.words.meaning),
         quote: None,
@@ -662,7 +662,7 @@ fn finding_body(
         (_, Some(l)) => format!("Seen {}", view::when(l, now)),
         _ => String::new(),
     };
-    let command = format!("immune finding {} --json", i.id);
+    let command = format!("immunity finding {} --json", i.id);
     writeln!(
         out,
         "<div class=\"fxb\"><span>{seen}</span><span>For your agent<span class=\"mono\">{}</span></span></div>",
@@ -687,7 +687,7 @@ fn data(s: &str) -> String {
 
 /// One event a rule matched: for a program start its program, each argument apart, its folder
 /// and the program that started it; for a file event the file, what was done, from where and by
-/// which program. Arguments come cut, as `immune finding` prints them (`matches::event_cut`).
+/// which program. Arguments come cut, as `immunity finding` prints them (`matches::event_cut`).
 fn event_facts(e: &v1::Event, now: i64) -> Vec<(&'static str, String)> {
     use v1::event::Body;
     let mut facts = Vec::new();
@@ -752,7 +752,7 @@ fn dl(out: &mut String, facts: &[(&str, String)]) {
     out.push_str("</dl>\n");
 }
 
-/// A finding's evidence as `immune finding <id>` gives it, from the same message: what it rests
+/// A finding's evidence as `immunity finding <id>` gives it, from the same message: what it rests
 /// on by its kind as facts, and as voices the rule's authors, the response layer's verdicts with
 /// their reasons quoted, and the person's answer with who gave it and why. Every value from the
 /// Mac is escaped and set apart.
@@ -887,7 +887,7 @@ fn evidence(f: &v1::Finding, facts: &mut Vec<(&str, String)>, voices: &mut Vec<V
             }
             if listed.event_gone {
                 said.push_str(
-                    ". Its event was no longer in the log, so Immune could not check that the rule matched it",
+                    ". Its event was no longer in the log, so Immunity Core could not check that the rule matched it",
                 );
             }
             voices.push(Voice {
@@ -1255,7 +1255,7 @@ fn failed_here(st: &crate::status::State) -> Vec<&Uncovered> {
 }
 
 /// What the person can fix, one cause beside another: what it is, every example as data, and
-/// Immune's advice.
+/// Immunity Core's advice.
 fn you_can_fix(out: &mut String, fixable: &[&Uncovered]) -> Out {
     writeln!(
         out,
@@ -1298,7 +1298,7 @@ fn you_can_fix(out: &mut String, fixable: &[&Uncovered]) -> Out {
 fn links(out: &mut String, name: Option<&str>, now: i64) -> Out {
     writeln!(
         out,
-        "<footer class=\"links\">\n<a href=\"{DETAILS}/{RULES}.html\">{RULES_TITLE}</a>\n<a href=\"{DETAILS}/{TECHNICAL}.html\">Technical details</a>\n</footer>\n<p class=\"wfoot\">Page made at {} by immune view{}</p>",
+        "<footer class=\"links\">\n<a href=\"{DETAILS}/{RULES}.html\">{RULES_TITLE}</a>\n<a href=\"{DETAILS}/{TECHNICAL}.html\">Technical details</a>\n</footer>\n<p class=\"wfoot\">Page made at {} by immunity view{}</p>",
         view::when(now, now),
         name.map_or(String::new(), |n| format!(
             " on <span class=\"mono\">{}</span>",
@@ -1697,7 +1697,7 @@ pub fn threat_data(conn: &Connection, r: &v1::Status, now: i64) -> Result<String
 
 /// The two places of a rule this version checks, as the rules page names them: its anchor
 /// there, its heading, and what being there means. A rule that cannot be checked is not on the
-/// page: `immune rules` counts those, and `docs/coverage.md` says what would open them.
+/// page: `immunity rules` counts those, and `docs/coverage.md` says what would open them.
 const PLACED: [(&str, &str, &str); 2] = [
     (
         "evaluated",
@@ -3097,7 +3097,7 @@ mod tests {
         // read and never told, or told and never watched live.
         use crate::autorun;
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-ways-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
         let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();

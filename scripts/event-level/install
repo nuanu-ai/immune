@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the event level of Immune. The owner runs it once, with his administrator
+# Installs the event level of Immunity Core. The owner runs it once, with his administrator
 # password:
 #   sudo /bin/sh scripts/event-level/install [--log-gib <n>]
 # or an installer package runs it as root for the person at the Mac's screen, naming that
@@ -7,7 +7,7 @@
 #   /bin/sh install --reader <uid> [--log-gib <n>]
 # It copies the removal script beside what it installs, and that removes everything it
 # installs, logs included:
-#   sudo /bin/sh "/Library/Application Support/ai.nuanu.immune/event-level/uninstall"
+#   sudo /bin/sh "/Library/Application Support/ai.nuanu.immunity.core/event-level/uninstall"
 #
 # Apple's eslogger, run by launchd as root, records every program start on this Mac, and
 # every file created or renamed. Apple's jq keeps of each only what the reader uses, so a
@@ -37,14 +37,14 @@
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-LIB='/Library/Application Support/ai.nuanu.immune/event-level'
-TOP='/Library/Application Support/ai.nuanu.immune'
+LIB='/Library/Application Support/ai.nuanu.immunity.core/event-level'
+TOP='/Library/Application Support/ai.nuanu.immunity.core'
 RUN="$LIB/run"
 LOG="$LIB/log"
 FIFO="$RUN/events.fifo"
 DAEMONS=/Library/LaunchDaemons
 # In the order they are started: the filter is reading before eslogger writes.
-LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
+LABELS='ai.nuanu.immunity.core.event-filter ai.nuanu.immunity.core.eslogger ai.nuanu.immunity.core.event-tidy'
 # Run by /bin/sh, so read, not executed.
 SCRIPTS='collect.sh filter.jq tidy.sh'
 # Executed by rotatelogs at each new file, so executable.
@@ -60,10 +60,10 @@ fail() {
     echo "install: $*" >&2
     case $left in
     stopped)
-        echo "install: the collector is stopped, so nothing is recorded until this script runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
+        echo "install: the collector is stopped, so nothing is recorded until this script runs again and succeeds. Immunity Core goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
         ;;
     partly)
-        echo "install: the collector is partly started: some of its launch daemons run and others do not, so it may record nothing until this script runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
+        echo "install: the collector is partly started: some of its launch daemons run and others do not, so it may record nothing until this script runs again and succeeds. Immunity Core goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
         ;;
     esac
     exit 1
@@ -299,9 +299,9 @@ fi
 
 # The cap: given, or the one the collector installed here holds, or the default; installing
 # again never shrinks the log by itself.
-TIDY="$DAEMONS/ai.nuanu.immune.event-tidy.plist"
-capped=$(cap_of "$given" "$TIDY" "$here/ai.nuanu.immune.event-tidy.plist") ||
-    fail "$here/ai.nuanu.immune.event-tidy.plist does not give the log a cap"
+TIDY="$DAEMONS/ai.nuanu.immunity.core.event-tidy.plist"
+capped=$(cap_of "$given" "$TIDY" "$here/ai.nuanu.immunity.core.event-tidy.plist") ||
+    fail "$here/ai.nuanu.immunity.core.event-tidy.plist does not give the log a cap"
 cap=${capped% *}
 case ${capped#* } in
 given) from="given with --log-gib" ;;
@@ -332,12 +332,12 @@ This installs the event level, and changes nothing else on this Mac:
       exec-<run>-<start>.jsonl, a new file at each hour and at 128 MiB, named by when the
       filter's run began and when the file was started (UTC); eslogger.err and scripts.err,
       what eslogger and these scripts print; removed, what was deleted and why
-  $DAEMONS/ai.nuanu.immune.eslogger.plist
+  $DAEMONS/ai.nuanu.immunity.core.eslogger.plist
       runs /usr/bin/eslogger exec create rename as root
-  $DAEMONS/ai.nuanu.immune.event-filter.plist
+  $DAEMONS/ai.nuanu.immunity.core.event-filter.plist
       runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log and
       runs rotated.sh, and so tidy.sh, at each new file
-  $DAEMONS/ai.nuanu.immune.event-tidy.plist
+  $DAEMONS/ai.nuanu.immunity.core.event-tidy.plist
       runs tidy.sh as root every ten minutes; it holds the log's cap, $capw ($cap bytes),
       $from. tidy.sh deletes logs older than a day, and the oldest while the log is larger
       than its cap
@@ -347,7 +347,7 @@ its pid version and start time, its users and groups, and who signed it; the env
 a program and the contents of a file are never written; files changed in place, closed or
 removed are not recorded. eslogger needs
 Full Disk Access, granted to /usr/bin/eslogger in System Settings > Privacy & Security > Full
-Disk Access; without it eslogger stops at once, nothing is recorded, and Immune says macOS
+Disk Access; without it eslogger stops at once, nothing is recorded, and Immunity Core says macOS
 refuses it.
 What it costs on disk: about 1000 bytes a program start and about 600 bytes a file event. A
 quiet Mac starting 2 programs and creating 20 files a second writes about 1.2 GB a day, and
@@ -358,7 +358,7 @@ larger than its cap, plus the file being written (128 MiB, or more if more than 
 within one second), plus what is written while tidy.sh runs: for the building Mac, at most
 about $disk GB of disk. Heavy writing pushes older lines out before their day is over. The
 log is a buffer: while the watcher runs it is read every ten seconds, and what is read is
-judged and counted. Lines deleted before they were read are counted, and Immune then says the
+judged and counted. Lines deleted before they were read are counted, and Immunity Core then says the
 day is partial.
 EOF
 
@@ -420,7 +420,7 @@ step /bin/chmod 644 "$TIDY"
 # that it is never older: the reader counts file events as collected only from this, and an
 # install that replaces the daemon without writing it again leaves it older, which counts for
 # nothing.
-step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/ai.nuanu.immune.eslogger.plist"
+step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/ai.nuanu.immunity.core.eslogger.plist"
 step /usr/sbin/chown root:wheel "$LIB/collects"
 step /bin/chmod 644 "$LIB/collects"
 # A record an earlier install wrote of what its filter kept: lines say it now.
@@ -440,7 +440,7 @@ left=
 # install put its property lists in place counts, so an earlier install's log decides nothing,
 # and of eslogger.err only what was written after `errsize`. When tidy.sh has trimmed the file
 # since, nothing in it counts, and the result is not a refusal.
-mark="$DAEMONS/ai.nuanu.immune.eslogger.plist"
+mark="$DAEMONS/ai.nuanu.immunity.core.eslogger.plist"
 # Whether a log file written since holds a line with one of the given texts.
 written() {
     found=$(/usr/bin/find "$LOG" -name 'exec-*.jsonl' -type f -newer "$mark" \
@@ -472,22 +472,22 @@ echo
 case $verdict in
 running)
     echo "RESULT: RUNNING. Program starts and file events are being recorded."
-    echo "The panel and \`immune status\` say so within a minute while the watcher runs."
+    echo "The panel and \`immunity status\` say so within a minute while the watcher runs."
     ;;
 starts_only)
     echo "RESULT: RUNNING IN PART. Program starts are being recorded; no file event was in ten seconds."
-    echo "\`immune status\` says whether file events are collected after \`immune run\`."
+    echo "\`immunity status\` says whether file events are collected after \`immunity run\`."
     ;;
 refused)
     echo "RESULT: INSTALLED, ONE STEP LEFT. The collector is installed and records nothing until then."
     echo "In System Settings, open Privacy & Security, then Full Disk Access, and turn on the switch"
     echo "beside eslogger. macOS has already put it in the list, switched off. If it is not there,"
     echo "add it with \"+\": in the file dialog press Cmd-Shift-G and enter /usr/bin/eslogger. The"
-    echo "collector starts by itself within seconds, and the panel and \`immune status\` say so."
+    echo "collector starts by itself within seconds, and the panel and \`immunity status\` say so."
     ;;
 *)
     echo "RESULT: INSTALLED, NOT RECORDING YET. Nothing was written in ten seconds, and eslogger"
-    echo "printed no refusal. \`immune status\` says what the level's state is after \`immune run\`."
+    echo "printed no refusal. \`immunity status\` says what the level's state is after \`immunity run\`."
     ;;
 esac
 echo "To remove the collector and its log: sudo /bin/sh \"$LIB/uninstall\""

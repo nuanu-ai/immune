@@ -581,7 +581,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let root = std::env::temp_dir().join(format!(
-                "immune-sessions-{tag}-{}-{nanos}",
+                "immunity-sessions-{tag}-{}-{nanos}",
                 std::process::id()
             ));
             for p in ["-invented-a", "-invented-b"] {

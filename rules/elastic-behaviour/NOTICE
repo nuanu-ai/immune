@@ -9,20 +9,20 @@ file. Its `references` link to the upstream file at that commit, and its `elasti
 the upstream rule's `rule_id` and version, the sha256 of its query, the kinds of event it is
 evaluated over, what the translation left out of it, the fields it negates that may be absent,
 the kinds of event Elastic would also evaluate it on, and the actions the upstream rule takes,
-which are ignored. None is edited by hand. The translator is not part of this repository, and
-it is the one that translated `rules/elastic/`. `SHA256SUMS` holds the sha256 of every file as
-the translator wrote it and of `not-taken.tsv`, and a test fails when a file differs from it.
+which are ignored. The same translator produced `rules/elastic/`. Its case-folded field keys use
+the core’s current prefix, `immunity.folded.`; only that prefix was substituted after translation.
+`SHA256SUMS` holds the sha256 of every shipped file and of `not-taken.tsv`, and a test fails when a file differs from it.
 
 No rule states a level. Elastic's sensor sets a behaviour alert's severity when it runs and
 does not publish which a rule gets, so each file's `severity` and `risk_score` are null and the
-file has no `level`. Immune reads a file of this set only in that shape, the keys the translator
+file has no `level`. Immunity Core reads a file of this set only in that shape, the keys the translator
 writes and no other, so a level in any spelling is refused rather than ignored. It gives these
 rules no level of its own. Their matches are counted and handed over, and none of them raises a
 finding by itself. Wherever rules are ordered or cut by level, these are a group of their own,
 never ranked among the levels.
 
 Every one of the 278 upstream rules carries actions that stop a process. The translation records
-them in `actions_ignored`, and Immune takes none of them: it never stops a process.
+them in `actions_ignored`, and Immunity Core takes none of them: it never stops a process.
 
 Each translation was checked against a reference that follows Elasticsearch's documented
 meaning of the upstream query, on 11,472 invented events evaluated by `sigma-rust` 0.7.0, the

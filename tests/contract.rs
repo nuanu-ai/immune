@@ -1,40 +1,40 @@
-//! The contract's types are what its schema gives. The schema in `contract/immune/v1/` is the
-//! source; `contract/src/immune.v1.rs`, in the crate `immune-contract`, is generated from it and
+//! The contract's types are what its schema gives. The schema in `contract/immunity/v1/` is the
+//! source; `contract/src/immunity.v1.rs`, in the crate `immunity-contract`, is generated from it and
 //! committed, so that building the program or the crate needs no generator. This test generates
 //! it again, with `protox` in place of `protoc` and `prost-build`, and fails when the committed
 //! file differs.
 //!
-//! To regenerate after changing the schema: `IMMUNE_WRITE_CONTRACT=1 cargo test --test contract`.
+//! To regenerate after changing the schema: `IMMUNITY_WRITE_CONTRACT=1 cargo test --test contract`.
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
 /// The schema's files, relative to `contract/`.
 const SCHEMA: [&str; 11] = [
-    "immune/v1/common.proto",
-    "immune/v1/event.proto",
-    "immune/v1/verdict.proto",
-    "immune/v1/known.proto",
-    "immune/v1/matches.proto",
-    "immune/v1/findings.proto",
-    "immune/v1/owner.proto",
-    "immune/v1/vulnerabilities.proto",
-    "immune/v1/status.proto",
-    "immune/v1/rules.proto",
-    "immune/v1/service.proto",
+    "immunity/v1/common.proto",
+    "immunity/v1/event.proto",
+    "immunity/v1/verdict.proto",
+    "immunity/v1/known.proto",
+    "immunity/v1/matches.proto",
+    "immunity/v1/findings.proto",
+    "immunity/v1/owner.proto",
+    "immunity/v1/vulnerabilities.proto",
+    "immunity/v1/status.proto",
+    "immunity/v1/rules.proto",
+    "immunity/v1/service.proto",
 ];
 /// The generated file, relative to the repository.
-const GENERATED: &str = "contract/src/immune.v1.rs";
+const GENERATED: &str = "contract/src/immunity.v1.rs";
 
 /// What heads the generated file, before what prost-build writes.
 const HEADER: &str =
-    "// @generated from contract/immune/v1/*.proto by prost-build, with the serde attributes that
+    "// @generated from contract/immunity/v1/*.proto by prost-build, with the serde attributes that
 // tests/contract.rs gives it. Do not edit: the test `the_committed_types_are_what_the_schema_gives`
 // generates it again and fails when this file differs. To regenerate:
-// IMMUNE_WRITE_CONTRACT=1 cargo test --test contract
+// IMMUNITY_WRITE_CONTRACT=1 cargo test --test contract
 ";
 
 /// An enum's name as the prefix of its values: `FindingState` is `FINDING_STATE`.
@@ -113,7 +113,7 @@ fn generate() -> String {
             }
             for f in m.field.iter().filter(|f| f.r#type() == Type::Enum) {
                 // An enum field is an i32 in prost; it prints as its value's name, with the
-                // functions at the root of `immune-contract`.
+                // functions at the root of `immunity-contract`.
                 let rust = f.type_name().rsplit('.').next().unwrap();
                 let (ser, de) = if f.proto3_optional() {
                     ("optional_enum_name", "optional_enum_from_name")
@@ -141,7 +141,7 @@ fn generate() -> String {
     config
         .compile_fds(fds)
         .expect("prost-build generates the types");
-    let code = std::fs::read_to_string(out.join("immune.v1.rs")).unwrap();
+    let code = std::fs::read_to_string(out.join("immunity.v1.rs")).unwrap();
     format!("{HEADER}{code}")
 }
 
@@ -151,13 +151,13 @@ fn generate() -> String {
 fn the_committed_types_are_what_the_schema_gives() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GENERATED);
     let fresh = generate();
-    if std::env::var_os("IMMUNE_WRITE_CONTRACT").is_some() {
+    if std::env::var_os("IMMUNITY_WRITE_CONTRACT").is_some() {
         std::fs::write(&path, &fresh).unwrap();
     }
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
         committed == fresh,
-        "{GENERATED} is not what the schema gives; regenerate it: IMMUNE_WRITE_CONTRACT=1 cargo test --test contract"
+        "{GENERATED} is not what the schema gives; regenerate it: IMMUNITY_WRITE_CONTRACT=1 cargo test --test contract"
     );
 }
 
@@ -190,7 +190,7 @@ fn a_failure_read_as_any_answer_reads_format_zero() {
         errors: vec![v1::Error {
             code: "several_programs".to_string(),
             message: "invented".to_string(),
-            example: Some("immune project <id> --json".to_string()),
+            example: Some("immunity project <id> --json".to_string()),
             detail_text: Some("invented detail".to_string()),
             ids_text: vec!["checkout:machine:mac/dev/Shop".to_string()],
         }],

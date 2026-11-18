@@ -6,7 +6,7 @@
 //!
 //! The answers are committed in `contract/samples/`, with the invented Mac's folder written as
 //! `/Users/example`. This test makes them again and fails when what is committed no longer has
-//! the shape they have now; to write them again: `IMMUNE_WRITE_CONTRACT_SAMPLES=1 cargo test
+//! the shape they have now; to write them again: `IMMUNITY_WRITE_CONTRACT_SAMPLES=1 cargo test
 //! --test contract_samples`.
 
 mod common;
@@ -19,10 +19,10 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
-const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
-const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
-const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
-const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist";
+const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immunity.core.event-tidy.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/log";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immunity.core/event-level/collects";
 /// Where the samples are committed, from the repository.
 const OUT: &str = "contract/samples";
 /// Every kind of evidence the core can emit, by its key in `Evidence`.
@@ -47,7 +47,7 @@ impl Mac {
         // The clock alone can give two tests of this file the same folder: they start together.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("immune-contract-samples-{nanos}-{n}"));
+        let root = std::env::temp_dir().join(format!("immunity-contract-samples-{nanos}-{n}"));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -70,7 +70,7 @@ impl Mac {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.env("HOME", self.0.join("home"))
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -265,12 +265,12 @@ fn prepare(mac: &Mac) -> String {
     std::fs::create_dir_all(system.join(LOG)).unwrap();
     std::fs::create_dir_all(system.join(PLIST).parent().unwrap()).unwrap();
     std::fs::copy(
-        Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
+        Path::new(SCRIPTS).join("ai.nuanu.immunity.core.eslogger.plist"),
         system.join(PLIST),
     )
     .unwrap();
     std::fs::copy(
-        Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+        Path::new(SCRIPTS).join("ai.nuanu.immunity.core.event-tidy.plist"),
         system.join(TIDY),
     )
     .unwrap();
@@ -290,7 +290,7 @@ fn prepare(mac: &Mac) -> String {
 /// there: each must still have the shape it has now.
 fn committed(answers: &BTreeMap<String, Value>) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(OUT);
-    if std::env::var_os("IMMUNE_WRITE_CONTRACT_SAMPLES").is_some() {
+    if std::env::var_os("IMMUNITY_WRITE_CONTRACT_SAMPLES").is_some() {
         std::fs::create_dir_all(&dir).unwrap();
         for (name, v) in answers {
             let text = serde_json::to_string_pretty(v).unwrap() + "\n";
@@ -443,15 +443,15 @@ fn a_client_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_siz
     assert!(!status.to_string().contains(&password()));
     let start = &answers["finding-published_rule_matched.json"]["evidence"]["published_rule_matched"]
         ["events"][0]["program_start"];
-    assert_eq!(start["cuts"][0]["kind"], "immune:flag-value", "{start:#}");
+    assert_eq!(start["cuts"][0]["kind"], "immunity:flag-value", "{start:#}");
     let given = &answers["finding-verdict_given.json"]["verdicts"]["listed"][0];
     assert_eq!(
-        given["reason_cuts"][0]["kind"], "immune:flag-value",
+        given["reason_cuts"][0]["kind"], "immunity:flag-value",
         "{given:#}"
     );
     let answered = &answers["finding-detached_process.json"]["answer"];
     assert_eq!(
-        answered["reason_cuts"][0]["kind"], "immune:flag-value",
+        answered["reason_cuts"][0]["kind"], "immunity:flag-value",
         "{answered:#}"
     );
     // Values of real size: a start in microseconds since the epoch.
@@ -467,7 +467,7 @@ fn mode(mac: &Mac, rel: &str, mode: u32) {
     std::fs::set_permissions(mac.0.join(rel), std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// What a person's Mac shows a client after some weeks: every kind of place Immune watches,
+/// What a person's Mac shows a client after some weeks: every kind of place Immunity Core watches,
 /// counts of up to seven digits, two findings, one of them a place read for the first time, two
 /// causes the person can fix with four things each, one of them long, and causes of this Mac
 /// nothing can fix. The real binary makes what an invented store can show: the findings, the
@@ -532,7 +532,7 @@ fn a_client_has_a_status_of_real_size_to_be_drawn_from() {
         .count();
     status["needs_a_look"] =
         json!({"items": [changed, first_read], "total": 2, "urgent_total": urgent});
-    // Every kind of place Immune watches, with a watcher running, in the core's words (the table
+    // Every kind of place Immunity Core watches, with a watcher running, in the core's words (the table
     // in `src/covered.rs` and the rows of `src/autorun.rs`), each found in the binary; counts of
     // real size, up to seven digits, invented.
     let kinds: [(&str, u64, &str); 16] = [
@@ -565,7 +565,7 @@ fn a_client_has_a_status_of_real_size_to_be_drawn_from() {
         ("app code kept outside the app", 57, "hourly"),
         ("packages your projects depend on", 104_918, "hourly"),
     ];
-    let binary = std::fs::read(env!("CARGO_BIN_EXE_immune")).unwrap();
+    let binary = std::fs::read(env!("CARGO_BIN_EXE_immunity")).unwrap();
     for (what, _, _) in kinds {
         assert!(
             binary.windows(what.len()).any(|w| w == what.as_bytes()),

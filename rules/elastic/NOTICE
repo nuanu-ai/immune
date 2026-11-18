@@ -7,9 +7,10 @@ with `.yml` for `.toml`. Each file is a mechanical translation of the upstream r
 and is not the upstream file. Its `references` link to the upstream file at that commit, and
 its `elastic` block gives the upstream rule's `rule_id`, severity and risk score, the sha256 of
 its query, the kinds of event it is evaluated over, what the translation left out of it, and
-the fields it negates that may be absent. None is edited by hand. The translator is not part
-of this repository. `SHA256SUMS` holds the sha256 of every file as the translator wrote it
-and of `not-taken.tsv`, and a test fails when a file differs from it. Immune reads a file of
+the fields it negates that may be absent. The translator is kept outside this
+repository. Its case-folded field keys use the core’s current prefix, `immunity.folded.`; only
+that prefix was substituted after translation. `SHA256SUMS` holds the sha256 of each shipped file
+and of `not-taken.tsv`, and a test fails when a file differs from it. Immunity Core reads a file of
 this set only in the shape the translator writes, with the record's `severity` equal to the
 rule's `level`.
 

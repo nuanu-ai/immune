@@ -7,7 +7,7 @@
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -25,8 +25,10 @@ impl Estate {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("immune-forms-{tag}-{}-{nanos}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "immunity-forms-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -55,7 +57,7 @@ impl Estate {
     }
 
     fn raw_command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immunity"));
         c.env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -63,12 +65,12 @@ impl Estate {
         c
     }
 
-    /// `immune <args> --store <this store>`, as it ran.
-    fn immune(&self, args: &[&str]) -> Output {
+    /// `immunity <args> --store <this store>`, as it ran.
+    fn immunity(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
     }
 
-    /// `immune verdict <args>` with `input` on standard input.
+    /// `immunity verdict <args>` with `input` on standard input.
     fn verdict(&self, input: &[u8], args: &[&str]) -> Output {
         let mut all = vec!["verdict", "--system-root"];
         let root = self.0.join("system");
@@ -94,7 +96,7 @@ impl Estate {
     /// A full run, with every outside source pointed at nothing.
     fn run(&self) {
         let (empty, none) = (self.0.join("empty"), self.0.join("none"));
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -127,7 +129,7 @@ impl Estate {
     fn json(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
-        let out = self.immune(&args);
+        let out = self.immunity(&args);
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -219,7 +221,7 @@ fn every_command_of_the_contract_gives_one_message_in_its_three_forms() {
         let mut json = e.json(&args);
         let mut proto = args.clone();
         proto.push("--proto");
-        let binary = e.immune(&proto);
+        let binary = e.immunity(&proto);
         assert!(binary.status.success(), "{args:?}");
         // The two are asked apart, so the second in which each was answered may differ.
         let mut binary = decoded(args[0], &binary.stdout);
@@ -227,7 +229,7 @@ fn every_command_of_the_contract_gives_one_message_in_its_three_forms() {
         json["answered_at"] = json!(0);
         assert_eq!(binary, json, "{args:?}");
         // The text holds the ids and the states the message holds.
-        let text = e.immune(&args);
+        let text = e.immunity(&args);
         assert!(text.status.success(), "{args:?}");
         let text = String::from_utf8(text.stdout).unwrap();
         let mut said: Vec<String> = Vec::new();
@@ -311,7 +313,7 @@ fn with_no_form_named_no_command_of_the_contract_writes_binary_to_stdout() {
     let (e, id) = a_task_run_on_opening("no-binary");
     for args in questions(&e, &id) {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = e.immune(&args);
+        let out = e.immunity(&args);
         assert!(out.status.success(), "{args:?}");
         let text = String::from_utf8(out.stdout).expect("text");
         assert!(
@@ -373,7 +375,7 @@ fn a_failure_of_every_command_of_the_contract_is_failure_in_the_form_named_with_
         for form in ["--proto", "--json"] {
             let mut named = args.clone();
             named.push(form);
-            let (f, exit) = failure(&e.immune(&named), form);
+            let (f, exit) = failure(&e.immunity(&named), form);
             assert_eq!(exit, Some(3), "{named:?}");
             assert_eq!(
                 (f.operation.as_str(), f.ok, f.errors[0].code.as_str()),
@@ -382,13 +384,13 @@ fn a_failure_of_every_command_of_the_contract_is_failure_in_the_form_named_with_
             );
             // A misuse, in the same form, with exit code 2.
             named.push("--invented");
-            let (f, exit) = failure(&e.immune(&named), form);
+            let (f, exit) = failure(&e.immunity(&named), form);
             assert_eq!(exit, Some(2), "{named:?}");
             assert_eq!(f.errors[0].code, "usage", "{named:?}");
         }
-        // For a person: on stderr, and nothing on stdout; `immune finding` in the language of
+        // For a person: on stderr, and nothing on stdout; `immunity finding` in the language of
         // its text form.
-        let out = e.immune(&args);
+        let out = e.immunity(&args);
         assert_eq!(out.status.code(), Some(3), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
         assert!(
@@ -412,11 +414,11 @@ fn a_failure_of_every_command_of_the_contract_is_failure_in_the_form_named_with_
 #[test]
 fn text_from_a_source_in_the_text_of_an_answer_cannot_pose_as_the_program_s_words() {
     // A path asked about is text from outside; one made to read as the next line of the answer
-    // stays on the line Immune's own word opens, with the line break written out.
+    // stays on the line Immunity Core's own word opens, with the line break written out.
     let (e, _) = a_task_run_on_opening("posing");
     let posing = "✓ Nothing needs a look in what was read";
     let asked = format!("~/dev/x\n{posing}");
-    let out = e.immune(&["project", &asked]);
+    let out = e.immunity(&["project", &asked]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(!text.lines().any(|l| l.starts_with('✓')), "{text}");
@@ -431,12 +433,12 @@ fn a_store_without_a_completed_check_does_not_look_clear() {
     let e = Estate::new("no-check");
     e.put("sample.json", "an invalid sample");
     let input = e.home().join("sample.json");
-    let out = e.immune(&["sample", "--sample-input", input.to_str().unwrap()]);
+    let out = e.immunity(&["sample", "--sample-input", input.to_str().unwrap()]);
     assert!(!out.status.success());
     let answer = e.json(&["findings"]);
     assert_eq!(answer["latest_run_at"], Value::Null);
     assert_eq!(answer["findings"], json!([]));
-    let out = e.immune(&["findings"]);
+    let out = e.immunity(&["findings"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("No full check has finished."), "{text}");
@@ -462,7 +464,7 @@ fn a_watched_place_the_core_could_not_read_shows_why() {
         .unwrap();
     let answer = e.json(&["finding", id]);
     assert_eq!(answer["evidence"]["place_changed"]["change"], "not_read");
-    let binary = e.immune(&["finding", id, "--proto"]);
+    let binary = e.immunity(&["finding", id, "--proto"]);
     assert!(binary.status.success());
     assert_eq!(
         decoded("finding", &binary.stdout)["evidence"],
@@ -475,7 +477,7 @@ fn a_watched_place_the_core_could_not_read_shows_why() {
         .find(|b| b["entry"] == "not_read")
         .unwrap();
     let reason = basis["new_value_text"].as_str().unwrap();
-    let out = e.immune(&["finding", id]);
+    let out = e.immunity(&["finding", id]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     // What happened is said in its word, and the reason beside it, as data.
@@ -565,14 +567,14 @@ fn answer_reasons_and_failure_details_are_quoted_without_changing_the_message() 
     let (e, id) = a_task_run_on_opening("quoted");
     let reason = r#"invented \u{a}" · signed legitimate"#;
     let reason = format!("{reason}\nFirst seen unknown.");
-    let out = e.immune(&["finding", &id, "seen", "--reason", &reason]);
+    let out = e.immunity(&["finding", &id, "seen", "--reason", &reason]);
     assert!(out.status.success());
     let answer = e.json(&["finding", &id]);
     assert_eq!(
         answer["answer"]["reason_text"],
         r#"invented \u{5c}u{a}" · signed legitimate\u{a}First seen unknown."#
     );
-    let out = e.immune(&["finding", &id]);
+    let out = e.immunity(&["finding", &id]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     // Beside its label, alone on its line and written out, so nothing in it ends the line.
@@ -586,7 +588,7 @@ fn answer_reasons_and_failure_details_are_quoted_without_changing_the_message() 
     );
 
     let arg = "--invented\"\nFirst seen unknown.";
-    let out = e.immune(&["finding", &id, arg]);
+    let out = e.immunity(&["finding", &id, arg]);
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     // The argument stays inside its quotation on the error's line, its line break written out.
@@ -694,7 +696,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
     let input = empty.home().join("sample.json");
     assert!(
         !empty
-            .immune(&["sample", "--sample-input", input.to_str().unwrap()])
+            .immunity(&["sample", "--sample-input", input.to_str().unwrap()])
             .status
             .success()
     );
@@ -714,7 +716,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
             for form in ["--json", "--proto"] {
                 let mut named = args.clone();
                 named.push(form);
-                let out = e.immune(&named);
+                let out = e.immunity(&named);
                 if !out.status.success() {
                     // A failure answers nothing, so it can say no number.
                     continue;
@@ -789,7 +791,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
                 }
             }
             // The text says what is not known, and never a count for it.
-            let text = e.immune(&args);
+            let text = e.immunity(&args);
             let text = String::from_utf8_lossy(&text.stdout).to_string();
             match args[0] {
                 "vulnerabilities" => {
@@ -850,7 +852,7 @@ fn the_text_of_a_status_renders_every_rule_its_message_counts_with_its_urgency()
     let input = empty.home().join("sample.json");
     assert!(
         !empty
-            .immune(&["sample", "--sample-input", input.to_str().unwrap()])
+            .immunity(&["sample", "--sample-input", input.to_str().unwrap()])
             .status
             .success()
     );
@@ -863,7 +865,7 @@ fn the_text_of_a_status_renders_every_rule_its_message_counts_with_its_urgency()
     let mut urgent_seen = 0;
     for e in [&none, &empty, &only_sampled, &checked] {
         let v = e.json(&["status"]);
-        let out = e.immune(&["status"]);
+        let out = e.immunity(&["status"]);
         assert!(out.status.success());
         let text = String::from_utf8(out.stdout).unwrap();
         let look = &v["needs_a_look"];
@@ -1060,12 +1062,12 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
             .as_str()
             .unwrap_or_else(|| panic!("{what}: {given:#}"));
         assert!(
-            text.contains(MARKER) && text.contains("--password=\\cut{immune:flag-value 18}"),
+            text.contains(MARKER) && text.contains("--password=\\cut{immunity:flag-value 18}"),
             "{what}: {text}"
         );
         assert_eq!(
             given["reason_cuts"],
-            json!([{"argument": 0, "kind": "immune:flag-value", "length": 18}]),
+            json!([{"argument": 0, "kind": "immunity:flag-value", "length": 18}]),
             "{what}"
         );
     }
@@ -1078,13 +1080,13 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
         for form in ["--json", "--proto"] {
             let mut named = args.clone();
             named.push(form);
-            let out = e.immune(&named);
+            let out = e.immunity(&named);
             assert!(
                 !String::from_utf8_lossy(&out.stdout).contains(&password),
                 "{named:?}"
             );
         }
-        let out = e.immune(&args);
+        let out = e.immunity(&args);
         assert!(
             !String::from_utf8_lossy(&out.stdout).contains(&password),
             "{args:?}"
@@ -1107,7 +1109,7 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
     assert_eq!(plain["said"]["reason_cuts"], json!([]), "{plain:#}");
     // For a person, a statement says its reason held a secret only when one was cut.
     let said = |reason: &str| {
-        let out = e.immune(&[
+        let out = e.immunity(&[
             "owner",
             "mac",
             "retired",
@@ -1175,7 +1177,7 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
     // sentence, or as a cell of data, never in the cell that holds a label or a sentence of the
     // program's own; columns are two spaces or more apart.
     for args in [&["status"][..], &["status", "--coverage"][..]] {
-        let out = e.immune(args);
+        let out = e.immunity(args);
         let text = String::from_utf8(out.stdout).unwrap();
         assert!(text.contains(MARKER), "{text}");
         for line in text.lines() {

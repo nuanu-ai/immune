@@ -1,5 +1,5 @@
-// What the last finished check left, read from the store alone: the answer to `immune status`,
-// and to `immune run` once its check finished. Version 1 of the contract between the core and a
+// What the last finished check left, read from the store alone: the answer to `immunity status`,
+// and to `immunity run` once its check finished. Version 1 of the contract between the core and a
 // program that runs it. How a message is printed and read, and the conventions for text,
 // references, times and changes, are in `common.proto`.
 //
@@ -19,17 +19,17 @@
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/common.proto";
-import "immune/v1/event.proto";
-import "immune/v1/findings.proto";
-import "immune/v1/known.proto";
-import "immune/v1/matches.proto";
-import "immune/v1/owner.proto";
-import "immune/v1/vulnerabilities.proto";
+import "immunity/v1/common.proto";
+import "immunity/v1/event.proto";
+import "immunity/v1/findings.proto";
+import "immunity/v1/known.proto";
+import "immunity/v1/matches.proto";
+import "immunity/v1/owner.proto";
+import "immunity/v1/vulnerabilities.proto";
 
-// The answer to `immune status`, and to `immune run` once its check finished.
+// The answer to `immunity status`, and to `immunity run` once its check finished.
 message Status {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
   reserved 1000 to 1099;
@@ -49,7 +49,7 @@ message Status {
   repeated string cannot_judge = 6;
   // The published rules this build ships, and what they do here now.
   RulesNow rules = 7;
-  // The watcher, `immune watch`. Absent unless one holds this store now, so a watcher that died
+  // The watcher, `immunity watch`. Absent unless one holds this store now, so a watcher that died
   // never shows as watching.
   Watcher watching = 8;
   // Whether this Mac is watched, and what.
@@ -98,7 +98,7 @@ message Status {
   // as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
   // there is no store. Since 1.9.0.
   optional int64 journal_seq = 27;
-  // Whether the core's login job, the one `immune on` writes, has its property list in this
+  // Whether the core's login job, the one `immunity on` writes, has its property list in this
   // account's `~/Library/LaunchAgents`, read from the file's presence alone: launchd is not asked,
   // so with no watcher on the store it reads as installed and not running. Absent when this store
   // is not the one the job watches, the default one, and when the place cannot be read.
@@ -109,15 +109,15 @@ message Status {
   // Absent while a watcher holds the store, when the latest one left for another reason, and
   // once a few minutes have passed without a new one. Since 1.19.0.
   optional int64 watcher_restarting_since_at = 29;
-  // When Immune was last turned on, as the job's watcher records it at its first reading after
-  // `immune on`, and when `immune off` last turned it off, as the store's journal records them;
+  // When Immunity Core was last turned on, as the job's watcher records it at its first reading after
+  // `immunity on`, and when `immunity off` last turned it off, as the store's journal records them;
   // absent when it records none. Since 1.20.0.
   optional int64 turned_on_at = 30;
   optional int64 turned_off_at = 31;
   // Whether the latest of the two in the journal's order, not by their times, is `turned_on`;
   // absent when there is neither. With no watcher on the store and `login_job_installed` false, it
-  // says how Immune went off: false, by `immune off`; true, by something else, since the job
-  // `immune on` loaded is gone. Since 1.20.0.
+  // says how Immunity Core went off: false, by `immunity off`; true, by something else, since the job
+  // `immunity on` loaded is gone. Since 1.20.0.
   optional bool turned_on_latest = 32;
 }
 
@@ -126,7 +126,7 @@ message StoreFile {
   // Its path, absolute. Whole.
   string path_text = 1;
   bool exists = 2;
-  // The pages `immune view` writes for sections of its summary, so that nothing outside builds
+  // The pages `immunity view` writes for sections of its summary, so that nothing outside builds
   // a path. Present only when the store exists.
   repeated ViewSection view_sections = 3;
 }
@@ -745,7 +745,7 @@ message NeedsALook {
   // How many there are.
   uint64 total = 2;
   // How many of them are urgent, counted over all of them and not over `items`. More than the
-  // urgent ones listed means some urgent findings are not listed; `immune findings` lists every
+  // urgent ones listed means some urgent findings are not listed; `immunity findings` lists every
   // finding.
   uint64 urgent_total = 3;
   // Every rule that has a finding that needs a look, each counted over all of them and not over
@@ -798,7 +798,7 @@ message StatementsOutsideApp {
   uint64 total = 2;
 }
 
-// The answer to `immune sample`: one sample of this user's processes and their connections,
+// The answer to `immunity sample`: one sample of this user's processes and their connections,
 // counted. What it found is recorded, and a finding it opened is in the status.
 message Sample {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.

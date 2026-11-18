@@ -12,7 +12,7 @@ logsource: {"product": "macos", "category": "process_creation"}
 detection:
   s1: {"process.name|cased": ["scp"]}
   s2: {"process.args|contains": ["\u0000StrictHostKeyChecking=no\u0000"]}
-  s3: [{"process.command_line": ["*scp *localhost:/*"]}, {"immune.folded.process.command_line|re": ["(?s)\\A.*scp .*127\\.0\\.0\\..:/.*\\z"]}]
+  s3: [{"process.command_line": ["*scp *localhost:/*"]}, {"immunity.folded.process.command_line|re": ["(?s)\\A.*scp .*127\\.0\\.0\\..:/.*\\z"]}]
   s4: {"process.command_line": ["*vagrant@*127.0.0.1*"]}
   condition: "(s1 and s2 and s3 and not s4)"
 level: "high"

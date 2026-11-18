@@ -1,5 +1,5 @@
 # The event level's retention, run as root by launchd every ten minutes
-# (ai.nuanu.immune.event-tidy) and by rotated.sh each time rotatelogs starts a new log file:
+# (ai.nuanu.immunity.core.event-tidy) and by rotated.sh each time rotatelogs starts a new log file:
 #   /bin/sh tidy.sh <log folder> <most bytes of log>
 # A log file holds at most an hour, or 128 MiB. One not written to for a day holds only lines
 # older than a day, and is deleted. Then, while the log files together are larger than the
@@ -54,7 +54,7 @@ cap=$2
 
 cd "$log" || exit 66
 # The lock. Nothing is printed when it is held: what this prints goes to scripts.err, which
-# Immune reads as the scripts failing.
+# Immunity Core reads as the scripts failing.
 if ! /bin/mkdir tidy.lock 2>/dev/null; then
     [ -n "$(/usr/bin/find tidy.lock -prune -mmin +10 2>/dev/null)" ] || exit 0
     /bin/rmdir tidy.lock 2>/dev/null

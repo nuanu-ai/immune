@@ -251,7 +251,7 @@ mod tests {
         assert!(finished(&mut checks, 10).unwrap_err().contains('7'));
         assert!(checks.tick(11).is_none());
         assert!(checks.running.is_none());
-        let mut checks = Checks::new(Command::new("/no/such/immune-test-tool"));
+        let mut checks = Checks::new(Command::new("/no/such/immunity-test-tool"));
         assert!(
             checks
                 .tick(10)
@@ -312,7 +312,7 @@ mod tests {
 
     fn check_tools_stop(kill_child: bool) {
         let dir = std::env::temp_dir().join(format!(
-            "immune-check-stop-{}-{kill_child}",
+            "immunity-check-stop-{}-{kill_child}",
             std::process::id()
         ));
         let _removed = crate::common::Scratch::at(dir.clone());

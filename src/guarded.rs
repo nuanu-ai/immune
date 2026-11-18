@@ -359,7 +359,7 @@ mod tests {
         // searched, so entering it would fail where not entering it succeeds.
         use std::os::unix::fs::{PermissionsExt, symlink};
         let base = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-guarded-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-guarded-{}", std::process::id())),
         );
         std::fs::create_dir_all(base.join("Documents/proj")).unwrap();
         std::fs::create_dir_all(base.join("dev/shop")).unwrap();

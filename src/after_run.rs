@@ -1,15 +1,15 @@
-//! The text for a person of `immune run`, `immune on`, `immune off` and `immune
+//! The text for a person of `immunity run`, `immunity on`, `immunity off` and `immunity
 //! sample`, rendered from the command's message alone for a screen (`screen.rs`), in the layout
-//! `overview.rs` set for `immune status`: the answer first, in one line; then what needs the
+//! `overview.rs` set for `immunity status`: the answer first, in one line; then what needs the
 //! person; then context, one labelled line each; last, the next command after `→`.
 //!
-//! `immune run` answers with the status the check left, read back from the store (`Status`), so
+//! `immunity run` answers with the status the check left, read back from the store (`Status`), so
 //! its text is made from that message too: what it raised is told by the findings first seen
 //! since the check began, and whether it may say "nothing needs a look" is decided by the
 //! status's own rule (`overview::failing`), never by a second one. After the lines that are the
 //! run's own (what changed, what was read), it says what the status says of the same store after
 //! its headline, from the status's own function (`overview::context`), so a run is never calmer
-//! than `immune status`.
+//! than `immunity status`.
 //!
 //! Text from a source (a path, a name, what a source said of a failure) is escaped as it reaches
 //! the screen, before it is measured, cut or styled (`screen.rs`), and is set in a column or
@@ -242,7 +242,7 @@ fn read(s: &v1::Status) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// `immune run` for a person, from the status the check left.
+/// `immunity run` for a person, from the status the check left.
 pub fn run(s: &v1::Status, screen: &Screen) -> String {
     if !s.store.as_ref().is_some_and(|f| f.exists) {
         return overview::status(s, screen, false);
@@ -311,9 +311,9 @@ pub fn run(s: &v1::Status, screen: &Screen) -> String {
     out.push(String::new());
     let mut next = Vec::new();
     if look.is_some_and(|n| n.total > 0) {
-        next.push(("immune findings", "lists every one, most urgent first"));
+        next.push(("immunity findings", "lists every one, most urgent first"));
     }
-    next.push(("immune status", "what is watched and what was not read"));
+    next.push(("immunity status", "what is watched and what was not read"));
     out.extend(screen.nexts(&next));
     joined(&out)
 }
@@ -419,22 +419,24 @@ fn step(
     lines
 }
 
-/// That turning Immune off was not recorded in the store, and why, from the closed set the
+/// That turning Immunity Core off was not recorded in the store, and why, from the closed set the
 /// message gives it in; `None` when it was, or there was nothing to record.
 fn not_recorded(m: &v1::Service) -> Option<String> {
     use v1::NotRecorded::*;
     let why = match v1::NotRecorded::try_from(m.not_recorded?) {
         Ok(NoStore) => "there is no store yet",
-        Ok(StoreRefused) => "the store was made by another build of Immune or cannot be written",
+        Ok(StoreRefused) => {
+            "the store was made by another build of Immunity Core or cannot be written"
+        }
         Ok(Busy) => "a check held the store",
         _ => "the core does not say why",
     };
     Some(format!(
-        "The store does not record that this turned Immune off: {why}."
+        "The store does not record that this turned Immunity Core off: {why}."
     ))
 }
 
-/// `immune on` and `immune off` for a person: what the command left, as steps,
+/// `immunity on` and `immunity off` for a person: what the command left, as steps,
 /// each only as the message says it.
 pub fn service(m: &v1::Service, screen: &Screen) -> String {
     // The home folder is where the job's property list is, `~/Library/LaunchAgents`.
@@ -451,25 +453,25 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         // failure; unknown is never said as no.
         let headline = match (m.loaded, m.started, m.watching) {
             (true, _, Some(true)) => {
-                screen.headline("✓ Immune is on: watching", GREEN.bold(), None)
+                screen.headline("✓ Immunity Core is on: watching", GREEN.bold(), None)
             }
             (true, Some(true), _) => screen.headline(
-                "Immune is on: started, the first check is running",
+                "Immunity Core is on: started, the first check is running",
                 BOLD,
                 None,
             ),
             (true, Some(false), _) => screen.headline(
-                "Immune is on, but its watcher has not started: check the job and turn it on again",
+                "Immunity Core is on, but its watcher has not started: check the job and turn it on again",
                 RED.bold(),
                 None,
             ),
             (true, None, _) => screen.headline(
-                "Immune is on; whether its watcher started is not known",
+                "Immunity Core is on; whether its watcher started is not known",
                 YELLOW.bold(),
                 None,
             ),
             (false, ..) => screen.headline(
-                "Immune is on, but launchd has not loaded its login job",
+                "Immunity Core is on, but launchd has not loaded its login job",
                 YELLOW.bold(),
                 None,
             ),
@@ -504,7 +506,7 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         out.push(String::new());
         let mut said = Vec::new();
         if m.replaced {
-            said.push("Immune was on before, and this replaced its job.");
+            said.push("Immunity Core was on before, and this replaced its job.");
         }
         if in_place {
             said.push(
@@ -517,30 +519,36 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         let not_started = m.loaded && m.started == Some(false);
         if not_started {
             said.push(
-                "launchd loaded the job and no watcher took the store within 5 seconds. launchctl print gui/$(id -u)/ai.nuanu.immune.watch shows the job's state and its last exit.",
+                "launchd loaded the job and no watcher took the store within 5 seconds. launchctl print gui/$(id -u)/ai.nuanu.immunity.core.watch shows the job's state and its last exit.",
             );
         }
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
         match (m.loaded, m.started, m.watching) {
             (true, _, Some(true)) => {
-                out.push(screen.next("immune status", "what has been read so far"));
+                out.push(screen.next("immunity status", "what has been read so far"));
             }
-            (true, Some(true), _) => out.push(screen.next("immune status", "when watching begins")),
+            (true, Some(true), _) => {
+                out.push(screen.next("immunity status", "when watching begins"))
+            }
             (true, None, _) => {
-                out.push(screen.next("immune status", "whether the watcher has started"));
+                out.push(screen.next("immunity status", "whether the watcher has started"));
             }
-            _ => out.push(screen.next("immune on", "registers the job again")),
+            _ => out.push(screen.next("immunity on", "registers the job again")),
         }
     } else if m.replaced {
-        out.extend(screen.headline("✓ Immune is off for this account", GREEN.bold(), None));
+        out.extend(screen.headline(
+            "✓ Immunity Core is off for this account",
+            GREEN.bold(),
+            None,
+        ));
         out.push(String::new());
         let loaded: Step = if m.loaded {
             (false, "Still loaded", &m.label, YELLOW)
         } else {
             (true, "Job not loaded", &m.label, PLAIN)
         };
-        // A core run where it is was not put there by `immune on`, and stays.
+        // A core run where it is was not put there by `immunity on`, and stays.
         let core: Step = if in_place {
             (false, "Core stays at", &program, PLAIN)
         } else {
@@ -558,9 +566,13 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
             .collect();
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
-        out.push(screen.next("immune on", "turns it on again"));
+        out.push(screen.next("immunity on", "turns it on again"));
     } else {
-        out.extend(screen.headline("Immune was not on, so nothing was turned off", BOLD, None));
+        out.extend(screen.headline(
+            "Immunity Core was not on, so nothing was turned off",
+            BOLD,
+            None,
+        ));
         out.push(String::new());
         steps(
             screen,
@@ -572,12 +584,12 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
             ],
         );
         out.push(String::new());
-        out.push(screen.next("immune on", "turns it on"));
+        out.push(screen.next("immunity on", "turns it on"));
     }
     joined(&out)
 }
 
-/// `immune sample` for a person: what it opened, then what it read, counted.
+/// `immunity sample` for a person: what it opened, then what it read, counted.
 pub fn sample(m: &v1::Sample, screen: &Screen) -> String {
     let p = m.processes.unwrap_or_default();
     let i = m.interpreters.unwrap_or_default();
@@ -697,9 +709,9 @@ pub fn sample(m: &v1::Sample, screen: &Screen) -> String {
     }
     out.push(String::new());
     if m.findings_opened > 0 {
-        out.push(screen.next("immune findings", "lists every one, most urgent first"));
+        out.push(screen.next("immunity findings", "lists every one, most urgent first"));
     } else {
-        out.push(screen.next("immune status", "what is watched and what was not read"));
+        out.push(screen.next("immunity status", "what is watched and what was not read"));
     }
     joined(&out)
 }
@@ -713,8 +725,8 @@ mod tests {
     const STARTED: i64 = NOW - 40;
 
     /// Text from a source made to break out: a style, a title sequence, a C1 control, a bidi
-    /// override, a zero-width space, and a line break before lines shaped like Immune's own.
-    const HOSTILE: &str = "a\u{1b}[31mb\u{1b}]0;t\u{7}c\u{9b}31md\u{202e}e\u{200b}f\n→ immune run\n✓ Nothing needs a look";
+    /// override, a zero-width space, and a line break before lines shaped like Immunity Core's own.
+    const HOSTILE: &str = "a\u{1b}[31mb\u{1b}]0;t\u{7}c\u{9b}31md\u{202e}e\u{200b}f\n→ immunity run\n✓ Nothing needs a look";
 
     fn listed(
         id: &str,
@@ -804,7 +816,7 @@ mod tests {
         v1::Status {
             answered_at: NOW,
             store: Some(v1::StoreFile {
-                path_text: "/Users/example/.immune/store.db".to_string(),
+                path_text: "/Users/example/.immunity/store.db".to_string(),
                 exists: true,
                 ..Default::default()
             }),
@@ -911,12 +923,12 @@ mod tests {
         assert_eq!(l[10], "");
         assert_eq!(
             l[11],
-            "→ immune findings   lists every one, most urgent first"
+            "→ immunity findings   lists every one, most urgent first"
         );
         // What they do is lined up.
         assert_eq!(
             l[12],
-            "→ immune status     what is watched and what was not read"
+            "→ immunity status     what is watched and what was not read"
         );
         assert_eq!(l.len(), 13, "{text}");
         // What was found before this check is not among what it raised.
@@ -1294,7 +1306,7 @@ mod tests {
             "Not judged",
             "Downloads",
             "Event level",
-            "immune findings",
+            "immunity findings",
             "New",
         ] {
             assert!(!text.contains(absent), "{absent}: {text}");
@@ -1343,7 +1355,7 @@ mod tests {
     }
 
     /// No hidden character, no control and no style of a source's reaches the screen: every
-    /// escape sequence is one the screen wrote, and no line from a source reads as Immune's own.
+    /// escape sequence is one the screen wrote, and no line from a source reads as Immunity Core's own.
     fn assert_inert(text: &str, colour: bool) {
         for c in text.chars() {
             assert!(
@@ -1369,7 +1381,7 @@ mod tests {
             rest = &after[end..];
         }
         for line in text.lines().map(visible) {
-            assert!(!line.trim_start().starts_with("→ immune run"), "{line}");
+            assert!(!line.trim_start().starts_with("→ immunity run"), "{line}");
             assert!(!line.trim_start().starts_with("✓ Nothing"), "{line}");
         }
     }
@@ -1430,9 +1442,9 @@ mod tests {
             let m = v1::Service {
                 label: crate::service::LABEL.to_string(),
                 // The home the property list names is not where the core is: both shown whole.
-                program_path_text: format!("/Users/example/{HOSTILE}/bin/immune"),
+                program_path_text: format!("/Users/example/{HOSTILE}/bin/immunity"),
                 plist_path_text: format!(
-                    "/Users/{HOSTILE}/Library/LaunchAgents/ai.nuanu.immune.watch.plist"
+                    "/Users/{HOSTILE}/Library/LaunchAgents/ai.nuanu.immunity.core.watch.plist"
                 ),
                 installed,
                 loaded: installed,
@@ -1451,9 +1463,10 @@ mod tests {
         v1::Service {
             label: crate::service::LABEL.to_string(),
             program_path_text:
-                "/Users/example/Library/Application Support/ai.nuanu.immune/bin/immune".to_string(),
-            plist_path_text: "/Users/example/Library/LaunchAgents/ai.nuanu.immune.watch.plist"
-                .to_string(),
+                "/Users/example/Library/Application Support/ai.nuanu.immunity.core/bin/immunity"
+                    .to_string(),
+            plist_path_text:
+                "/Users/example/Library/LaunchAgents/ai.nuanu.immunity.core.watch.plist".to_string(),
             installed: true,
             loaded: true,
             replaced: true,
@@ -1481,13 +1494,14 @@ mod tests {
             (NoStore, "there is no store yet"),
             (
                 StoreRefused,
-                "the store was made by another build of Immune or cannot be written",
+                "the store was made by another build of Immunity Core or cannot be written",
             ),
             (Busy, "a check held the store"),
             (Unspecified, "the core does not say why"),
         ] {
             let text = said(Some(code));
-            let words = format!("The store does not record that this turned Immune off: {why}.");
+            let words =
+                format!("The store does not record that this turned Immunity Core off: {why}.");
             assert!(text.contains(&words), "{text}");
         }
         assert!(!said(None).contains("does not record"));
@@ -1498,10 +1512,10 @@ mod tests {
     fn on_is_calm_only_when_a_watcher_watches() {
         let text = service(&installed(), &Screen::pipe());
         assert!(
-            text.starts_with("✓ Immune is on: watching\n")
+            text.starts_with("✓ Immunity Core is on: watching\n")
                 && text.contains("\n  ✓ Started             the watcher holds the store\n")
                 && text.contains("\n  ✓ Watching            live\n")
-                && text.ends_with("→ immune status   what has been read so far\n"),
+                && text.ends_with("→ immunity status   what has been read so far\n"),
             "{text}"
         );
     }
@@ -1517,18 +1531,18 @@ mod tests {
         };
         let text = service(&first_check, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is on: started, the first check is running\n")
+            text.starts_with("Immunity Core is on: started, the first check is running\n")
                 && text.contains("\n  ✓ Started             the watcher holds the store\n")
                 && text.contains(&format!(
                     "\n    Not watching yet    {}\n",
                     crate::watch::STARTING_WORDS
                 ))
-                && text.ends_with("→ immune status   when watching begins\n"),
+                && text.ends_with("→ immunity status   when watching begins\n"),
             "{text}"
         );
         let coloured = service(&first_check, &Screen::terminal(200, true));
         assert!(
-            coloured.starts_with("\u{1b}[1mImmune is on: started"),
+            coloured.starts_with("\u{1b}[1mImmunity Core is on: started"),
             "{coloured:?}"
         );
     }
@@ -1545,16 +1559,16 @@ mod tests {
         };
         let text = service(&never, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is on, but its watcher has not started: check the job and turn it on again\n")
+            text.starts_with("Immunity Core is on, but its watcher has not started: check the job and turn it on again\n")
                 && text.contains("\n    Not started         no watcher runs on the store now\n")
                 && !text.contains("Started ")
-                && text.contains("launchctl print gui/$(id -u)/ai.nuanu.immune.watch")
-                && text.ends_with("→ immune on   registers the job again\n"),
+                && text.contains("launchctl print gui/$(id -u)/ai.nuanu.immunity.core.watch")
+                && text.ends_with("→ immunity on   registers the job again\n"),
             "{text}"
         );
         let coloured = service(&never, &Screen::terminal(200, true));
         assert!(
-            coloured.starts_with("\u{1b}[1;31mImmune is on, but"),
+            coloured.starts_with("\u{1b}[1;31mImmunity Core is on, but"),
             "{coloured:?}"
         );
     }
@@ -1569,7 +1583,7 @@ mod tests {
         };
         let text = service(&unknown, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is on; whether its watcher started is not known\n")
+            text.starts_with("Immunity Core is on; whether its watcher started is not known\n")
                 && text.contains("\n    Started             not known\n")
                 && !text.contains("Not started")
                 && !text.contains("Not watching"),
@@ -1582,13 +1596,13 @@ mod tests {
     #[test]
     fn a_core_run_where_it_is_is_named_and_off_says_it_stays() {
         let in_place = v1::Service {
-            program_path_text: "/usr/local/bin/immune".to_string(),
+            program_path_text: "/usr/local/bin/immunity".to_string(),
             in_place: Some(true),
             ..installed()
         };
         let text = service(&in_place, &Screen::pipe());
         assert!(
-            text.contains("\n  ✓ Core run where it is   /usr/local/bin/immune\n")
+            text.contains("\n  ✓ Core run where it is   /usr/local/bin/immunity\n")
                 && text.contains("so nothing was copied"),
             "{text}"
         );
@@ -1600,7 +1614,7 @@ mod tests {
         };
         let text = service(&removed, &Screen::pipe());
         assert!(
-            text.contains("\n    Core stays at      /usr/local/bin/immune\n")
+            text.contains("\n    Core stays at      /usr/local/bin/immunity\n")
                 && !text.contains("No installed core")
                 && !text.contains("sudo")
                 && !text.contains("rm "),
@@ -1664,7 +1678,7 @@ mod tests {
         };
         let text = service(&not_loaded, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is on, but launchd has not loaded its login job\n"),
+            text.starts_with("Immunity Core is on, but launchd has not loaded its login job\n"),
             "{text}"
         );
         assert!(
@@ -1672,37 +1686,44 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("\n    Not loaded          ai.nuanu.immune.watch\n"),
+            text.contains("\n    Not loaded          ai.nuanu.immunity.core.watch\n"),
             "{text}"
         );
         assert!(
-            text.ends_with("→ immune on   registers the job again\n"),
+            text.ends_with("→ immunity on   registers the job again\n"),
             "{text}"
         );
         let text = service(&installed(), &Screen::pipe());
         assert_eq!(
             lines(&text)[..5],
             [
-                "✓ Immune is on: watching",
+                "✓ Immunity Core is on: watching",
                 "",
-                "  ✓ Core in place       ~/Library/Application Support/ai.nuanu.immune/bin/immune",
-                "  ✓ Login job written   ~/Library/LaunchAgents/ai.nuanu.immune.watch.plist",
-                "  ✓ Loaded by launchd   ai.nuanu.immune.watch",
+                "  ✓ Core in place       ~/Library/Application Support/ai.nuanu.immunity.core/bin/immunity",
+                "  ✓ Login job written   ~/Library/LaunchAgents/ai.nuanu.immunity.core.watch.plist",
+                "  ✓ Loaded by launchd   ai.nuanu.immunity.core.watch",
             ]
         );
         // A path that does not fit beside its label goes whole under it; one that fits stays.
-        let narrow = lines(&service(&installed(), &Screen::terminal(75, false)));
+        let narrow = lines(&service(&installed(), &Screen::terminal(80, false)));
         assert_eq!(narrow[2], "  ✓ Core in place");
         assert_eq!(
             narrow[3],
-            "      ~/Library/Application Support/ai.nuanu.immune/bin/immune"
+            "      ~/Library/Application Support/ai.nuanu.immunity.core/bin/immunity"
         );
+        assert_eq!(narrow[4], "  ✓ Login job written");
         assert_eq!(
-            narrow[4],
-            "  ✓ Login job written   ~/Library/LaunchAgents/ai.nuanu.immune.watch.plist"
+            narrow[5],
+            "      ~/Library/LaunchAgents/ai.nuanu.immunity.core.watch.plist"
+        );
+        let fits = lines(&service(&installed(), &Screen::terminal(81, false)));
+        assert_eq!(fits[2], "  ✓ Core in place");
+        assert_eq!(
+            fits[4],
+            "  ✓ Login job written   ~/Library/LaunchAgents/ai.nuanu.immunity.core.watch.plist"
         );
         assert!(
-            text.contains("Immune was on before, and this replaced its job."),
+            text.contains("Immunity Core was on before, and this replaced its job."),
             "{text}"
         );
         // The mark of a step done is green beside words that say it.
@@ -1722,11 +1743,11 @@ mod tests {
         };
         let text = service(&removed, &Screen::pipe());
         assert!(
-            text.starts_with("✓ Immune is off for this account\n"),
+            text.starts_with("✓ Immunity Core is off for this account\n"),
             "{text}"
         );
         assert!(
-            text.contains("  ✓ Job not loaded      ai.nuanu.immune.watch\n")
+            text.contains("  ✓ Job not loaded      ai.nuanu.immunity.core.watch\n")
                 && text.contains("  ✓ No property list    ~/Library/LaunchAgents/")
                 && text.contains("The store and the optional event collector were kept."),
             "{text}"
@@ -1750,10 +1771,10 @@ mod tests {
             &Screen::pipe(),
         );
         assert!(
-            nothing.starts_with("Immune was not on, so nothing was turned off\n")
+            nothing.starts_with("Immunity Core was not on, so nothing was turned off\n")
                 && !nothing.contains('✓')
                 && !nothing.contains("kept")
-                && nothing.contains("\n    No login job        ai.nuanu.immune.watch\n"),
+                && nothing.contains("\n    No login job        ai.nuanu.immunity.core.watch\n"),
             "{nothing}"
         );
     }
@@ -1812,7 +1833,7 @@ mod tests {
         assert_eq!(l[6], "  Cannot see     processes of other users");
         assert_eq!(
             l.last().map(String::as_str),
-            Some("→ immune findings   lists every one, most urgent first")
+            Some("→ immunity findings   lists every one, most urgent first")
         );
         assert!(sample(&sample_message(5, 2), &Screen::pipe()).starts_with("✗ 2 findings opened"));
         let none = sample(&sample_message(5, 0), &Screen::pipe());
@@ -1820,7 +1841,7 @@ mod tests {
             none.starts_with("✓ No findings opened by this sample"),
             "{none}"
         );
-        assert!(none.ends_with("→ immune status   what is watched and what was not read\n"));
+        assert!(none.ends_with("→ immunity status   what is watched and what was not read\n"));
         // What could not be read keeps its word, and the headline is not calm.
         let mut unread = sample_message(5, 0);
         unread.processes.as_mut().unwrap().unreadable = 2;

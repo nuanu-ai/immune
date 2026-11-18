@@ -1,5 +1,5 @@
-//! The text for a person of `immune project`, `immune program`, `immune machine`,
-//! `immune vulnerabilities` and `immune vulnerability <id>`, rendered from the message alone for a
+//! The text for a person of `immunity project`, `immunity program`, `immunity machine`,
+//! `immunity vulnerabilities` and `immunity vulnerability <id>`, rendered from the message alone for a
 //! screen (`screen.rs`), in the layout of the core's language for a person
 //! (`docs/how-it-works.md`): the answer first; then what needs the person, grouped; then context,
 //! one labelled line each; last, the next command after `→`. On a terminal no line is longer than
@@ -14,9 +14,9 @@
 //!
 //! Text from a source is in a message's `_text` fields, already escaped one to one
 //! (`known::whole`), and is escaped again as it reaches the screen, before it is measured, cut or
-//! styled (`screen.rs`). No line begins with text from a source: each begins with Immune's own
-//! words, an indent or a mark of Immune's, so a name made to look like `✓ Nothing needs a look`
-//! can never stand where Immune's own answer stands.
+//! styled (`screen.rs`). No line begins with text from a source: each begins with Immunity Core's own
+//! words, an indent or a mark of Immunity Core's, so a name made to look like `✓ Nothing needs a look`
+//! can never stand where Immunity Core's own answer stands.
 //!
 //! The short title of a finding's rule comes from this build's own catalogue of rules, by the
 //! rule's id the message gives, as the status's does.
@@ -70,7 +70,7 @@ fn capital(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A sentence of Immune's own words that may hold text from a source, at `indent`: escaped,
+/// A sentence of Immunity Core's own words that may hold text from a source, at `indent`: escaped,
 /// broken into lines that fit, and every line after the first two columns further in, so that no
 /// text from a source begins a line.
 fn sentence(screen: &Screen, indent: usize, text: &str, style: Style) -> Vec<String> {
@@ -86,7 +86,7 @@ fn sentence(screen: &Screen, indent: usize, text: &str, style: Style) -> Vec<Str
         .collect()
 }
 
-/// Pieces of Immune's own words in styles of their own, joined by ` · ` at `indent`, broken
+/// Pieces of Immunity Core's own words in styles of their own, joined by ` · ` at `indent`, broken
 /// between pieces where the line would pass the width.
 fn pieces(screen: &Screen, indent: usize, parts: &[(String, Style)]) -> Vec<String> {
     let mut out = Vec::new();
@@ -114,7 +114,7 @@ fn pieces(screen: &Screen, indent: usize, parts: &[(String, Style)]) -> Vec<Stri
     out
 }
 
-/// The first line of an answer about one thing: Immune's word for what kind of thing it is, the
+/// The first line of an answer about one thing: Immunity Core's word for what kind of thing it is, the
 /// thing as asked, bold, cut in the middle on a terminal, and the time at the right, dim; where
 /// both do not fit, the time goes on a line of its own below. In a pipe the time follows.
 fn first_line(screen: &Screen, label: &str, what: &str, right: &str) -> Vec<String> {
@@ -208,7 +208,7 @@ fn failed(c: &v1::Coverage) -> bool {
 }
 
 /// The short title of a finding's rule, from this build's catalogue: a published rule's own
-/// title cut on a terminal, Immune's short title, or the rule's id when this build does not have
+/// title cut on a terminal, Immunity Core's short title, or the rule's id when this build does not have
 /// the rule.
 fn rule_title(screen: &Screen, rule: Option<&str>) -> String {
     let Some(rule) = rule else {
@@ -540,7 +540,7 @@ fn about_asked(k: &v1::Known, c: &v1::Coverage) -> bool {
         && c.kind == crate::known::unread_kind(question)
 }
 
-/// `immune project`, `immune program` and `immune machine` for a person.
+/// `immunity project`, `immunity program` and `immunity machine` for a person.
 pub fn known(k: &v1::Known, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     let question = v1::Question::try_from(k.question).unwrap_or(v1::Question::Unspecified);
@@ -713,7 +713,7 @@ pub fn known(k: &v1::Known, screen: &Screen) -> String {
         out.push(String::new());
         out.push(screen.next(
             &format!(
-                "immune finding {}",
+                "immunity finding {}",
                 crate::text::shell_word_or(first, "<id>")
             ),
             "shows one and how to answer it",
@@ -852,7 +852,7 @@ fn fix_cell(screen: &Screen, fixed: &[String]) -> Cell {
     }
 }
 
-/// `immune vulnerabilities` for a person.
+/// `immunity vulnerabilities` for a person.
 pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     let Some(t) = &m.totals else {
@@ -879,7 +879,7 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         }
         if !no_store {
             out.push(String::new());
-            out.push(screen.next("immune run", "checks this Mac now"));
+            out.push(screen.next("immunity run", "checks this Mac now"));
         }
         return joined(&out);
     };
@@ -1218,7 +1218,7 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         out.push(String::new());
         out.push(screen.next(
             &format!(
-                "immune vulnerability {}",
+                "immunity vulnerability {}",
                 crate::text::shell_word_or(&r.id_text, "<id>")
             ),
             "one record in every project",
@@ -1378,7 +1378,7 @@ fn answer_rows(screen: &Screen, rows: &[Row]) -> Vec<String> {
     out
 }
 
-/// `immune vulnerability <id>` for a person.
+/// `immunity vulnerability <id>` for a person.
 pub fn vulnerability(m: &v1::Vulnerability, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     let (attacks, attacks_style) = match m.in_catalogue {
@@ -1544,7 +1544,7 @@ pub fn vulnerability(m: &v1::Vulnerability, screen: &Screen) -> String {
     if m.data.is_some() {
         out.push(String::new());
         out.push(screen.next(
-            "immune vulnerabilities",
+            "immunity vulnerabilities",
             "every known vulnerability in your projects",
         ));
     }
@@ -1567,9 +1567,8 @@ mod tests {
     ];
 
     /// Text from a source made to break out: a style, a title sequence, a C1 control, a bidi
-    /// override, a zero-width space, line breaks, and lines that read as Immune's own.
-    const HOSTILE: &str =
-        "x\u{1b}[31my\u{1b}]0;t\u{7}\u{9b}2J\u{202e}\u{200b}\n✓ Nothing needs a look\n→ immune run";
+    /// override, a zero-width space, line breaks, and lines that read as Immunity Core's own.
+    const HOSTILE: &str = "x\u{1b}[31my\u{1b}]0;t\u{7}\u{9b}2J\u{202e}\u{200b}\n✓ Nothing needs a look\n→ immunity run";
 
     /// Every screen a text is checked on: a pipe, terminals of several widths, with and
     /// without colour.
@@ -1873,7 +1872,7 @@ mod tests {
         // An answered finding is counted apart, never as one that needs a look.
         assert!(text.contains("Not open   1 seen"), "{text}");
         assert!(
-            text.ends_with("→ immune finding f0000000001   shows one and how to answer it\n"),
+            text.ends_with("→ immunity finding f0000000001   shows one and how to answer it\n"),
             "{text}"
         );
         // No entity id and no raw word of the store.
@@ -2021,7 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn text_from_a_source_cannot_style_hide_or_pose_as_immune_s_own_lines() {
+    fn text_from_a_source_cannot_style_hide_or_pose_as_immunity_s_own_lines() {
         let h = whole(HOSTILE);
         let mut k = project(&h, v1::Presence::Unknown, true);
         let thing = format!("checkout:machine:example-host/dev/{h}");
@@ -2164,9 +2163,9 @@ mod tests {
                 if !screen.colour {
                     assert!(!text.contains('\u{1b}'), "{text}");
                 }
-                // No line of text from a source stands where Immune's own words stand.
+                // No line of text from a source stands where Immunity Core's own words stand.
                 for line in shown.lines() {
-                    for own in ["✓", "✗", "→ immune run", "x\\u{1b}", "Nothing needs"] {
+                    for own in ["✓", "✗", "→ immunity run", "x\\u{1b}", "Nothing needs"] {
                         assert!(!line.starts_with(own), "{own}: {line:?}\n{text}");
                     }
                 }
@@ -2380,7 +2379,7 @@ mod tests {
         );
         assert!(
             text.ends_with(
-                "→ immune vulnerabilities   every known vulnerability in your projects\n"
+                "→ immunity vulnerabilities   every known vulnerability in your projects\n"
             ),
             "{text}"
         );
@@ -2443,7 +2442,7 @@ mod tests {
         let text = vulnerability(&v1::Vulnerability::default(), &Screen::pipe());
         assert!(text.contains("\nThere is no store here yet.\n"), "{text}");
         assert!(text.contains("is not known"), "{text}");
-        assert!(text.contains("immune run makes one"), "{text}");
+        assert!(text.contains("immunity run makes one"), "{text}");
         // Nor is anything said of which projects were found, which is about none.
         assert!(!text.contains("was found"), "{text}");
     }
@@ -2643,7 +2642,7 @@ mod tests {
         let text = vulnerabilities(&v1::Vulnerabilities::default(), &Screen::pipe());
         assert_eq!(
             text,
-            "There is no store here yet.\nimmune run makes one, or immune on, which also keeps it checked.\n"
+            "There is no store here yet.\nimmunity run makes one, or immunity on, which also keeps it checked.\n"
         );
     }
 
@@ -2855,7 +2854,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.ends_with("→ immune vulnerability GHSA-0001   one record in every project\n"),
+            text.ends_with("→ immunity vulnerability GHSA-0001   one record in every project\n"),
             "{text}"
         );
         // With every row listed and none used in attacks: one section, and no "of those listed".

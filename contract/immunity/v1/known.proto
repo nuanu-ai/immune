@@ -1,14 +1,14 @@
-// What Immune's core knows of one thing, from its store alone: the answer to `immune project`,
-// `immune program` and `immune machine`. Version 1 of the contract between the core and a program
+// What Immunity Core's core knows of one thing, from its store alone: the answer to `immunity project`,
+// `immunity program` and `immunity machine`. Version 1 of the contract between the core and a program
 // that runs it. How a message is printed and read, and the conventions for text, references,
 // times and changes, are in `common.proto`. `Known` cuts no text: a coverage reason in particular
 // is given whole.
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/common.proto";
+import "immunity/v1/common.proto";
 
 // What the store knows of one thing and of the things inside it. The same message answers for a
 // project, a program or a machine; what differs is which thing is asked for.
@@ -35,7 +35,7 @@ message Known {
   // path lies in its folder. Only those with facts in force, and one level: in a project that is
   // every depth there is, and a machine's parts (its containers, packages, checkouts and watched
   // files) come without their own parts, which the question for that part gives, such as
-  // `immune project` for a checkout.
+  // `immunity project` for a checkout.
   repeated Entity parts = 6;
   // The facts in force about the thing and its parts.
   repeated Fact facts = 7;
@@ -49,12 +49,12 @@ message Known {
   //   `sweep visit`, completeness `none`;
   // - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
   //   aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
-  // - a path that is not judged on its own: `immune`, `places the readings that find projects
+  // - a path that is not judged on its own: `immunity`, `places the readings that find projects
   //   look in` (or programs), completeness `none`, the reason saying why: the path lies under no
   //   thing of its kind the store holds, or is a folder that holds some and says how many, and
   //   is answered `unknown`; or it lies strictly inside one, or names one only in another case
   //   or Unicode form, and is answered for that one;
-  // - a program the store never heard of (`immune program`, presence `unknown`): `immune`,
+  // - a program the store never heard of (`immunity program`, presence `unknown`): `immunity`,
   //   `software of package managers this version does not look for`, completeness `none`, cause
   //   `no_reader`, the reason naming what this version does not read or find.
   repeated Coverage coverage = 8;
@@ -62,7 +62,7 @@ message Known {
   // whether what was read of it is in force or retracted: what is `part_of` or `located_on` it or
   // one of its parts, what its id names as on it, such as a file of a machine, and for a project
   // anything whose id lies in its folder; in every state. A machine's include the packages of its
-  // projects, which `parts` does not list. `immune finding <id>` shows one.
+  // projects, which `parts` does not list. `immunity finding <id>` shows one.
   repeated FindingRef findings = 9;
   // The other ids the store knows the thing by, such as a machine's names linked by `same_as`, a
   // Homebrew formula's kegs, or the folder of code an application keeps outside its bundle.
@@ -81,11 +81,11 @@ message Known {
 // The question a `Known` answers. `UNSPECIFIED` is read as a question this reader cannot answer.
 enum Question {
   QUESTION_UNSPECIFIED = 0;
-  // `immune project`.
+  // `immunity project`.
   QUESTION_PROJECT = 1;
-  // `immune program`.
+  // `immunity program`.
   QUESTION_PROGRAM = 2;
-  // `immune machine`.
+  // `immunity machine`.
   QUESTION_MACHINE = 3;
 }
 

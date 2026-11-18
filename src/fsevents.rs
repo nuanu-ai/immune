@@ -310,7 +310,10 @@ impl Stream {
         // SAFETY: a valid label; a NULL attribute makes a serial queue. Owned here and
         // released exactly once: below on failure, else in `Drop`.
         let queue = unsafe {
-            dispatch_queue_create(c"ai.nuanu.immune.watch.fsevents".as_ptr(), std::ptr::null())
+            dispatch_queue_create(
+                c"ai.nuanu.immunity.core.watch.fsevents".as_ptr(),
+                std::ptr::null(),
+            )
         };
         if stream.is_null() || queue.is_null() {
             // SAFETY: each was created above, is released once, and no callback can run:
@@ -443,7 +446,7 @@ mod tests {
 
     fn temp(tag: &str) -> crate::common::Scratch {
         let dir =
-            std::env::temp_dir().join(format!("immune-fsevents-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("immunity-fsevents-{tag}-{}", std::process::id()));
         crate::common::remove(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // FSEvents names real paths; the temporary folder is behind a symbolic link.

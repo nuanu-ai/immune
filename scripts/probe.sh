@@ -1,4 +1,4 @@
-# Immune's probe: what is installed on this server. It only reads and changes nothing.
+# Immunity Core's probe: what is installed on this server. It only reads and changes nothing.
 # Environment variables of containers are printed only for names that end in VERSION.
 # Containers are listed with docker, or with `sudo -n docker`, which never asks for a password.
 # Each section starts with a `##<name>` line; `##end` marks a complete read.

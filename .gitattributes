@@ -1,0 +1,2 @@
+# Empty final TSV fields are part of the recorded results.
+docs/atomic/*.tsv whitespace=-blank-at-eol

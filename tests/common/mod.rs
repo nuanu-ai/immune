@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A new folder `immune-<tag>-<pid>-<nanos>` under the temporary folder, removed when dropped.
+/// A new folder `immunity-<tag>-<pid>-<nanos>` under the temporary folder, removed when dropped.
 pub struct Scratch(pub PathBuf);
 
 impl Scratch {
@@ -48,13 +48,13 @@ impl Drop for Scratch {
     }
 }
 
-/// `immune-<tag>-<pid>-<nanos>`: no two tests, runs or test binaries share it.
+/// `immunity-<tag>-<pid>-<nanos>`: no two tests, runs or test binaries share it.
 pub fn unique(tag: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("immune-{tag}-{}-{nanos}", std::process::id())
+    format!("immunity-{tag}-{}-{nanos}", std::process::id())
 }
 
 /// Removes `path` and everything under it, opening again first any folder under it that its

@@ -1,8 +1,8 @@
 title: Invented tool-x started with an invented flag
 id: 00000000-0000-4000-8000-0000000000a1
 status: test
-description: An invented rule that proves the check of Immune's own rules. It detects nothing real and is never shipped.
-author: Immune
+description: An invented rule that proves the check of Immunity Core's own rules. It detects nothing real and is never shipped.
+author: Immunity Core
 date: 2026-11-14
 logsource:
     product: macos

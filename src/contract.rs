@@ -1,9 +1,9 @@
 //! The contract with a program that runs the core. Its types, generated from the schema in
-//! `contract/immune/v1/`, are the crate `immune-contract` (`contract/`), which the response layer
+//! `contract/immunity/v1/`, are the crate `immunity-contract` (`contract/`), which the response layer
 //! depends on too; they are re-exported here, so the core names them as `contract::v1`. What is
 //! the core's own is here: how text from a source is shown in the contract and read back.
 
-pub use immune_contract::{v1, value_of};
+pub use immunity_contract::{v1, value_of};
 
 /// Text from a source as the contract gives it: each character `hidden` names, and the
 /// backslash itself, written as `\u{...}`. Escaping the backslash makes the shown form unique:

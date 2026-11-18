@@ -21,7 +21,7 @@
 //! a listing made in one run and an entry first seen in a later one tell that the entry is new.
 //!
 //! File integrity monitors build their baseline from their first scan of the paths given to
-//! them. Immune's readings cover different places at different times, the watcher's and a full
+//! them. Immunity Core's readings cover different places at different times, the watcher's and a full
 //! check's, so its baseline is kept per unit.
 
 use crate::{agent_folders, autorun, checkouts, store};
