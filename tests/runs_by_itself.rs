@@ -553,6 +553,539 @@ fn a_project_a_run_did_not_look_into_keeps_the_ways_it_holds_and_the_readings_sa
     assert_eq!(e.rows(removed), ["checkout:machine:mac/dev/shop"]);
 }
 
+const CHECKOUTS_KIND: &str = "checkouts under the home folder";
+
+/// What `immune project` says of a project here: held, gone or unknown.
+fn presence(e: &Estate, rel: &str) -> String {
+    let known = e.contract(&["project", &format!("checkout:machine:mac/{rel}")]);
+    known["presence"].as_str().unwrap().to_string()
+}
+
+/// The journal's removals of projects, by id, sorted.
+fn projects_removed(e: &Estate) -> Vec<String> {
+    e.rows(
+        "SELECT subject FROM journal WHERE entry = 'removed' AND predicate = 'located_on'
+           AND subject LIKE 'checkout:%' ORDER BY subject",
+    )
+}
+
+/// The cause the latest reading of checkouts gives.
+fn checkouts_cause(e: &Estate) -> String {
+    e.rows(&format!(
+        "SELECT cause FROM coverage WHERE scope = 'machine:mac' AND kind = '{CHECKOUTS_KIND}'
+           ORDER BY id DESC LIMIT 1"
+    ))
+    .concat()
+}
+
+#[test]
+fn known_projects_the_home_walk_does_not_reach_are_kept_unread_while_there_and_closed_when_gone() {
+    // Each was found by a run pointed nearer: six folders down, past the walk's depth; in a
+    // hidden folder the walk passes by. None may be said gone by the next whole run, nor what
+    // one holds be said absent from projects. The whole run reads nothing in them: a run
+    // pointed there does.
+    let e = Estate::new("deep-known");
+    e.checkout("dev/shop");
+    let rel = "src/clients/acme/apps/web/frontend";
+    let deep = e.checkout(rel);
+    put(&deep.join(".npmrc"), "ignore-scripts=false\n");
+    let hidden = e.checkout("dev/.tool");
+    e.full();
+    for root in [e.home().join("src"), hidden.clone()] {
+        e.run_in(&root);
+    }
+    assert_eq!(ways_held(&e, rel).0, [".npmrc"]);
+    put(&deep.join("package-lock.json"), LOCK);
+    e.full();
+    assert!(part_of(&e, "left-pad").is_empty());
+    assert_eq!(ways_held(&e, rel).0, [".npmrc"]);
+    assert_eq!(presence(&e, rel), "held");
+    assert_eq!(presence(&e, "dev/.tool"), "held");
+    assert!(projects_removed(&e).is_empty());
+    assert!(
+        e.rows(
+            "SELECT 1 FROM journal WHERE entry = 'removed' AND predicate = 'holds_autorun_point'"
+        )
+        .is_empty()
+    );
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+    assert_eq!(
+        ways_meaning(&e),
+        format!("{ONE_NOT_READ} {NOT_EVERY} Why: known checkouts were not looked into.")
+    );
+    e.run_in(&e.home().join("src"));
+    assert_eq!(
+        part_of(&e, "left-pad"),
+        [format!("checkout:machine:mac/{rel}")]
+    );
+
+    for c in [&deep, &hidden] {
+        std::fs::remove_dir_all(c).unwrap();
+    }
+    e.full();
+    e.full();
+    assert_eq!(presence(&e, rel), "gone");
+    assert_eq!(
+        projects_removed(&e),
+        [
+            "checkout:machine:mac/dev/.tool".to_string(),
+            format!("checkout:machine:mac/{rel}"),
+        ]
+    );
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+}
+
+#[test]
+fn a_known_project_outside_the_home_folder_is_kept_unread_by_a_whole_walk_and_read_where_pointed() {
+    // Found by a run given a folder outside the home folder. A whole walk looks again only
+    // under its own root: it keeps the project as it was and reads nothing added to it. A run
+    // pointed at the folder reads it, and closes it once it is deleted.
+    let e = Estate::new("outside-known");
+    e.checkout("dev/shop");
+    let app = e.0.join("elsewhere/app");
+    put(&app.join(".git/HEAD"), "ref: refs/heads/main\n");
+    e.run_in(&e.0.join("elsewhere"));
+    put(&app.join("package-lock.json"), LOCK);
+    e.full();
+    // The id names the real folder; the test makes it real only to spell it.
+    let real = std::fs::canonicalize(&app).unwrap().display().to_string();
+    let id = format!("checkout:machine:mac/{real}");
+    assert!(part_of(&e, "left-pad").is_empty());
+    assert_eq!(presence(&e, &real), "held");
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+    e.run_in(&e.0.join("elsewhere"));
+    assert_eq!(part_of(&e, "left-pad"), [id.as_str()]);
+    std::fs::remove_dir_all(&app).unwrap();
+    e.run_in(&e.0.join("elsewhere"));
+    assert_eq!(projects_removed(&e), [id]);
+}
+
+/// The projects a package is live in, by id.
+fn part_of(e: &Estate, package: &str) -> Vec<String> {
+    e.rows(&format!(
+        "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'part_of'
+           AND subject LIKE '%{package}%'"
+    ))
+}
+
+/// The projects held, by id, sorted.
+fn projects_held(e: &Estate) -> Vec<String> {
+    e.rows(
+        "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'located_on'
+           AND reader = 'checkouts' ORDER BY subject",
+    )
+}
+
+#[test]
+fn a_run_given_a_folder_through_a_link_or_a_parent_folder_names_its_projects_by_the_real_one() {
+    let e = Estate::new("given-real");
+    e.checkout("dev/shop");
+    link(
+        e.home().join("dev").to_str().unwrap(),
+        &e.home().join("work"),
+    );
+    e.run_in(&e.home().join("work"));
+    assert_eq!(projects_held(&e), ["checkout:machine:mac/dev/shop"]);
+    e.run_in(&e.home().join("dev/../dev"));
+    assert_eq!(projects_held(&e), ["checkout:machine:mac/dev/shop"]);
+    e.full();
+    assert_eq!(projects_held(&e), ["checkout:machine:mac/dev/shop"]);
+    assert!(projects_removed(&e).is_empty());
+}
+
+#[test]
+fn a_run_given_a_link_into_documents_holds_the_project_there_and_a_whole_walk_keeps_it_unentered() {
+    let e = Estate::new("given-into-documents");
+    e.checkout("Documents/src/shop");
+    let docs = e.home().join("Documents");
+    link(docs.join("src").to_str().unwrap(), &e.home().join("code"));
+    e.run_in(&e.home().join("code"));
+    assert_eq!(
+        projects_held(&e),
+        ["checkout:machine:mac/Documents/src/shop"]
+    );
+    // Shut, as macOS keeps it from a program it did not let in.
+    mode(&docs, 0o000);
+    e.full();
+    mode(&docs, 0o755);
+    assert_eq!(presence(&e, "Documents/src/shop"), "held");
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+    assert_eq!(
+        e.rows(
+            "SELECT completeness || '|' || reason FROM coverage WHERE reader = 'checkouts'
+               AND kind = 'folders macOS asks permission for' ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: ~/Documents"]
+    );
+}
+
+#[test]
+fn a_walk_given_a_folder_closes_the_known_projects_gone_from_it_and_none_outside_it() {
+    // In Documents, which only a walk given it enters.
+    let e = Estate::new("given-closes");
+    let shop = e.checkout("Documents/src/shop");
+    let hidden = e.checkout("Documents/src/.cache/tool");
+    let outside = e.checkout("dev/old");
+    e.full();
+    // The walk does not enter a hidden folder: a run pointed there found the project.
+    let given = e.home().join("Documents/src");
+    e.run_in(&given.join(".cache"));
+    e.run_in(&given);
+    assert_eq!(presence(&e, "Documents/src/.cache/tool"), "held");
+    for c in [&shop, &hidden, &outside] {
+        std::fs::remove_dir_all(c).unwrap();
+    }
+    e.run_in(&given);
+    assert_eq!(
+        projects_removed(&e),
+        [
+            "checkout:machine:mac/Documents/src/.cache/tool",
+            "checkout:machine:mac/Documents/src/shop"
+        ]
+    );
+    assert_eq!(presence(&e, "dev/old"), "held");
+    assert_eq!(
+        e.coverage(CHECKOUTS_KIND),
+        "partial|only the given folder was walked"
+    );
+}
+
+#[test]
+fn a_known_project_in_a_folder_macos_protects_is_kept_and_the_folder_named_without_entering_it() {
+    let e = Estate::new("known-guarded");
+    e.checkout("dev/shop");
+    for rel in [
+        "Library/CloudStorage/a/app",
+        "Library/CloudStorage/b/app",
+        "work/app",
+    ] {
+        e.checkout(rel);
+    }
+    e.full();
+    e.run_in(&e.home().join("Library/CloudStorage"));
+    // One project moves into Documents, and a link takes the place of a folder on its way:
+    // that path is no longer there, so the project is closed.
+    let docs = e.home().join("Documents");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::rename(e.home().join("work"), docs.join("work")).unwrap();
+    link(docs.join("work").to_str().unwrap(), &e.home().join("work"));
+    // Shut, as macOS keeps it from a program it did not let in.
+    mode(&docs, 0o000);
+    e.full();
+    mode(&docs, 0o755);
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+    assert_eq!(
+        e.rows(
+            "SELECT completeness || '|' || reason FROM coverage WHERE reader = 'checkouts'
+               AND kind = 'folders macOS asks permission for' ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: ~/Documents, ~/Library/CloudStorage"]
+    );
+    assert_eq!(projects_removed(&e), ["checkout:machine:mac/work/app"]);
+}
+
+#[test]
+fn a_project_whose_folder_or_one_above_it_was_renamed_in_case_only_is_held_under_one_name() {
+    // The Mac's volumes ignore case by default: looked at by its old name a folder is still
+    // there. Where the walk met it under the disk's name it is held under that name alone;
+    // where the walk does not reach it, as in a hidden folder, it stays held under the name it
+    // has, and is not read. On a volume that honours case the old name is simply not there and
+    // nothing is pinned, so the test first looks a file up in the other case and stops if it
+    // is not found.
+    let e = Estate::new("renamed-case");
+    put(&e.0.join("case"), "");
+    if !e.0.join("CASE").exists() {
+        return;
+    }
+    e.checkout("Shop");
+    e.checkout("Dev/app");
+    e.checkout(".Work/proj");
+    e.full();
+    e.run_in(&e.home().join(".Work"));
+    for (from, to) in [("Shop", "shop"), ("Dev", "dev"), (".Work", ".work")] {
+        std::fs::rename(e.home().join(from), e.home().join(to)).unwrap();
+    }
+    put(&e.home().join(".work/proj/package-lock.json"), LOCK);
+    e.full();
+    assert_eq!(
+        projects_removed(&e),
+        ["checkout:machine:mac/Dev/app", "checkout:machine:mac/Shop"]
+    );
+    assert_eq!(presence(&e, "shop"), "held");
+    assert_eq!(presence(&e, "dev/app"), "held");
+    assert_eq!(presence(&e, ".Work/proj"), "held");
+    assert!(part_of(&e, "left-pad").is_empty());
+}
+
+#[test]
+fn a_known_project_that_cannot_be_looked_at_is_kept_and_the_reading_says_why_until_it_can() {
+    // A hidden folder the walk never enters; a run pointed there found the projects. One is
+    // in a folder that cannot be searched, the other's own folder cannot be.
+    let e = Estate::new("cannot-tell");
+    e.checkout("dev/shop");
+    let rel = ".work/locked/proj";
+    e.checkout(rel);
+    e.checkout(".work/shut");
+    e.run_in(&e.home().join(".work"));
+    let shut = [e.home().join(".work/locked"), e.home().join(".work/shut")];
+    for folder in &shut {
+        mode(folder, 0o000);
+    }
+    e.full();
+    for folder in &shut {
+        mode(folder, 0o755);
+    }
+    assert_eq!(
+        e.coverage(CHECKOUTS_KIND),
+        format!(
+            "partial|known checkouts that could not be looked at, kept as they were: {rel}, .work/shut"
+        )
+    );
+    assert_eq!(checkouts_cause(&e), "failed");
+    assert_eq!(presence(&e, rel), "held");
+    e.full();
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+    assert_eq!(presence(&e, rel), "held");
+    assert!(projects_removed(&e).is_empty());
+}
+
+#[test]
+fn a_walk_whose_folder_is_not_one_writes_a_failed_reading_and_the_next_whole_walk_is_full() {
+    let e = Estate::new("root-not-folder");
+    e.checkout("dev/shop");
+    e.full();
+    let missing = e.home().join("missing");
+    e.run_in(&missing);
+    assert_eq!(
+        e.coverage(CHECKOUTS_KIND),
+        format!(
+            "none|could not look for checkouts in {}: not a folder",
+            missing.display()
+        )
+    );
+    assert_eq!(checkouts_cause(&e), "failed");
+    assert_eq!(presence(&e, "dev/shop"), "held");
+    e.full();
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+}
+
+/// The known project `dev/shop`, its hooks read, after a link took the place of the folder
+/// `replaced` and a whole walk. The link points to a folder outside the home folder; to one
+/// in `~/Library/CloudStorage` named through another case of the home folder's own name,
+/// which macOS would not take for the protected folder; and, with `in_home`, to `~/Projects`,
+/// which the walk reads. There is a project with a package the store does not know. The
+/// protected folders' reading is unchanged by the walk, the walk's reading is full, and
+/// nothing names the package but the project under `~/Projects`. Then `then` is called.
+fn after_a_link_took_the_place_of(replaced: &str, in_home: bool, then: impl Fn(&Estate)) {
+    for target in ["elsewhere", "cloud", "home"]
+        .iter()
+        .take(2 + usize::from(in_home))
+    {
+        let e = Estate::new("link-on-the-way");
+        let shop = e.checkout("dev/shop");
+        put(&shop.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+        e.full();
+        let guarded = || {
+            e.rows(
+                "SELECT completeness || '|' || coalesce(reason, '') FROM coverage
+                   WHERE reader = 'checkouts' AND kind = 'folders macOS asks permission for'
+                   ORDER BY id DESC LIMIT 1",
+            )
+        };
+        let before = guarded();
+        let (real, spelled) = match *target {
+            "cloud" => {
+                let rest = "Library/CloudStorage/x";
+                (e.home().join(rest), e.0.join("HOME").join(rest))
+            }
+            "home" => (e.home().join("Projects"), e.home().join("Projects")),
+            _ => (e.0.join("elsewhere"), e.0.join("elsewhere")),
+        };
+        let there = real.join(Path::new("dev/shop").strip_prefix(replaced).unwrap());
+        put(&there.join(".git/HEAD"), "ref: refs/heads/main\n");
+        put(
+            &there.join("package-lock.json"),
+            &LOCK.replace("left-pad", "planted-pad"),
+        );
+        std::fs::remove_dir_all(e.home().join(replaced)).unwrap();
+        link(spelled.to_str().unwrap(), &e.home().join(replaced));
+        e.full();
+        assert_eq!(e.coverage(CHECKOUTS_KIND), "full|", "{target}");
+        assert_eq!(guarded(), before, "{target}");
+        let named = e.rows(
+            "SELECT id FROM entity WHERE id LIKE '%planted%'
+             UNION ALL SELECT subject FROM assertion WHERE subject || object LIKE '%planted%'
+             UNION ALL SELECT reason FROM coverage WHERE reason LIKE '%planted%'
+             UNION ALL SELECT name FROM coverage_lack WHERE name LIKE '%planted%'",
+        );
+        assert!(
+            named.iter().all(|n| n.contains("/Projects/shop")),
+            "{target}: {named:?}"
+        );
+        assert_eq!(*target == "home", !named.is_empty(), "{target}");
+        then(&e);
+    }
+}
+
+#[test]
+fn a_known_project_under_a_folder_a_link_replaced_is_closed_and_found_where_the_walk_reaches_it() {
+    // Ids are paths of real folders: with a link above it, that path is no longer there.
+    after_a_link_took_the_place_of("dev", true, |e| {
+        assert_eq!(projects_removed(e), ["checkout:machine:mac/dev/shop"]);
+        assert!(
+            !e.found()
+                .iter()
+                .any(|(rule, at)| rule == "watched.git-hook" && at.contains("dev/shop")),
+            "{:?}",
+            e.found()
+        );
+    });
+}
+
+#[test]
+fn a_known_project_whose_own_folder_a_link_replaced_is_kept_and_nothing_where_it_points_is_read() {
+    after_a_link_took_the_place_of("dev/shop", false, |e| {
+        assert_eq!(presence(e, "dev/shop"), "held");
+        assert!(projects_removed(e).is_empty());
+    });
+}
+
+#[test]
+fn a_run_given_the_folder_above_the_home_folder_walks_the_home_folder_as_a_whole_run_does() {
+    // The suite's home folder is under `/var`, a link on macOS: given the folder above it,
+    // the walk meets the home folder by its real path and must know it by that path. It does
+    // not enter Documents or the home folder's Library, holds each project once, and closes
+    // one gone from the home folder.
+    let e = Estate::new("above-home");
+    e.checkout("dev/shop");
+    let old = e.checkout("dev/old");
+    e.checkout("Documents/src/app");
+    e.checkout("Library/tools/app");
+    e.run_in(&e.home().join("Documents/src"));
+    e.full();
+    std::fs::remove_dir_all(old).unwrap();
+    // Shut, as macOS keeps it from a program it did not let in.
+    let docs = e.home().join("Documents");
+    mode(&docs, 0o000);
+    e.run_in(&e.0);
+    mode(&docs, 0o755);
+    assert_eq!(
+        projects_held(&e),
+        [
+            "checkout:machine:mac/Documents/src/app",
+            "checkout:machine:mac/dev/shop"
+        ]
+    );
+    assert_eq!(
+        e.coverage(CHECKOUTS_KIND),
+        "partial|only the given folder was walked"
+    );
+    assert_eq!(
+        e.rows(
+            "SELECT completeness || '|' || reason FROM coverage WHERE reader = 'checkouts'
+               AND kind = 'folders macOS asks permission for' ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: ~/Documents"]
+    );
+}
+
+#[test]
+fn a_home_folder_under_git_is_never_taken_for_a_project_from_any_folder_a_run_is_given() {
+    // Settings kept under git make the home folder a repository. A run given the folder
+    // above it meets the home folder as one more folder; taking it for a project would have
+    // every run after read the whole home folder.
+    let e = Estate::new("home-under-git");
+    e.checkout("dev/shop");
+    put(&e.home().join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&e.home().join("package-lock.json"), LOCK);
+    e.run_in(&e.0);
+    e.full();
+    assert_eq!(projects_held(&e), ["checkout:machine:mac/dev/shop"]);
+    assert!(part_of(&e, "left-pad").is_empty());
+}
+
+#[test]
+fn a_run_pointed_at_a_project_whose_own_folder_a_link_replaced_loses_sight_of_its_hooks() {
+    // In a folder macOS protects, which only a run given it enters, and outside the home
+    // folder: the run pointed there looks as a whole run looks in the home folder.
+    for documents in [true, false] {
+        let e = Estate::new("pointed-link");
+        e.checkout("dev/shop");
+        let root = match documents {
+            true => e.home().join("Documents/src"),
+            false => e.0.join("elsewhere"),
+        };
+        let shop = root.join("shop");
+        put(&shop.join(".git/HEAD"), "ref: refs/heads/main\n");
+        put(&shop.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+        e.full();
+        e.run_in(&root);
+        e.seen();
+        let real = e.0.join("moved/shop");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::rename(&shop, &real).unwrap();
+        link(real.to_str().unwrap(), &shop);
+        e.run_in(&root);
+        assert_eq!(e.rules(), ["watched.git-hook"], "{}", root.display());
+    }
+}
+
+#[test]
+fn the_hooks_reading_does_not_look_inside_documents_for_a_known_project_there() {
+    // Stored by a run pointed into Documents. Then a link takes its own folder's place: only
+    // a look inside Documents could see that, and seeing it would make the hooks reading say
+    // the project is there in another form and raise a finding for its hooks read before.
+    let e = Estate::new("documents-hooks");
+    e.checkout("dev/shop");
+    let shop = e.checkout("Documents/src/shop");
+    put(&shop.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+    e.full();
+    e.run_in(&e.home().join("Documents/src"));
+    e.seen();
+    let real = e.0.join("elsewhere/shop");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&shop, &real).unwrap();
+    link(real.to_str().unwrap(), &shop);
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn a_known_project_whose_folder_above_is_now_a_file_is_closed_and_one_that_is_itself_a_file_kept() {
+    // In a hidden folder the walk never enters; a run pointed there found both. A file where a
+    // folder above was cannot hold a project; a file where the project was may be it in
+    // another form, and is not looked into.
+    let e = Estate::new("now-a-file");
+    e.checkout("dev/shop");
+    e.checkout(".work/a/proj");
+    e.checkout(".work/b");
+    e.run_in(&e.home().join(".work"));
+    for rel in [".work/a", ".work/b"] {
+        std::fs::remove_dir_all(e.home().join(rel)).unwrap();
+        put(&e.home().join(rel), "");
+    }
+    e.full();
+    assert_eq!(projects_removed(&e), ["checkout:machine:mac/.work/a/proj"]);
+    assert_eq!(presence(&e, ".work/b"), "held");
+    assert_eq!(e.coverage(CHECKOUTS_KIND), "full|");
+}
+
+#[test]
+fn a_folder_that_cannot_be_listed_fails_the_reading_of_projects_with_no_known_project_in_it() {
+    let e = Estate::new("unlisted-alone");
+    e.checkout("dev/shop");
+    let locked = e.home().join("dev/locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    mode(&locked, 0o000);
+    e.full();
+    mode(&locked, 0o755);
+    assert_eq!(
+        e.coverage(CHECKOUTS_KIND),
+        "partial|could not be listed: dev/locked"
+    );
+    assert_eq!(checkouts_cause(&e), "failed");
+}
+
 #[test]
 fn ways_not_read_are_not_said_to_be_absent_from_projects_a_run_did_not_look_into() {
     let e = Estate::new("others-skipped");

@@ -2539,21 +2539,13 @@ impl Run<'_> {
         &mut self,
         r: &Reading,
         basis: &str,
-        completeness: &str,
-        reason: Option<&str>,
-        gap: &Gap,
+        reading: &Applied,
         statements: &[Statement],
     ) -> rusqlite::Result<()> {
         let with_basis: Vec<(&str, &Statement)> = statements.iter().map(|s| (basis, s)).collect();
-        let reading = Applied {
-            completeness,
-            reason,
-            gap,
-            compared: completeness,
-        };
         let (tx, run_id) = (self.tx, r.run_id);
         let prefix = format!("checkout:{}/", self.machine);
-        self.apply_judged(r, &reading, &with_basis, &mut |e| match (
+        self.apply_judged(r, reading, &with_basis, &mut |e| match (
             e.kind,
             e.subject.strip_prefix(&prefix),
         ) {
@@ -2857,37 +2849,70 @@ fn unlisted_note(folders: &[String]) -> String {
 type CheckoutWalk = (Option<Vec<checkouts::Checkout>>, Option<&'static str>);
 
 /// Which checkouts are on this machine, with a reason if the walk failed. When its root is
-/// not a folder it has no reading. A walk of a given folder leaves the checkouts outside it.
+/// not a folder its reading failed. A walk closes a checkout the store holds only where it
+/// looked: one looked at again under its root and not there (`Walk::look_again`). It leaves
+/// the checkouts outside its root as they were. The folder given is made real first
+/// (`checkouts::given`), and a walk of a folder outside the home folder meets the home by its
+/// real path.
 fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Error>> {
-    let (root, home) = (
-        args.checkouts_root.as_ref().unwrap_or(&args.home),
-        &args.home,
-    );
+    let start = checkouts::start(args.checkouts_root.as_deref(), &args.home);
+    let root = &start.root;
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let reading = Reading {
+        reader: checkouts::READER,
+        scope: &machine,
+        kind: checkouts::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
     if !root.is_dir() {
         run.notes.push(format!(
             "Could not look for checkouts in {}: not a folder.",
             known::whole(&root.display().to_string())
         ));
+        let reason = format!(
+            "could not look for checkouts in {}: not a folder",
+            root.display()
+        );
+        let gap = Gap::of(Cause::Failed);
+        run.apply(&reading, checkouts::BASIS, "none", Some(&reason), &gap, &[])?;
         return Ok((
             None,
             Some("the checkout walk could not open its root folder"),
         ));
     }
     run.readers += 1;
-    let walk = checkouts::walk(root, home);
-    let machine = run.machine.to_string();
-    // A checkout the store holds in a folder the walk did not enter is not known to be gone,
-    // nor is one still there in another form, as a link where its folder was: it is kept as
-    // it was, and nothing inside it is read.
+    let mut walk = checkouts::walk(root, &start.home);
+    // A checkout the store holds that the walk did not meet is kept as it was, nothing inside
+    // it read, outside the walk's root, and otherwise as looking again says. One the walk met
+    // comes back gone, as one the disk names as a checkout the walk met: it is held already.
     let prefix = format!("checkout:{machine}/");
-    let kept: Vec<String> = store::live_subjects(run.tx, checkouts::READER)?
+    let (mut kept, mut unknown) = (Vec::new(), Vec::new());
+    for rel in store::live_subjects(run.tx, checkouts::READER)?
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
-        .filter(|rel| {
-            let path = home.join(rel);
-            walk.guarded.iter().any(|g| path.starts_with(g)) || checkouts::is_moved(&path)
-        })
-        .collect();
+    {
+        let path = start.home.join(&rel);
+        let Ok(under) = path.strip_prefix(root) else {
+            kept.push(rel);
+            continue;
+        };
+        match walk.look_again(under, &start) {
+            checkouts::Again::Gone => {}
+            checkouts::Again::Kept => kept.push(rel),
+            checkouts::Again::NotTold => {
+                unknown.push(rel.clone());
+                kept.push(rel);
+            }
+            checkouts::Again::Guarded(g) => {
+                if !walk.guarded.contains(&g) {
+                    walk.guarded.push(g);
+                }
+                kept.push(rel);
+            }
+        }
+    }
     let mut raw = String::new();
     for c in &walk.checkouts {
         raw.push_str(&format!("checkout\t{}\n", c.rel));
@@ -2912,7 +2937,7 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
-    not_looked_into(run, checkouts::READER, &walk.guarded, home)?;
+    not_looked_into(run, checkouts::READER, &walk.guarded, &start.home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
     let failure = unlisted
@@ -2921,39 +2946,36 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
     if unlisted.is_some() {
         run.notes.push(unlisted_note(&walk.unlisted));
     }
-    let given = args
+    // A folder that could not be listed or a known checkout that could not be looked at
+    // failed; a walk limited to the folder given read what it was given, which does not hold
+    // the rest of the home folder. The worse is the reading's cause.
+    let reasons: Vec<(String, Cause)> = args
         .checkouts_root
-        .is_some()
-        .then(|| checkouts::ONLY_GIVEN.to_string());
-    // A folder that could not be listed failed; a walk limited to the folder given read
-    // what it was given, which does not hold the rest of the home folder. The worse is the
-    // reading's cause.
-    let gap = Gap::when(Cause::worst(
-        given
-            .iter()
-            .map(|_| Cause::NotGiven)
-            .chain(unlisted.iter().map(|_| Cause::Failed)),
-    ));
-    let reasons: Vec<String> = given.into_iter().chain(unlisted).collect();
-    let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
-    let run_id = run.run_id.to_string();
-    let reading = Reading {
-        reader: checkouts::READER,
-        scope: &machine,
-        kind: checkouts::KIND,
-        run_id: &run_id,
-        at: run.at,
-        observed_at: run.at,
-    };
+        .iter()
+        .map(|_| (checkouts::ONLY_GIVEN.to_string(), Cause::NotGiven))
+        .chain(unlisted.map(|u| (u, Cause::Failed)))
+        .chain((!unknown.is_empty()).then(|| {
+            let rels = unknown.join(", ");
+            let why =
+                format!("known checkouts that could not be looked at, kept as they were: {rels}");
+            (why, Cause::Failed)
+        }))
+        .collect();
+    let gap = Gap::when(Cause::worst(reasons.iter().map(|(_, c)| *c)));
+    let reason = (!reasons.is_empty()).then(|| {
+        let said: Vec<&str> = reasons.iter().map(|(r, _)| r.as_str()).collect();
+        said.join("; ")
+    });
     let completeness = if reason.is_some() { "partial" } else { "full" };
-    run.apply_found(
-        &reading,
-        checkouts::BASIS,
+    // Every checkout the store holds is in the statements or was looked for and is gone, so
+    // the reading is compared whole, whatever its coverage says.
+    let applied = Applied {
         completeness,
-        reason.as_deref(),
-        &gap,
-        &statements,
-    )?;
+        reason: reason.as_deref(),
+        gap: &gap,
+        compared: "full",
+    };
+    run.apply_found(&reading, checkouts::BASIS, &applied, &statements)?;
     // The folders the walk listed in full and those it found in them: a checkout found later
     // in a folder listed before is new (`baseline.rs`).
     baseline::record(
@@ -3180,14 +3202,13 @@ fn read_agent_folders(
         ),
         (true, Some(_)) => ("full", None, Gap::default()),
     };
-    run.apply_found(
-        &reading,
-        agent_folders::BASIS,
+    let applied = Applied {
         completeness,
-        reason.as_deref(),
-        &gap,
-        &statements,
-    )?;
+        reason: reason.as_deref(),
+        gap: &gap,
+        compared: completeness,
+    };
+    run.apply_found(&reading, agent_folders::BASIS, &applied, &statements)?;
     Ok(found
         .into_iter()
         .map(|(rel, path)| checkouts::Checkout { rel, path })
@@ -3782,7 +3803,8 @@ fn read_watched(
     }
     // A checkout the store holds that is still there in another form, as a link where its
     // folder was: it is not gone, and its hooks are not looked at through the link.
-    for rel in checkouts::moved(run.tx, &machine, &args.home, &rels)? {
+    let start = checkouts::start(args.checkouts_root.as_deref(), &args.home);
+    for rel in checkouts::moved(run.tx, &machine, &start)? {
         let scope = format!("checkout:{machine}/{rel}");
         if !wanted(&scope, watched::HOOK_KIND) {
             continue;
