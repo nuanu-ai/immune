@@ -8,11 +8,12 @@ Immunity Core has no numbered release yet. Entries go by the day a change reache
 
 ### Added
 
-- Projects are also found by the working folders in Codex CLI's sessions, in `~/.codex/sessions` and `~/.codex/archived_sessions`, read the way Claude Code's are. A session Codex CLI has compressed is not read, and the reading of `agent-folders` says how many and names Codex CLI as having no reader.
+- Projects are also found by the working folders in Codex CLI's sessions, in `~/.codex/sessions` and `~/.codex/archived_sessions`, read the way Claude Code's are. A session Codex CLI has compressed with zstd, to `.jsonl.zst`, is decoded and read too, once while it is unchanged. One that cannot be decoded is a session file that could not be read, and the reading of `agent-folders` is partial.
 - When Gemini CLI, Continue or GitHub Copilot CLI keeps sessions in the home folder, the reading of `agent-folders` is partial with the cause `no_reader` and names that agent in `immunity status`, under `no_reader_for` and in the item `not-understood`. Their sessions are not read. Until now the reading was full, and what was said of the projects as a whole spoke for every project although these agents' working folders were never looked at. It now speaks of the projects found, with the reason.
 
 ### Changed
 
+- A session file of Claude Code or Codex CLI that is a link is no longer followed: it is a session file that could not be read, and the reading of `agent-folders` is partial. A named pipe in its place no longer holds the reading. A line of a session longer than 64 MiB is counted as a line that could not be parsed, and the lines after it are read; until now it was held whole and parsed.
 - The project is now Immunity Core. Build package `immunity-core` to run `immunity`. The contract crate is `immunity-contract` 1.21.1 and the protobuf package is `immunity.v1`. Message format and field numbers stay at their previous values. The core's own rule set is named `immunity` and its redaction kinds begin with `immunity:`.
 - The service and collector use the `ai.nuanu.immunity.core` namespace. This build starts a fresh format 9 store. See [updating and removing](docs/reference.md#updating-and-removing) before updating a running installation.
 

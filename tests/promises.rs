@@ -3841,11 +3841,11 @@ fn a_checkout_outside_the_home_folder_is_found_through_an_agent_session_and_its_
 }
 
 #[test]
-fn a_checkout_named_only_in_a_codex_session_is_found_and_an_agent_whose_sessions_are_not_read_is_named()
+fn a_checkout_named_only_in_a_codex_session_compressed_or_not_is_found_and_an_agent_whose_sessions_are_not_read_is_named()
  {
-    // Codex CLI's sessions are read as Claude Code's are. Another agent's sessions in the home
-    // folder are never read, and that agent is named as not read in the status and in the
-    // check's line, so the projects are not said to be all found.
+    // Codex CLI's sessions, compressed or not, are read as Claude Code's are. Another agent's
+    // sessions in the home folder are never read, and that agent is named as not read in the
+    // status and in the check's line, so the projects are not said to be all found.
     let a = Agents::new("agent-codex");
     let api = checkout(&a.outside, "api");
     std::fs::create_dir_all(api.join("src")).unwrap();
@@ -3876,23 +3876,28 @@ fn a_checkout_named_only_in_a_codex_session_is_found_and_an_agent_whose_sessions
     );
 
     std::fs::create_dir_all(a.home.join(".gemini/tmp/invented-hash/chats")).unwrap();
-    // Codex compresses a session it has not touched for a week, which is not read.
-    put(
+    // Codex compresses a session it has not touched for a week, which is read as well.
+    let web = checkout(&a.outside, "web");
+    let meta = serde_json::json!({
+        "timestamp": "2026-11-12T09:00:00.000Z",
+        "type": "session_meta",
+        "payload": {"id": "00000000-0000-4000-8000-000000000005", "cwd": web,
+                    "originator": "codex_cli_rs", "cli_version": "0.200.0"},
+    });
+    let compressed = put(
         &a.home,
         ".codex/sessions/2026/11/12/rollout-2026-11-12T09-00-00-e.jsonl.zst",
-        "(",
+        "",
     );
+    std::fs::write(&compressed, zstd_frame(format!("{meta}\n").as_bytes())).unwrap();
     let report = a.run();
 
-    let why = "sessions of Gemini CLI are not read; \
-               1 compressed session file of Codex CLI is not read";
+    let why = "sessions of Gemini CLI are not read";
     assert_eq!(a.agent_coverage(), [format!("partial|{why}")]);
     let status = status_json(&a.store());
     assert_eq!(
         status["no_reader_for"]["items"],
         serde_json::json!([
-            {"what": "compressed session files of a coding agent", "what_text": "Codex CLI",
-             "where_count": 1},
             {"what": "sessions of a coding agent", "what_text": "Gemini CLI", "where_count": 1}
         ])
     );
@@ -3904,7 +3909,7 @@ fn a_checkout_named_only_in_a_codex_session_is_found_and_an_agent_whose_sessions
         .unwrap_or_else(|| panic!("{:#}", status["not_covered"]));
     assert_eq!(
         item["examples_text"],
-        serde_json::json!(["compressed sessions of Codex CLI", "sessions of Gemini CLI"])
+        serde_json::json!(["sessions of Gemini CLI"])
     );
     assert!(
         report.contains("files this version does not understand yet"),
@@ -3928,13 +3933,43 @@ fn a_checkout_named_only_in_a_codex_session_is_found_and_an_agent_whose_sessions
     let live = || {
         rows(
             &a.store(),
-            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'",
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'
+             ORDER BY subject",
         )
     };
-    assert_eq!(live(), [a.outside_id("api")]);
+    assert_eq!(live(), [a.outside_id("api"), a.outside_id("web")]);
     std::fs::remove_dir_all(&api).unwrap();
     a.run();
-    assert!(live().is_empty());
+    assert_eq!(live(), [a.outside_id("web")]);
+
+    // A compressed session that does not decode is a session file that could not be read.
+    put(
+        &a.home,
+        ".codex/archived_sessions/rollout-2026-11-01T09-00-00-f.jsonl.zst",
+        "(",
+    );
+    a.run();
+    assert_eq!(
+        a.agent_coverage(),
+        [format!(
+            "partial|1 of 3 session files could not be read; {why}"
+        )]
+    );
+}
+
+/// A zstd frame of one raw block holding `bytes`, written by hand to RFC 8878: the magic
+/// number, a frame header with no content size and a window of 128 KiB (descriptor 0x38), and
+/// the block's header, marked last, of type raw and with its size.
+fn zstd_frame(bytes: &[u8]) -> Vec<u8> {
+    assert!(
+        bytes.len() <= 128 << 10,
+        "one raw block holds at most the window"
+    );
+    let header = (bytes.len() as u32) << 3 | 1;
+    let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
+    frame.extend_from_slice(&header.to_le_bytes()[..3]);
+    frame.extend_from_slice(bytes);
+    frame
 }
 
 #[test]
