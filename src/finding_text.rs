@@ -1035,18 +1035,28 @@ pub fn finding(f: &v1::Finding, s: &Screen) -> String {
 pub fn answered(f: &v1::Finding, s: &Screen) -> String {
     let id = f.finding.as_ref().map_or("", |r| r.id.as_str());
     let with = f.answered_with.as_ref();
-    let both = with.map_or(id.to_string(), |w| format!("{id} and {}", w.id));
+    // The others of a group, each named with its state; the pair says more of its other below.
+    let group = match with {
+        Some(_) => &[][..],
+        None => f.answered_together.as_slice(),
+    };
+    let both = match (with, group) {
+        (Some(w), _) | (None, [w]) => format!("{id} and {}", w.id),
+        (None, []) => id.to_string(),
+        (None, others) => format!("{id} and {} other findings", others.len()),
+    };
     let now = f.answered_at;
     let mut body: Vec<String> = Vec::new();
     let headline = match &f.answer {
         None => {
-            body.push(
-                match with {
-                    Some(_) => "Both answers are taken back, so both need a look again.",
-                    None => "Its answer is taken back, so it needs a look again.",
-                }
-                .to_string(),
-            );
+            body.push(match f.answered_together.len() {
+                0 => "Its answer is taken back, so it needs a look again.".to_string(),
+                1 => "Both answers are taken back, so both need a look again.".to_string(),
+                n => format!(
+                    "All {} answers are taken back, so each needs a look again.",
+                    n + 1
+                ),
+            });
             format!("✓ Reopened {both}")
         }
         Some(a) => {
@@ -1091,6 +1101,16 @@ pub fn answered(f: &v1::Finding, s: &Screen) -> String {
             words::<v1::FindingState>(w.state)
         ));
     }
+    if !group.is_empty() {
+        let each: Vec<String> = group
+            .iter()
+            .map(|w| format!("{} now {}", w.id, words::<v1::FindingState>(w.state)))
+            .collect();
+        body.push(format!(
+            "Answered with it: {}. All were recorded together, each as an answer of its own.",
+            each.join(", ")
+        ));
+    }
     let mut top = para(s, 0, &headline, GREEN.bold());
     for b in &body {
         top.extend(para(s, 2, b, PLAIN));
@@ -1100,15 +1120,21 @@ pub fn answered(f: &v1::Finding, s: &Screen) -> String {
     }
     // The id in a command as the shell reads it back.
     let word = crate::text::shell_word_or(id, "<id>");
-    let step = match (&f.answer, with) {
-        (Some(_), Some(w)) => vec![(
-            format!(
-                "immunity finding {word} reopen --with {}",
-                crate::text::shell_word_or(&w.id, "<id>")
-            ),
-            "takes both answers back",
+    let others: String = f
+        .answered_together
+        .iter()
+        .map(|w| format!(" --with {}", crate::text::shell_word_or(&w.id, "<id>")))
+        .collect();
+    let step = match (&f.answer, f.answered_together.len()) {
+        (Some(_), n @ 1..) => vec![(
+            format!("immunity finding {word} reopen{others}"),
+            if n == 1 {
+                "takes both answers back"
+            } else {
+                "takes every answer back"
+            },
         )],
-        (Some(_), None) => vec![(
+        (Some(_), 0) => vec![(
             format!("immunity finding {word} reopen"),
             "takes the answer back",
         )],
@@ -1764,6 +1790,7 @@ mod tests {
             state: v1::FindingState::Seen as i32,
             ..Default::default()
         });
+        pair.answered_together = pair.answered_with.iter().cloned().collect();
         let text = answered(&pair, &s);
         assert!(
             text.starts_with("✓ Marked f1e26d7c725 and f7a76b7b86f seen\n"),
@@ -1781,12 +1808,48 @@ mod tests {
             ),
             "{text}"
         );
+        assert!(!text.contains("Answered with it"), "{text}");
         let mut reopened = pair;
         reopened.answer = None;
         assert!(
             answered(&reopened, &s)
                 .starts_with("✓ Reopened f1e26d7c725 and f7a76b7b86f\n  Both answers")
         );
+        // A group: the others counted, each named with its state, all taken back by one command
+        // that names each.
+        let mut group = seen.clone();
+        group.answered_together = ["f7a76b7b86f", "f00000000b2"]
+            .map(|id| v1::FindingRef {
+                id: id.to_string(),
+                rule: Some("watched.git-hook".to_string()),
+                state: v1::FindingState::Seen as i32,
+                ..Default::default()
+            })
+            .to_vec();
+        let text = answered(&group, &s);
+        assert!(
+            text.starts_with("✓ Marked f1e26d7c725 and 2 other findings seen\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Answered with it: f7a76b7b86f now seen, f00000000b2 now seen."),
+            "{text}"
+        );
+        assert!(!text.contains("same thing"), "{text}");
+        assert!(
+            text.contains(
+                "→ immunity finding f1e26d7c725 reopen --with f7a76b7b86f --with f00000000b2   takes every answer back"
+            ),
+            "{text}"
+        );
+        // Two of one group read as two, with no pair said.
+        group.answered_together.truncate(1);
+        let text = answered(&group, &s);
+        assert!(
+            text.starts_with("✓ Marked f1e26d7c725 and f7a76b7b86f seen\n"),
+            "{text}"
+        );
+        assert!(!text.contains("same thing"), "{text}");
         // An answer that does not hide the finding says so.
         let mut stale = answered_of(base, "odd");
         stale.answer.as_mut().unwrap().in_force = false;
