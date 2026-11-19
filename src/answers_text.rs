@@ -894,7 +894,7 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         .collect();
     used.sort_unstable();
     used.dedup();
-    // What is said of the projects as a whole speaks only for those found while not all were.
+    // Discovery scope is separate from which projects have a confirmed comparison.
     let (found, scope) = Found::of(t.projects_found.as_ref());
     // Calm only when a project was compared and nothing at all could not be told.
     let calm = t.projects_compared > 0
@@ -929,23 +929,13 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
         }
         (said, RED.bold())
     } else if calm {
+        let said = format!(
+            "No known vulnerability affects the {} compared",
+            count(t.projects_compared, "project", "projects")
+        );
         match found {
-            Found::All => (
-                "✓ No known vulnerability affects your projects".to_string(),
-                GREEN.bold(),
-            ),
-            // Every project found was compared: they are the ones counted.
-            Found::NotEntered => (
-                format!(
-                    "✓ No known vulnerability affects the {} found",
-                    count(t.projects_compared, "project", "projects")
-                ),
-                GREEN.bold(),
-            ),
-            Found::LookedAt => (
-                "No known vulnerability affects the projects that were looked at".to_string(),
-                BOLD,
-            ),
+            Found::LookedAt => (said, BOLD),
+            _ => (format!("✓ {said}"), GREEN.bold()),
         }
     } else if t.projects_compared == 0 {
         (
@@ -2518,7 +2508,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            calm.starts_with("✓ No known vulnerability affects your projects\n"),
+            calm.starts_with("✓ No known vulnerability affects the 3 projects compared\n"),
             "{calm}"
         );
         // From an older core, whether every project was found is not known: never the mark.
@@ -2527,7 +2517,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            older.starts_with("No known vulnerability affects the projects that were looked at\n")
+            older.starts_with("No known vulnerability affects the 3 projects compared\n")
                 && older.contains("Whether every project was found is not known."),
             "{older}"
         );

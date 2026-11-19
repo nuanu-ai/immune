@@ -394,19 +394,24 @@ pub fn freshness(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Fresh>> {
 type LockfileReading = (String, String, Option<String>, String, Vec<Option<String>>);
 
 /// The lockfiles reader's latest reading of each checkout that is still there.
-fn lockfile_readings(conn: &Connection) -> rusqlite::Result<Vec<LockfileReading>> {
-    let readings: Vec<(i64, String, String, Option<String>, String)> = conn
-        .prepare(
-            "SELECT c.id, c.scope, c.completeness, c.reason, c.run_id FROM coverage c
+type LockfileCoverage = (i64, String, String, Option<String>, String);
+
+fn lockfile_coverage(conn: &Connection) -> rusqlite::Result<Vec<LockfileCoverage>> {
+    conn.prepare(
+        "SELECT c.id, c.scope, c.completeness, c.reason, c.run_id FROM coverage c
              WHERE c.reader = ?1
                AND c.id = (SELECT MAX(l.id) FROM coverage l WHERE l.reader = c.reader AND l.scope = c.scope)
                AND c.scope NOT IN (SELECT id FROM gone_entity)
              ORDER BY c.scope",
-        )?
-        .query_map([crate::lockfiles::READER], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    )?
+    .query_map([crate::lockfiles::READER], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })?
+    .collect()
+}
+
+fn lockfile_readings(conn: &Connection) -> rusqlite::Result<Vec<LockfileReading>> {
+    let readings = lockfile_coverage(conn)?;
     let mut lacks = conn.prepare("SELECT name FROM coverage_lack WHERE coverage = ?1")?;
     readings
         .into_iter()
@@ -455,6 +460,7 @@ struct Entry {
     from: Option<&'static str>,
     version: Option<String>,
     at: String,
+    run: String,
 }
 
 /// The packages of the lockfiles: checkout, ecosystem and name, with their entries.
@@ -465,7 +471,7 @@ fn held_packages(conn: &Connection) -> rusqlite::Result<Packages> {
     let mut packages: Packages = BTreeMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT subject, predicate, object, source_ref, scope FROM assertion
+            "SELECT subject, predicate, object, source_ref, scope, run_id FROM assertion
              WHERE layer = 'live' AND reader = ?1 AND predicate IN ('has_version', 'part_of')
              ORDER BY subject, predicate",
         )?;
@@ -476,11 +482,12 @@ fn held_packages(conn: &Connection) -> rusqlite::Result<Packages> {
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
             ))
         })?;
         let mut versioned: HashSet<String> = HashSet::new();
         for row in rows {
-            let (subject, predicate, object, at, scope) = row?;
+            let (subject, predicate, object, at, scope, run) = row?;
             let Some(rest) = subject.strip_prefix(&format!("component:{scope}/")) else {
                 continue;
             };
@@ -503,7 +510,12 @@ fn held_packages(conn: &Connection) -> rusqlite::Result<Packages> {
             packages
                 .entry((scope.clone(), eco, package.to_string()))
                 .or_default()
-                .push(Entry { from, version, at });
+                .push(Entry {
+                    from,
+                    version,
+                    at,
+                    run,
+                });
         }
     }
     Ok(packages)
@@ -1111,8 +1123,8 @@ pub struct Totals {
     pub informational: usize,
     /// Whether matching ever ran on this store.
     pub matched: bool,
-    /// Projects with a place read in full and compared with current data, none of their places
-    /// not wholly read: without one, nothing was compared and nothing is calm.
+    /// Projects whose package ecosystems were all read in full and compared with current data,
+    /// and with no place not wholly read.
     pub projects_compared: usize,
     /// What the catalogue is compared with: `catalogue_compared`.
     pub catalogue_compared: Vec<&'static str>,
@@ -1261,23 +1273,63 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
     // so every package of such a place is "don't know" with the feed's reason. One that no
     // record held names has no answer of its own and is one more "don't know" answer here,
     // standing for the records the data lacks.
-    let stale_places: HashSet<(String, String)> = conn
-        .prepare("SELECT checkout, ecosystem, feed FROM vulnerability_place")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|(_, e, feed)| feed == "not_current" || stale_eco.contains(e.as_str()))
-        .map(|(c, e, _)| (c, e))
+    let places: HashMap<(String, String), (String, String)> = conn
+        .prepare("SELECT checkout, ecosystem, lockfiles, feed FROM vulnerability_place")?
+        .query_map([], |r| Ok(((r.get(0)?, r.get(1)?), (r.get(2)?, r.get(3)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    let readings = lockfile_coverage(conn)?;
+    let packages = held_packages(conn)?;
+    let checked: HashMap<&str, (&str, &str)> = readings
+        .iter()
+        .filter(|(_, _, _, reason, _)| reason.as_deref() != Some(crate::lockfiles::NONE_FOUND_NOTE))
+        .map(|(_, checkout, completeness, _, run)| {
+            (checkout.as_str(), (completeness.as_str(), run.as_str()))
+        })
         .collect();
+    // A partial lockfile reading may retain facts that were not read again. For each ecosystem
+    // it holds, require evidence from that reading itself before counting it as compared.
+    let mut applicable = HashMap::<&str, HashMap<&str, bool>>::new();
+    for ((checkout, ecosystem, _), entries) in &packages {
+        if let Some(&(completeness, run)) = checked.get(checkout.as_str()) {
+            let observed = completeness == "full" || entries.iter().any(|entry| entry.run == run);
+            *applicable
+                .entry(checkout)
+                .or_default()
+                .entry(ecosystem)
+                .or_insert(false) |= observed;
+        }
+    }
+    // All applicable feeds must have been current at the check and still be current now.
+    let compared = |checkout: &str, ecosystem: &str| {
+        places
+            .get(&(checkout.to_string(), ecosystem.to_string()))
+            .is_some_and(|(lockfiles, feed)| {
+                lockfiles == "full" && feed == "current" && !stale_eco.contains(ecosystem)
+            })
+    };
+    t.projects_compared = checked
+        .into_iter()
+        .filter(|(checkout, (completeness, _))| {
+            if untold.contains(*checkout) {
+                return false;
+            }
+            match applicable.get(checkout) {
+                Some(ecosystems) => ecosystems
+                    .iter()
+                    .all(|(ecosystem, observed)| *observed && compared(checkout, ecosystem)),
+                // A full reading without packages can prove a supported lockfile was empty.
+                // There is no way to identify its ecosystem here, so both feeds must be current.
+                None => {
+                    *completeness == "full" && FEEDS.iter().all(|f| compared(checkout, f.ecosystem))
+                }
+            }
+        })
+        .count();
     let mut unanswered = 0;
-    for (c, e, p) in held_packages(conn)?.into_keys() {
-        if !stale_places.contains(&(c.clone(), e.to_string())) {
+    for (c, e, p) in packages.into_keys() {
+        let place = places.get(&(c.clone(), e.to_string()));
+        let stale = place.is_some_and(|(_, feed)| feed == "not_current" || stale_eco.contains(e));
+        if !stale {
             continue;
         }
         if let std::collections::btree_map::Entry::Vacant(slot) = first.entry((c, e.to_string(), p))
@@ -1314,28 +1366,6 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         .into_iter()
         .map(|((c, e, p), r)| (c, e, p, REASONS.get(r).copied().unwrap_or_default()))
         .collect();
-    // A project counts as compared where a place of it was read in full against data current
-    // at the check and now, and it has no place not wholly read.
-    let mut compared: BTreeMap<String, bool> = BTreeMap::new();
-    for (c, e, lockfiles, feed) in conn
-        .prepare("SELECT checkout, ecosystem, lockfiles, feed FROM vulnerability_place")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-    {
-        let whole = lockfiles == "full" && feed == "current" && !stale_eco.contains(e.as_str());
-        *compared.entry(c).or_insert(false) |= whole;
-    }
-    t.projects_compared = compared
-        .into_iter()
-        .filter(|(c, whole)| *whole && !untold.contains(c))
-        .count();
     t.unread_places = unread;
     t.informational = conn.query_row(
         "SELECT COUNT(*) FROM advisory

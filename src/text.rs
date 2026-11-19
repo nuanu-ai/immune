@@ -129,7 +129,10 @@ pub fn vulnerability_comparison(
     not_read: u64,
     no_lockfile: u64,
 ) -> String {
-    let mut out = if has_vulnerability_results(projects_compared, records) {
+    let partial = projects_compared < projects || unknown_packages > 0;
+    let mut out = if records == 0 && projects_compared > 0 && partial {
+        "no known vulnerabilities matched what could be compared. Exposure outside that comparison is unknown".to_string()
+    } else if has_vulnerability_results(projects_compared, records) {
         format!(
             "matched against {of}: {} in packages they use",
             count(records, "known vulnerability", "known vulnerabilities")
@@ -137,7 +140,7 @@ pub fn vulnerability_comparison(
     } else if projects == 0 {
         "no projects were found to compare".to_string()
     } else {
-        "whether known vulnerabilities affect the projects could not be established because no project's lockfiles were compared in full with current vulnerability data".to_string()
+        "whether known vulnerabilities affect the projects could not be established because no full project comparison with current vulnerability data could be confirmed".to_string()
     };
     if unknown_packages > 0 {
         out.push_str(&format!(
