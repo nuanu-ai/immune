@@ -282,6 +282,109 @@ fn a_place_where_code_runs_by_itself_is_read_whole_with_what_changed_and_what_it
     assert!(again["last_seen_at"].as_i64() > again["first_seen_at"].as_i64());
 }
 
+#[test]
+fn a_removed_watched_file_s_finding_carries_the_digest_the_file_had() {
+    // A shell profile, a Git hook and the login hook key of the login window's preferences read
+    // once, then removed: each finding that it is gone rests on the digest it had, of the file
+    // or of the key's value, and a pipe watched only for presence has none to show.
+    let e = Estate::new("gone-digest");
+    let (profile, hook, prefs) = (
+        e.home().join(".zshrc"),
+        e.home().join("dev/shop/.git/hooks/pre-commit"),
+        e.home()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+    );
+    let login_window = |entries: &str| {
+        e.put(
+            &prefs,
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>{entries}</dict></plist>\n"
+            ),
+        )
+    };
+    e.put(
+        &e.home().join("dev/shop/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    e.put(&profile, "export A=1\n");
+    e.put(&hook, "#!/bin/sh\n");
+    login_window("<key>LoginHook</key><string>/Users/example/hook.sh</string>");
+    let pipe = e.home().join(".bash_profile");
+    assert!(
+        Command::new("/usr/bin/mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
+    e.run();
+    // Changed once before it goes: only the digest it had last is the one it goes with.
+    common::next_second();
+    e.put(&profile, "export A=2\n");
+    e.run();
+    let digests: Vec<(String, String)> = rusqlite::Connection::open(e.store())
+        .unwrap()
+        .prepare(
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND predicate = 'has_content'
+               AND (object GLOB 'sha256:*' OR object GLOB 'value sha256:*')",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(digests.len(), 3, "{digests:?}");
+    common::next_second();
+    for gone in [&profile, &hook, &pipe] {
+        std::fs::remove_file(gone).unwrap();
+    }
+    login_window("");
+    e.run();
+    let listed = e.json(&["findings"]);
+    let gone: Vec<Value> = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| e.finding(f["finding"]["id"].as_str().unwrap()))
+        .filter(|f| f["evidence"]["place_changed"]["change"] == "gone")
+        .collect();
+    assert_eq!(gone.len(), 4, "{listed:#}");
+    for (file, digest) in &digests {
+        let whole = gone
+            .iter()
+            .find(|f| f["finding"]["about_text"] == *file)
+            .unwrap_or_else(|| panic!("no finding about {file}: {listed:#}"));
+        let held: Vec<&Value> = whole["rests_on"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["predicate"] == "has_content" && r["entry"] == "removed")
+            .collect();
+        assert_eq!(held.len(), 1, "{whole:#}");
+        assert_eq!(held[0]["old_value_text"], *digest);
+        assert!(held[0]["new_value_text"].is_null());
+    }
+    let presence = gone
+        .iter()
+        .find(|f| f["evidence"]["place_changed"]["presence_only"] == true)
+        .unwrap();
+    assert!(
+        !presence["rests_on"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["predicate"] == "has_content"),
+        "{presence:#}"
+    );
+    // The status says each is gone, and none of them changed.
+    let watched = &e.status()["watched"]["since_last_reading"];
+    assert_eq!(
+        (&watched["gone"], &watched["changed"]),
+        (&json!(4), &json!(0))
+    );
+}
+
 /// An application whose executable is a copy of `/usr/bin/true` and whose code is a script in
 /// its resources, signed ad hoc as a developer's build would be.
 fn application(e: &Estate) -> PathBuf {

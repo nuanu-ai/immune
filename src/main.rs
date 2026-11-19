@@ -152,9 +152,10 @@ struct FindingArgs {
     id: String,
     act: Option<findings::Act>,
     via: findings::Via,
-    /// The other finding of the pair, named with `--with`, given the same answer in the same
-    /// transaction (`findings::pair`).
-    with: Option<String>,
+    /// The other findings named with `--with`, in the order given: the other finding of the pair,
+    /// or findings of one group, given the same answer in the same transaction
+    /// (`findings::together`).
+    with: Vec<String>,
     /// The `journal_seq` of the answer the findings were read in, `--journal-seq`: the answer is
     /// refused when anything joined them after it (`findings::unchanged`).
     journal_seq: Option<i64>,
@@ -437,7 +438,7 @@ fn parse_args(
         "finding" => {
             let typed: Vec<String> = it.collect();
             let (mut reason, mut days, mut via, mut words) = (None, None, None, Vec::new());
-            let (mut with, mut seq) = (None, None);
+            let (mut with, mut seq) = (Vec::new(), None);
             let parsed = options.read(typed.clone().into_iter(), |arg, it| {
                 match arg.as_str() {
                     "--reason" => reason = Some(value(it, &arg)?),
@@ -446,7 +447,12 @@ fn parse_args(
                     // the first named would be left as it was without a word. A second `--via`
                     // would turn an agent's answer into the app's, which needs no read.
                     "--via" => via = Some(via_once(via, it, &arg)?),
-                    "--with" => once(&mut with, it, &arg)?,
+                    // Given once for the pair, or once for each other finding of a group.
+                    "--with" => {
+                        let mut other = None;
+                        once(&mut other, it, &arg)?;
+                        with.extend(other);
+                    }
                     "--journal-seq" => once(&mut seq, it, &arg)?,
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
@@ -494,9 +500,9 @@ fn parse_args(
             // on a card drawn from a read. Still optional from the command line. `reopen` quiets
             // nothing and needs none.
             let quiets = matches!(verb, Some(FindingVerb::Expected | FindingVerb::Seen));
-            if with.is_some() && quiets && seq.is_none() {
+            if !with.is_empty() && quiets && seq.is_none() {
                 return Err(
-                    "an answer with --with needs --journal-seq <n>, the journal_seq of the answer in which both findings were read"
+                    "an answer with --with needs --journal-seq <n>, the journal_seq of the answer in which the findings were read"
                         .to_string(),
                 );
             }
@@ -522,7 +528,7 @@ fn parse_args(
                 ),
             };
             let act = match (verb, reason, days) {
-                (None, None, None) if via.is_none() && with.is_none() && seq.is_none() => None,
+                (None, None, None) if via.is_none() && with.is_empty() && seq.is_none() => None,
                 (None, ..) => {
                     return Err(
                         "--reason, --days, --via, --with and --journal-seq go with an answer: expected, seen or reopen"
@@ -1363,7 +1369,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             &args.store,
             args.form,
             |conn, now| {
-                finding_answer::one(conn, &args.id, None, now).map(|one| {
+                finding_answer::one(conn, &args.id, &[], false, now).map(|one| {
                     one.map_err(|refused| match not_an_id {
                         true => known::Refused {
                             message: NOT_AN_ID,
@@ -1408,39 +1414,44 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     // written nothing, and one that wrote cannot be refused afterwards.
     let answered = (|| -> Result<Result<contract::v1::Finding, known::Refused>, Box<dyn Error>> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // With `--with`, the same answer to the other finding of the pair, in the same
-        // transaction: both are recorded or neither is. Each keeps its own answer, as one given
-        // alone; the shared run id says they were given together.
+        // With `--with`, the same answer to the other finding of the pair, or to the other
+        // findings of one group, in the same transaction: all are recorded or none is. Each keeps
+        // its own answer, as one given alone; the shared run id says they were given together.
+        // The whole set is read once and checked before anything is written.
         let mut ids = vec![args.id.as_str()];
-        if let Some(with) = &args.with {
-            findings::pair(&tx, &args.id, with, now)?;
-            ids.push(with);
-        }
-        // An answer that names what it was read at is refused when anything joined either
-        // finding since that the answer did not already take in, before it writes anything.
+        ids.extend(args.with.iter().map(String::as_str));
+        let all = findings::all(&tx, now)?;
+        let (named, pair) = findings::together(&all, &ids)?;
+        // An answer that names what it was read at is refused when anything joined a finding it
+        // names since that the answer did not already take in, before it writes anything.
         if let Some(seq) = args.journal_seq {
-            findings::unchanged(&tx, &ids, seq, act, now)?;
+            findings::unchanged(&tx, &all, &ids, seq, act)?;
         }
-        let act_on = |id: &str| match act {
-            findings::Act::Answer(a) => findings::answer(&tx, id, a, args.via, now, &run_id),
-            findings::Act::Reopen => findings::reopen(&tx, id, args.via, now, &run_id),
-        };
-        act_on(&args.id)?;
-        if let Some(with) = &args.with {
-            act_on(with).map_err(findings::of_with)?;
+        for (n, f) in named.into_iter().enumerate() {
+            let done = match act {
+                findings::Act::Answer(a) => findings::answer(&tx, f, a, args.via, now, &run_id),
+                findings::Act::Reopen => findings::reopen(&tx, f, args.via, now, &run_id),
+            };
+            done.map_err(|e| {
+                if n == 0 {
+                    e
+                } else {
+                    findings::of_with(e, &f.id)
+                }
+            })?;
         }
-        // The answer names the other finding as the command left it. It is read before the
+        // The answer names the other findings as the command left them. It is read before the
         // commit, and a read that refuses commits nothing. No test reaches that branch: the
         // write and the read take a finding by the same predicate (`findings::shown`), so a
         // finding the write accepts the read shows. The branch stays so that a later difference
         // between the two refuses with nothing written, never after a commit.
-        let left = finding_answer::one(&tx, &args.id, args.with.as_deref(), now)?;
+        let left = finding_answer::one(&tx, &args.id, &ids[1..], pair, now)?;
         if left.is_ok() {
             tx.commit()?;
         }
         Ok(left)
     })();
-    // A refusal about the finding named by `--with` quotes its id, and has the code it would
+    // A refusal about a finding named by `--with` quotes its id, and has the code it would
     // have about the finding the answer is for.
     let refusal = |r: findings::Refused| {
         let message = match r {
@@ -1448,17 +1459,25 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             _ => format!("{r}; nothing was changed"),
         };
         let (about, detail) = match &r {
-            findings::Refused::With(about) => (&**about, args.with.as_deref()),
-            findings::Refused::NotPair => (&r, args.with.as_deref()),
-            findings::Refused::ChangedSinceRead(id) => (&r, Some(id.as_str())),
+            findings::Refused::With(id, about) => (&**about, Some(id.as_str())),
+            findings::Refused::NotTogether(id)
+            | findings::Refused::Twice(id)
+            | findings::Refused::ChangedSinceRead(id) => (&r, Some(id.as_str())),
             _ => (&r, None),
         };
         // For a person, the command to run next is the one typed in its right form: the
         // finding read again where what changed has to be seen first, the answer taken back
-        // where it was given, and the other finding left for the person to name where that one
-        // was refused (`usage::finding_next`).
+        // where it was given, and the finding named by that `--with` left for the person to
+        // name where that one was refused (`usage::finding_next`).
         use usage::FindingNext as Next;
-        let with_refused = matches!(r, findings::Refused::With(_) | findings::Refused::NotPair);
+        let with_refused = detail.and_then(|id| args.with.iter().position(|w| w == id));
+        let other = |or: Next| with_refused.map_or(or, Next::OtherId);
+        // One `--with` keeps the code of the pair, whatever does not fit.
+        let misfit = match (&r, args.with.len()) {
+            (_, 1) => "not_the_pair",
+            (findings::Refused::Twice(_), _) => "named_twice",
+            _ => "not_one_group",
+        };
         let (code, example, next) = match about {
             findings::Refused::ChangedSinceRead(_) => (
                 "changed_since_read",
@@ -1473,34 +1492,25 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             findings::Refused::Unknown => (
                 "unknown_finding",
                 "immunity findings --all lists every finding with its id; then: immunity finding <id> seen",
-                if with_refused {
-                    Next::OtherId
-                } else {
-                    Next::List
-                },
+                other(Next::List),
             ),
-            findings::Refused::NotPair => (
-                "not_the_pair",
-                "immunity finding <id> --json names the response layer's finding about the same rule and thing in verdicts.verdict_finding",
-                Next::OtherId,
+            findings::Refused::NotTogether(_) | findings::Refused::Twice(_) => (
+                misfit,
+                "immunity finding <id> --json names the response layer's finding about the same rule and thing in verdicts.verdict_finding, and immunity findings --json gives each finding's group",
+                other(Next::Read),
             ),
             findings::Refused::NotAnswered(_) => (
                 "finding_not_answered",
                 "immunity findings --all lists every finding with its state",
-                if with_refused {
-                    Next::OtherId
-                } else {
-                    Next::Read
-                },
+                other(Next::Read),
             ),
             findings::Refused::Closed(state) => (
                 "finding_closed",
                 "immunity findings lists the open findings",
-                match state.as_str() {
-                    _ if with_refused => Next::OtherId,
+                other(match state.as_str() {
                     "seen" => Next::Reopen,
                     _ => Next::Read,
-                },
+                }),
             ),
             _ => (
                 "finding_closed",
@@ -1694,6 +1704,8 @@ struct Survey {
     own: Vec<Vec<String>>,
     /// Every statement that stands. Those not contradicted are not servers.
     standing: Vec<owner::Standing>,
+    /// Whether the statements were read from a store: without one, none was applied.
+    stored: bool,
     said: Vec<String>,
     third_party: usize,
     several_names: usize,
@@ -1701,13 +1713,16 @@ struct Survey {
     machines: Vec<Vec<String>>,
 }
 
-/// The owner's statements that stand, from the store if there is one.
-fn owner_word(store: &Path) -> Result<Vec<owner::Standing>, Box<dyn Error>> {
+/// What `immunity servers` says when there is no store at the path to read statements from.
+const NO_WORD: &str = "No store was found, so no statement about a server was applied.";
+
+/// The owner's statements that stand, from the store; `None` when there is no store.
+fn owner_word(store: &Path) -> Result<Option<Vec<owner::Standing>>, Box<dyn Error>> {
     if !store.is_file() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let conn = store::open_read_only(store)?;
-    Ok(owner::standing(&conn)?)
+    Ok(Some(owner::standing(&conn)?))
 }
 
 /// Whether the tailnet's name for a system is one the server check cannot read at all.
@@ -1719,7 +1734,9 @@ fn device(platform: Option<&str>) -> bool {
 /// and never runs ssh.
 fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     let dir = home(&args.store).join("sweep");
-    let standing = owner_word(&args.store)?;
+    let word = owner_word(&args.store)?;
+    let stored = word.is_some();
+    let standing = word.unwrap_or_default();
     let traces = [
         (
             ssh_config::READER,
@@ -2017,6 +2034,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
         theirs,
         own,
         standing,
+        stored,
         said,
         third_party,
         several_names,
@@ -2079,7 +2097,12 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
             s.theirs.len(),
             s.rows.iter().filter(|r| !r.read).count()
         ),
-        owner_word: word_line(&s.standing),
+        // With no store at the path, a wrong `--store` would leave the statements out in silence.
+        owner_word: if s.stored {
+            word_line(&s.standing)
+        } else {
+            Some(NO_WORD.to_string())
+        },
         spare: s.machines.iter().map(|m| m.len() as u64 - 1).sum(),
         never_read: s.rows.iter().filter(|r| !r.read).count() as u64,
         folder: known::whole(&s.dir.display().to_string()),
@@ -4285,6 +4308,7 @@ fn read_watched(
                         hook_departures.push((p.scope.as_str(), e));
                         continue;
                     }
+                    watched::content_gone(run.tx, &reading, &e.subject)?;
                     let place = e.old.unwrap_or_default();
                     observe("gone", &place, &e.subject);
                     rows.push(vec![
@@ -4508,6 +4532,7 @@ fn read_watched(
         let note = (!left).then_some(watched::HOOK_STILL_ACTIVE);
         store::journal_event(run.tx, &reading, &event, note)?;
         if left && gone.insert(event.subject.clone()) {
+            watched::content_gone(run.tx, &reading, &event.subject)?;
             observe("gone", watched::HOOK, &event.subject);
             rows.push(vec![
                 "gone".to_string(),

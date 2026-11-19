@@ -189,7 +189,7 @@ impl Matched {
         let mut not = Vec::new();
         if self.not_read > 0 {
             not.push(format!(
-                "the lockfiles of {} were not all read",
+                "the lockfiles of {} were not all read, so whether a known vulnerability affects what was not read cannot be told",
                 count(self.not_read, "project", "projects")
             ));
         }
@@ -398,6 +398,7 @@ mod tests {
         "journal_seq_ahead",
         "log_unreadable",
         "match_gone",
+        "named_twice",
         "no_login_session",
         "no_statement",
         "no_store",
@@ -410,6 +411,7 @@ mod tests {
         "not_a_verdict",
         "not_installed",
         "not_removed",
+        "not_one_group",
         "not_staged",
         "not_the_pair",
         "reason_too_long",
