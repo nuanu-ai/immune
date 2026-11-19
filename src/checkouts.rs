@@ -5,9 +5,20 @@
 //! A checkout is a folder that holds `.git`. A checkout is not searched for further
 //! checkouts. Paths are relative to the home folder, so the same checkout has the same id
 //! whoever runs it and wherever the walk starts.
+//!
+//! The walk stays on the file system its root is on, as `find -xdev` does: it does not go
+//! down into a folder on another device. Its reading is then partial with the cause `not_given`
+//! and names the folder (`ANOTHER_FILE_SYSTEM`), as a walk of a given folder is partial. It
+//! only stops finding new projects there; a checkout the store holds is looked at again as any
+//! other. Such a folder is often a container tool's view of its containers, a disk image or a
+//! network share, and may hold the person's own work: a project there is found when an agent
+//! works in it (`agent_folders.rs`), or when `--checkouts-root` points into it. The root is
+//! followed, since a home folder may be reached through a link; a root whose device cannot be
+//! read is not walked and is said as a folder that could not be listed.
 
 use crate::agent_folders::still_there;
 use crate::guarded;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const READER: &str = "checkouts";
@@ -19,6 +30,24 @@ pub const TYPE: &str = "checkout";
 pub const ONLY_GIVEN: &str = "only the given folder was walked";
 /// What is said of a checkout the store holds that is still there in another form.
 pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
+/// How the reading says which folders the walk did not go down into because they are on another
+/// file system than its root; they follow, named as checkouts are.
+pub const ANOTHER_FILE_SYSTEM: &str = "on another file system, not walked: ";
+
+/// The device of the file system `path` is on: of what it leads to when `follow`, as the
+/// walk's root is taken, since a home folder may be reached through a link; of `path` itself
+/// otherwise, as a folder the walk may go down into. `None` when it cannot be looked at.
+fn device(path: &Path, follow: bool) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(d) = tests::simulated(path, follow) {
+        return d;
+    }
+    let meta = match follow {
+        true => std::fs::metadata(path),
+        false => std::fs::symlink_metadata(path),
+    };
+    meta.ok().map(|m| m.dev())
+}
 
 /// The checkouts the store holds on `machine`, by their paths as ids name them, that are still
 /// there in another form, as looking again from where the walk started finds (`look`). One
@@ -140,6 +169,9 @@ pub struct Walk {
     pub unlisted: Vec<String>,
     /// Folders macOS asks permission for that the walk did not enter (`guarded.rs`).
     pub guarded: Vec<PathBuf>,
+    /// Folders on another file system than the walk's root, not gone down into, named as
+    /// checkouts are.
+    pub mounted: Vec<String>,
     /// Folders listed in full, named as checkouts are: a checkout that appears in one later
     /// is new (`baseline.rs`).
     pub listed: Vec<String>,
@@ -237,13 +269,21 @@ fn subfolders(dir: &Path, in_home: bool) -> Option<Listed> {
 /// Walks `root` to a fixed depth. The home folder, met from whatever root, is never taken for
 /// a checkout: a home folder under git is a store of settings, and taking it would hide every
 /// checkout inside it. Its own folders that hold media, applications or settings are pruned.
+/// It stays on the file system of `root`, followed; a folder whose device cannot be looked at,
+/// the root included, is not gone down into and is said as one that could not be listed.
 pub fn walk(root: &Path, home: &Path) -> Walk {
     let mut checkouts = Vec::new();
     let mut unlisted = Vec::new();
     let mut guarded = Vec::new();
+    let mut mounted = Vec::new();
     let mut listed = Vec::new();
     let mut seen = Vec::new();
-    let mut stack = vec![(root.to_path_buf(), 0)];
+    let base = device(root, true);
+    let mut stack = Vec::new();
+    match base {
+        Some(_) => stack.push((root.to_path_buf(), 0)),
+        None => unlisted.push(rel(home, root)),
+    }
     while let Some((dir, depth)) = stack.pop() {
         let top = dir == home;
         if !top && std::fs::symlink_metadata(dir.join(".git")).is_ok() {
@@ -268,9 +308,14 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
         seen.extend(found.folders.iter().map(|f| rel(home, f)));
         for path in found.descend.into_iter().rev() {
             // Entering it would ask the owner's permission, from a run he did not start.
-            match crate::guarded::may_enter(&path, root, home) {
-                Ok(()) => stack.push((path, depth + 1)),
-                Err(folder) => guarded.push(folder),
+            if let Err(folder) = crate::guarded::may_enter(&path, root, home) {
+                guarded.push(folder);
+                continue;
+            }
+            match device(&path, false) {
+                None => unlisted.push(rel(home, &path)),
+                Some(d) if Some(d) != base => mounted.push(rel(home, &path)),
+                Some(_) => stack.push((path, depth + 1)),
             }
         }
     }
@@ -278,11 +323,120 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
     unlisted.sort();
     guarded.sort();
     guarded.dedup();
+    mounted.sort();
     Walk {
         checkouts,
         unlisted,
         guarded,
+        mounted,
         listed,
         seen,
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    thread_local! {
+        /// The file systems a test sets up on this thread: each folder with the device of what
+        /// is at or below it, `None` where the device cannot be read.
+        static FILE_SYSTEMS: std::cell::RefCell<Vec<(PathBuf, Option<u64>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Has this thread's walks see each of `folders`, and what is below it, on its own device.
+    pub fn file_systems(folders: Vec<(PathBuf, Option<u64>)>) {
+        FILE_SYSTEMS.with(|f| *f.borrow_mut() = folders);
+    }
+
+    /// The device a test set up for `path`, looked at as `super::device` looks at it: what it
+    /// leads to when `follow`, else the link itself, through the links above it. The innermost
+    /// file system set up that holds it gives it; `None` when the test set up none there.
+    pub(super) fn simulated(path: &Path, follow: bool) -> Option<Option<u64>> {
+        let real = match follow {
+            true => std::fs::canonicalize(path).ok()?,
+            false => std::fs::canonicalize(path.parent()?)
+                .ok()?
+                .join(path.file_name()?),
+        };
+        FILE_SYSTEMS.with(|f| {
+            f.borrow()
+                .iter()
+                .filter(|(at, _)| real.starts_with(at))
+                .max_by_key(|(at, _)| at.components().count())
+                .map(|(_, d)| *d)
+        })
+    }
+
+    /// A home folder on a file system of its own, with a project beside a container tool's
+    /// file system, which holds a project and a file system of its own.
+    fn home_with_mounts(tag: &str) -> (crate::common::Scratch, PathBuf) {
+        let base = crate::common::Scratch::new(tag);
+        for project in ["dev/api", "OrbStack/proj", "OrbStack/nested/deep"] {
+            std::fs::create_dir_all(base.join(project).join(".git")).unwrap();
+        }
+        let home = std::fs::canonicalize(&base).unwrap();
+        file_systems(vec![
+            (home.clone(), Some(1)),
+            (home.join("OrbStack"), Some(2)),
+            (home.join("OrbStack/nested"), Some(3)),
+        ]);
+        (base, home)
+    }
+
+    fn found(w: &Walk) -> Vec<String> {
+        w.checkouts.iter().map(|c| c.rel.clone()).collect()
+    }
+
+    #[test]
+    fn a_walk_rooted_inside_another_file_system_finds_its_projects_and_does_not_enter_one_nested_in_it()
+     {
+        // Pointed there with `--checkouts-root`, the walk stays on that file system in turn.
+        let (_base, home) = home_with_mounts("walk-mount-root");
+        let given = walk(&home.join("OrbStack"), &home);
+        assert_eq!(found(&given), ["OrbStack/proj"]);
+        assert_eq!(given.mounted, ["OrbStack/nested"]);
+    }
+
+    #[test]
+    fn a_home_folder_reached_through_a_link_is_walked_on_its_own_file_system() {
+        // The link lies on another file system than the home folder it leads to: the root is
+        // followed, and what is below it is on the home folder's.
+        let (base, home) = home_with_mounts("walk-mount-link");
+        let link = base.with_file_name(format!("{}-link", base.file_name().unwrap().display()));
+        let _link = crate::common::Scratch::at(link.clone());
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let whole = walk(&link, &link);
+        assert_eq!(found(&whole), ["dev/api"]);
+        assert_eq!(whole.mounted, ["OrbStack"]);
+    }
+
+    #[test]
+    fn a_folder_or_a_root_whose_device_cannot_be_read_is_not_entered_and_is_said_as_not_listed() {
+        let (_base, home) = home_with_mounts("walk-mount-unread");
+        file_systems(vec![(home.join("OrbStack"), None)]);
+        let whole = walk(&home, &home);
+        assert_eq!(found(&whole), ["dev/api"]);
+        assert_eq!(whole.unlisted, ["OrbStack"]);
+        assert!(whole.mounted.is_empty());
+        // The root's: nothing is walked blind.
+        file_systems(vec![(home.clone(), None)]);
+        let whole = walk(&home, &home);
+        assert!(found(&whole).is_empty());
+        assert_eq!(whole.unlisted, ["."]);
+    }
+
+    #[test]
+    fn a_link_followed_is_on_the_file_system_it_leads_to_and_unfollowed_on_its_own() {
+        // The real calls, with nothing set up: `/dev` is the device file system on every Mac,
+        // and a link to it made in the temporary folder lies on another.
+        let base = crate::common::Scratch::new("device-link");
+        let link = base.join("dev");
+        std::os::unix::fs::symlink("/dev", &link).unwrap();
+        let there = device(Path::new("/dev"), false);
+        assert!(there.is_some());
+        assert_eq!(device(&link, true), there);
+        assert_ne!(device(&link, false), there);
     }
 }

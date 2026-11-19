@@ -2955,11 +2955,20 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
     }
     // A folder that could not be listed or a known checkout that could not be looked at
     // failed; a walk limited to the folder given read what it was given, which does not hold
-    // the rest of the home folder. The worse is the reading's cause.
+    // the rest of the home folder, and a walk does not go into another file system. The worse
+    // is the reading's cause.
+    let mounted = (!walk.mounted.is_empty()).then(|| {
+        format!(
+            "{}{}",
+            checkouts::ANOTHER_FILE_SYSTEM,
+            walk.mounted.join(", ")
+        )
+    });
     let reasons: Vec<(String, Cause)> = args
         .checkouts_root
         .iter()
         .map(|_| (checkouts::ONLY_GIVEN.to_string(), Cause::NotGiven))
+        .chain(mounted.map(|m| (m, Cause::NotGiven)))
         .chain(unlisted.map(|u| (u, Cause::Failed)))
         .chain((!unknown.is_empty()).then(|| {
             let rels = unknown.join(", ");
@@ -5578,6 +5587,92 @@ mod tests {
         }
         assert_eq!(count(&conn), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_walk_that_did_not_go_into_another_file_system_is_partial_not_given_and_names_it_and_a_project_held_before_stays_held()
+     {
+        // The walk only stops finding new projects on another file system: one it held stays
+        // held while its folder is there, so nothing known of it is retracted and no finding
+        // of it cleared. Its own reading says what it did not walk, so the answer about
+        // projects, the status and any build that reads the reading say not every one was found.
+        let dir = crate::common::Scratch::new("mounted-coverage");
+        let home = std::fs::canonicalize(&*dir).unwrap().join("home");
+        std::fs::create_dir_all(home.join("work/proj/.git")).unwrap();
+        let args = Args {
+            store: dir.join("store.db"),
+            machine: "mac".to_string(),
+            brew: None,
+            brew_input: None,
+            servers_input: None,
+            home: home.clone(),
+            checkouts_root: None,
+            sessions_root: None,
+            tailscale: None,
+            threats_input: None,
+            osv_crates_input: None,
+            osv_npm_input: None,
+            curl: None,
+            system_root: dir.join("no-system"),
+            indicators: None,
+            form: answer::Form::Text,
+        };
+        let mut conn = store::open_or_make(&args.store).unwrap();
+        let tx = conn.transaction().unwrap();
+        store::put_entity(&tx, "machine:mac").unwrap();
+        let reading = |kind: &str| -> [Option<String>; 3] {
+            tx.query_row(
+                "SELECT completeness, reason, cause FROM coverage WHERE reader = ?1 AND kind = ?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![checkouts::READER, kind],
+                |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?]),
+            )
+            .unwrap()
+        };
+        let check = |run_id: &str, at: i64| {
+            let mut run = Run {
+                tx: &tx,
+                home: &dir,
+                run_id,
+                at,
+                machine: "machine:mac",
+                notes: Vec::new(),
+                readers: 0,
+            };
+            read_checkouts(&mut run, &args).unwrap();
+            read_agent_folders(&mut run, &args).unwrap();
+        };
+        let said = |s: [&str; 3]| s.map(|s| Some(s.to_string()));
+        let held = || Vec::from_iter(store::live_subjects(&tx, checkouts::READER).unwrap());
+
+        check("run-1", 1);
+        assert_eq!(held(), ["checkout:machine:mac/work/proj"]);
+        std::fs::create_dir_all(home.join("work/new/.git")).unwrap();
+        checkouts::tests::file_systems(vec![(home.join("work"), Some(2))]);
+        check("run-2", 2);
+        assert_eq!(held(), ["checkout:machine:mac/work/proj"]);
+        assert_eq!(
+            reading(checkouts::KIND),
+            said([
+                "partial",
+                "on another file system, not walked: work",
+                "not_given"
+            ])
+        );
+        // The answer about projects is not all, and why, in the class the status tells it by.
+        let found =
+            covered::projects_found(&view::latest_coverage(&tx).unwrap(), Some("machine:mac"));
+        assert!(!found.all);
+        assert_eq!(found.cause, contract::v1::Cause::NotGiven as i32);
+        assert_eq!(
+            found.why.as_deref(),
+            Some("the reading of checkouts under the home folder was not full")
+        );
+        let (_, said) = covered::Found::of(Some(&found));
+        assert_eq!(
+            said.as_deref(),
+            Some("The reading of checkouts under the home folder was not full.")
+        );
     }
 
     #[test]
