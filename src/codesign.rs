@@ -50,6 +50,12 @@ const NO_NETWORK_ACCESS: SecCSFlags = 1 << 29;
 /// The seal: every file, every architecture, nested code included, offline.
 pub const SEAL_FLAGS: SecCSFlags =
     CHECK_ALL_ARCHITECTURES | CHECK_NESTED_CODE | STRICT_VALIDATE | NO_NETWORK_ACCESS;
+/// `kSecCSDoNotValidateResources`.
+const DO_NOT_VALIDATE_RESOURCES: SecCSFlags = 1 << 2;
+/// The code: the signature and the executable's own pages, every architecture, strictly and
+/// offline, without the files of the bundle around it.
+const CODE_FLAGS: SecCSFlags =
+    CHECK_ALL_ARCHITECTURES | DO_NOT_VALIDATE_RESOURCES | STRICT_VALIDATE | NO_NETWORK_ACCESS;
 /// `kSecCodeSignatureAdhoc` in `kSecCodeInfoFlags`: signed without a signer.
 const SIGNATURE_ADHOC: i64 = 0x0002;
 
@@ -299,15 +305,7 @@ impl Code {
     /// apart only by its code directory; or `unsigned`. `None` when the framework gives no
     /// signing information at all.
     pub fn signer(&self) -> Option<String> {
-        let mut info: CFTypeRef = std::ptr::null();
-        // SAFETY: `self.0` is a live static code and `info` a valid out-parameter. Owned: the
-        // header marks it `CF_RETURNS_RETAINED`.
-        let status =
-            unsafe { SecCodeCopySigningInformation(self.0.0, SIGNING_INFORMATION, &mut info) };
-        let info = Owned::take(info)?;
-        if status != 0 {
-            return None;
-        }
+        let info = self.information()?;
         // SAFETY: the keys are constants of the framework, valid for the life of the process.
         let (identifier, flags, team, unique) = unsafe {
             (
@@ -344,10 +342,43 @@ impl Code {
         })
     }
 
+    /// The signing information, owned, or `None` when the framework gives none.
+    fn information(&self) -> Option<Owned> {
+        let mut info: CFTypeRef = std::ptr::null();
+        // SAFETY: `self.0` is a live static code and `info` a valid out-parameter. Owned: the
+        // header marks it `CF_RETURNS_RETAINED`.
+        let status =
+            unsafe { SecCodeCopySigningInformation(self.0.0, SIGNING_INFORMATION, &mut info) };
+        let info = Owned::take(info)?;
+        (status == 0).then_some(info)
+    }
+
+    /// The identifier the signature gives the code, as macOS's own test of the same program
+    /// names it beside the team (`identifier "..." and ...` in a designated requirement). Text
+    /// from the signature: data, never words of the program's own. `None` for unsigned code.
+    pub fn identifier(&self) -> Option<String> {
+        let info = self.information()?;
+        // SAFETY: a constant of the framework and a plain function of CoreFoundation.
+        let (key, string_id) = unsafe { (kSecCodeInfoIdentifier, CFStringGetTypeID()) };
+        get(&info, key, string_id).and_then(string)
+    }
+
     /// Whether the seal verifies: every file, every architecture, nested code included,
     /// with strict validation and no network. This is the expensive call.
     pub fn seal(&self) -> String {
-        match self.check(SEAL_FLAGS, None) {
+        self.verdict(SEAL_FLAGS)
+    }
+
+    /// Whether the signature and the executable's own code verify, the bundle's resources left
+    /// out. For a program a startup item runs: the file judged is the file whose content was
+    /// hashed, and a change elsewhere in its bundle is the integrity reader's to see, so a walk
+    /// of the whole app would add its cost and nothing to the judgement.
+    pub fn code(&self) -> String {
+        self.verdict(CODE_FLAGS)
+    }
+
+    fn verdict(&self, flags: SecCSFlags) -> String {
+        match self.check(flags, None) {
             0 => VERIFIES.to_string(),
             status => does_not_verify(status),
         }

@@ -24,6 +24,11 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
         (Count::Files(watched::SSH), "SSH files", true),
         (Count::Files(watched::AUTH), LOGIN_MODULES, true),
         (Count::Files(watched::HOOK), "git hooks in projects", true),
+        (
+            Count::Files(crate::targets::TARGET),
+            "programs startup items run",
+            false,
+        ),
     ];
     out.extend(
         autorun::watched()

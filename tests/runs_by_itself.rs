@@ -6895,7 +6895,22 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "added 3; autorun.agent-start new",
             ]),
         ),
-        (Level::PlaceKey, same("watched.login-hook")),
+        (
+            Level::PlaceKey,
+            // The hook's program is read too: four facts come with it and three go with it, and
+            // a hook that cannot be read keeps its program.
+            lines([
+                "added 7; watched.login-hook new",
+                "added 4, changed 1, removed 3; watched.login-hook changed",
+                "removed 5; watched.login-hook gone",
+                "added 7; watched.login-hook new",
+                "not_read 1; watched.login-hook not read",
+                "; ",
+                "not_read 1; watched.login-hook not read",
+                "removed 5; watched.login-hook gone",
+                "added 7; watched.login-hook new",
+            ]),
+        ),
         (Level::Hook, same("watched.git-hook")),
         (Level::File, same("watched.shell-profile")),
         (Level::Folder, same("watched.autostart")),
@@ -6957,4 +6972,364 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
     for ((level, expected), told) in cases.iter().zip(&told) {
         assert_eq!(told, expected, "{level:?}");
     }
+}
+
+// Programs that startup items run.
+
+const TARGET_KIND: &str = "programs that launch agents, daemons and login hooks run";
+const TARGET_RULE: &str = "watched.startup-target";
+const RUNNER: &str = "file:machine:mac//usr/local/bin/runner";
+const AT_CHECKS: &str = "programs are read at each check and not between checks";
+
+/// An invented launch item that starts `argv`, as XML.
+fn launch_item(path: &Path, argv: &[&str]) {
+    let args: String = argv
+        .iter()
+        .map(|a| format!("<string>{a}</string>"))
+        .collect();
+    put(
+        path,
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\"><dict><key>Label</key><string>org.example.item</string>\
+             <key>ProgramArguments</key><array>{args}</array></dict></plist>\n"
+        ),
+    );
+}
+
+impl Estate {
+    fn system(&self) -> PathBuf {
+        self.0.join("system")
+    }
+
+    /// A launch agent of the home folder by its name.
+    fn agent(&self, name: &str) -> PathBuf {
+        self.home()
+            .join(format!("Library/LaunchAgents/org.example.{name}.plist"))
+    }
+
+    /// A copy of a program macOS ships at `rel` under the system root.
+    fn shipped(&self, rel: &str) -> PathBuf {
+        let to = self.system().join(rel);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy("/usr/bin/true", &to).unwrap();
+        to
+    }
+
+    /// What the open finding of `rule` rests on, as predicate, old and new value.
+    fn rests_on(&self, rule: &str) -> Vec<String> {
+        let listed = self.contract(&["findings"]);
+        let f = listed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["finding"]["rule"] == rule && f["finding"]["state"] == "open")
+            .unwrap();
+        let one = self.contract(&["finding", f["finding"]["id"].as_str().unwrap()]);
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+        one["rests_on"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| {
+                [&j["predicate"], &j["old_value_text"], &j["new_value_text"]]
+                    .map(s)
+                    .join("|")
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_program_replaced_behind_an_untouched_startup_item_raises_one_finding_that_names_every_item() {
+    let e = Estate::new("target-replaced");
+    e.shipped("usr/local/bin/runner");
+    launch_item(&e.agent("a"), &["/usr/local/bin/runner"]);
+    launch_item(
+        &e.system().join("Library/LaunchDaemons/org.example.b.plist"),
+        &["/usr/local/bin/runner", "--quiet"],
+    );
+    put(
+        &e.system()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>LoginHook</key><string>/usr/local/bin/runner</string></dict></plist>\n",
+    );
+    e.run();
+    e.run();
+    assert!(e.rules().is_empty());
+    put(
+        &e.system().join("usr/local/bin/runner"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    e.run();
+    let found: Vec<(String, String)> = e.findings(false).into_iter().map(|f| (f.0, f.2)).collect();
+    assert_eq!(
+        found,
+        [(TARGET_RULE.to_string(), "/usr/local/bin/runner".to_string())]
+    );
+    let rests = e.rests_on(TARGET_RULE);
+    let by: Vec<&String> = rests
+        .iter()
+        .filter(|r| r.starts_with("started_by|"))
+        .collect();
+    assert_eq!(
+        by,
+        [
+            "started_by||file:machine:mac//Library/LaunchDaemons/org.example.b.plist, \
+          file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#/LoginHook, \
+          file:machine:mac/Library/LaunchAgents/org.example.a.plist"
+        ],
+        "{rests:?}"
+    );
+    assert!(
+        rests.contains(&"signed_by|apple, identifier com.apple.true|unsigned".to_string()),
+        "{rests:?}"
+    );
+    // Named by its own path, it leads nowhere else.
+    assert!(
+        e.rows(&format!(
+            "SELECT object FROM assertion WHERE subject = '{RUNNER}' AND predicate = 'links_to'"
+        ))
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_program_its_publisher_rebuilt_raises_nothing_and_the_journal_holds_the_change() {
+    let e = Estate::new("target-publisher");
+    let runner = e.shipped("usr/local/bin/runner");
+    launch_item(&e.agent("a"), &["/usr/local/bin/runner"]);
+    e.run();
+    let out = Command::new("/usr/bin/lipo")
+        .args(["/usr/bin/true", "-thin", "arm64e", "-output"])
+        .arg(&runner)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let before = e.last_entry();
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert_eq!(
+        e.rows(&format!(
+            "SELECT entry, predicate FROM journal WHERE subject = '{RUNNER}' AND seq > {before}"
+        )),
+        ["changed|has_content"]
+    );
+
+    // The same name, its code changed after it was signed: never quiet.
+    let mut bytes = std::fs::read(&runner).unwrap();
+    bytes[0x1000] ^= 0xff;
+    std::fs::write(&runner, bytes).unwrap();
+    e.run();
+    assert_eq!(e.rules(), [TARGET_RULE]);
+    let rests = e.rests_on(TARGET_RULE);
+    assert!(
+        rests.contains(&"signed_by||apple, identifier com.apple.true".to_string())
+            && rests
+                .iter()
+                .any(|r| r.starts_with("has_seal|verifies|does not verify: ")),
+        "{rests:?}"
+    );
+}
+
+#[test]
+fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_and_a_file_an_argument_names_is_not_judged()
+ {
+    let e = Estate::new("target-unread");
+    launch_item(&e.agent("bare"), &["runner"]);
+    launch_item(&e.agent("relative"), &["bin/runner"]);
+    put(
+        &e.agent("bundle"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>BundleProgram</key><string>Contents/MacOS/runner</string></dict></plist>\n",
+    );
+    e.shipped("usr/local/bin/runner");
+    put(&e.system().join("etc/runner.conf"), "quiet\n");
+    // An argument whose file is in a folder macOS asks permission for is counted unopened.
+    put(&e.home().join("Documents/runner.conf"), "quiet\n");
+    link(
+        e.home().join("Documents/runner.conf").to_str().unwrap(),
+        &e.system().join("etc/linked.conf"),
+    );
+    launch_item(
+        &e.agent("config"),
+        &[
+            "/usr/local/bin/runner",
+            "--config",
+            "/etc/runner.conf",
+            "/etc/linked.conf",
+            "/etc/none",
+        ],
+    );
+    // Over the size cap, without taking the space: a file with a hole.
+    let large = e.system().join("usr/local/bin/large");
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len((256 << 20) + 1)
+        .unwrap();
+    launch_item(&e.agent("large"), &["/usr/local/bin/large"]);
+    // A link into a folder macOS asks permission for is not followed.
+    put(&e.home().join("Documents/runner"), "#!/bin/sh\n");
+    link(
+        e.home().join("Documents/runner").to_str().unwrap(),
+        &e.system().join("usr/local/bin/linked"),
+    );
+    launch_item(&e.agent("linked"), &["/usr/local/bin/linked"]);
+    e.run();
+    assert_eq!(
+        e.coverage(TARGET_KIND),
+        format!(
+            "partial|not read in full: \
+             files named in startup items' arguments, which are not judged: 2; \
+             startup programs in a folder macOS asks permission for: 1; \
+             startup programs inside an app bundle (BundleProgram): 1; \
+             startup programs not named by a full path: 2; \
+             watched file over the size cap: 1; {AT_CHECKS}"
+        )
+    );
+    let mut lacks = e.lacks(TARGET_KIND);
+    lacks.sort();
+    assert_eq!(
+        lacks,
+        [
+            "files named in startup items' arguments, which are not judged|",
+            "startup programs inside an app bundle (BundleProgram)|",
+            "startup programs not named by a full path|",
+            "watched file over the size cap|",
+        ]
+    );
+    let content = |id: &str| {
+        e.rows(&format!(
+            "SELECT completeness, cause, reason FROM coverage WHERE scope = '{id}'
+               AND kind = 'content of a watched file' ORDER BY id DESC LIMIT 1"
+        ))
+        .concat()
+    };
+    assert_eq!(
+        content("file:machine:mac//usr/local/bin/large"),
+        "none|no_reader|over the size cap of 256 MiB"
+    );
+    let linked = content("file:machine:mac//usr/local/bin/linked");
+    assert!(
+        linked.starts_with("none|not_given|not looked into: "),
+        "{linked}"
+    );
+    // The folder the program's link leads into is named among those not looked into.
+    assert_eq!(
+        e.rows(
+            "SELECT completeness, reason FROM coverage WHERE reader = 'watched-places'
+               AND kind = 'folders macOS asks permission for' ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: ~/Documents"]
+    );
+    // Neither is ever said to hold anything; the program read beside them is.
+    assert!(
+        e.rows(
+            "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
+               AND (subject LIKE '%/large' OR subject LIKE '%/linked')"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        e.rows(&format!(
+            "SELECT object FROM assertion WHERE layer = 'live' AND subject = '{RUNNER}'
+               AND predicate = 'has_content'"
+        ))
+        .len(),
+        1
+    );
+    // A program read before that can no longer be read is the rule's, with why.
+    use std::os::unix::fs::PermissionsExt;
+    let runner = e.system().join("usr/local/bin/runner");
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    assert_eq!(e.rules(), [TARGET_RULE]);
+    assert!(
+        content(RUNNER).starts_with("none|failed|"),
+        "{}",
+        content(RUNNER)
+    );
+}
+
+#[test]
+fn the_first_reading_of_programs_on_a_store_with_a_baseline_is_one_item_read_for_the_first_time() {
+    let e = Estate::new("target-upgrade");
+    e.shipped("usr/local/bin/runner");
+    e.shipped("usr/local/bin/other");
+    launch_item(&e.agent("a"), &["/usr/local/bin/runner"]);
+    launch_item(&e.agent("b"), &["/usr/local/bin/other"]);
+    e.run();
+    // As a build that did not read programs left the store.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(&format!(
+        "DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage
+           WHERE kind = '{TARGET_KIND}' OR scope LIKE '%//usr/local/bin/%');
+         DELETE FROM assertion WHERE kind = '{TARGET_KIND}' OR scope LIKE '%//usr/local/bin/%';
+         DELETE FROM coverage WHERE kind = '{TARGET_KIND}' OR scope LIKE '%//usr/local/bin/%';
+         DELETE FROM unit_read WHERE kind = '{TARGET_KIND}';
+         DELETE FROM watched_unit WHERE kind = '{TARGET_KIND}';"
+    ))
+    .unwrap();
+    drop(db);
+    e.run();
+    assert_eq!(e.rules(), [FIRST_READ]);
+}
+
+#[test]
+fn a_startup_item_that_could_not_be_read_keeps_its_programs_and_is_said_as_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("target-kept");
+    e.shipped("usr/local/bin/runner");
+    let agent = e.agent("a");
+    launch_item(&agent, &["/usr/local/bin/runner"]);
+    e.run();
+    let by =
+        "SELECT subject, object FROM assertion WHERE layer = 'live' AND predicate = 'started_by'";
+    let held = e.rows(by);
+    assert_eq!(
+        held,
+        [format!(
+            "{RUNNER}|file:machine:mac/Library/LaunchAgents/org.example.a.plist"
+        )]
+    );
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    assert_eq!(e.rows(by), held);
+    assert_eq!(
+        e.coverage(TARGET_KIND),
+        format!(
+            "partial|not read in full: startup items that could not be read, whose programs are kept as last read: 1; {AT_CHECKS}"
+        )
+    );
+    // The cause is a failed reading, with nothing named as lacking a reader.
+    assert_eq!(
+        e.rows(&format!(
+            "SELECT cause FROM coverage WHERE kind = '{TARGET_KIND}' ORDER BY id DESC LIMIT 1"
+        )),
+        ["failed"]
+    );
+    assert!(e.lacks(TARGET_KIND).is_empty());
+}
+
+#[test]
+fn a_program_a_startup_item_runs_whose_hash_is_on_the_list_is_matched() {
+    let e = Estate::new("target-indicator");
+    let runner = e.shipped("usr/local/bin/runner");
+    launch_item(&e.agent("a"), &["/usr/local/bin/runner"]);
+    let sha = sha256_of(std::fs::read(&runner).unwrap());
+    e.list(&format!(
+        r#"[{{"kind": "file:hashes.'SHA-256'", "value": "{sha}"}}]"#
+    ));
+    e.run();
+    assert_eq!(
+        e.findings(false),
+        [(
+            "indicator.match".to_string(),
+            "open".to_string(),
+            "/usr/local/bin/runner".to_string(),
+            format!("[file:hashes.'SHA-256' = '{sha}']")
+        )]
+    );
 }

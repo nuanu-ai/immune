@@ -66,6 +66,7 @@ mod status;
 mod store;
 mod sweep;
 mod tailnet;
+mod targets;
 mod text;
 mod threats;
 mod tools;
@@ -3767,6 +3768,7 @@ fn watch_places(
 ) -> Result<(Rows, usize), Box<dyn Error>> {
     let (rows, seen) = read_watched(run, args, checkouts, only, walk_failure)?;
     let mut opened = findings::detect(run.tx, run.run_id, run.at, &seen)?;
+    targets::evidence(run.tx, run.run_id)?;
     opened += usize::from(findings::first_read(
         run.tx,
         run.run_id,
@@ -3831,7 +3833,7 @@ fn read_watched(
     }
     let mut placed = Vec::new();
     for (watched_as, kind) in watched::kinds() {
-        if kind == watched::HOOK_KIND || !wanted(&machine, kind) {
+        if kind == watched::HOOK_KIND || kind == targets::KIND || !wanted(&machine, kind) {
             continue;
         }
         placed.push(Placed {
@@ -3845,6 +3847,32 @@ fn read_watched(
             checkouts: Vec::new(),
         });
     }
+    // What the startup items just read name as the programs they start: at a check only, since
+    // a watcher neither subscribes to them nor reads them.
+    let targets = if only.is_none() && !run_id.starts_with(watch::RUN_PREFIX) {
+        let items: Vec<&look::Look> = (placed.iter())
+            .filter(|p| targets::reads(p.watched_as))
+            .map(|p| &p.look)
+            .collect();
+        let (look, read) = targets::read(run.tx, &machine, &roots, &items)?;
+        let (completeness, reason, gap) = read.coverage();
+        for (item, why) in &read.rows {
+            rows.push(not_read_row(targets::TARGET, item, "", why));
+        }
+        placed.push(Placed {
+            scope: machine.clone(),
+            watched_as: targets::TARGET,
+            kind: targets::KIND.to_string(),
+            look,
+            elsewhere: None,
+            coverage: Some((completeness, reason, gap.cause)),
+            kept: Vec::new(),
+            checkouts: Vec::new(),
+        });
+        Some((read, gap))
+    } else {
+        None
+    };
     let homes = watched::homes(&args.home);
     let homes = [homes[0].as_path(), homes[1].as_path()];
     let given_root = args.checkouts_root.as_ref().and_then(|root| {
@@ -4057,6 +4085,11 @@ fn read_watched(
             checkouts: &p.checkouts,
         };
         let file_id = |unit: &Unit| format!("file:{machine}/{unit}");
+        let tg = targets.as_ref().filter(|_| p.kind == targets::KIND);
+        // A program newly named after its kind was first read is a change, which its item's
+        // rule tells; before, what is named is read for the first time.
+        let targets_read = tg.is_some()
+            && store::read_before(tx, watched::READER, &machine, targets::KIND, &run_id)?;
         let prefix = format!("file:{machine}/");
         let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
         let hooks = p
@@ -4080,6 +4113,9 @@ fn read_watched(
         };
         let verdict_for = |unit: &Unit| -> rusqlite::Result<Verdict> {
             let verdict = judge.verdict(unit)?;
+            if verdict == Verdict::FirstRead && targets_read {
+                return Ok(Verdict::Change);
+            }
             if verdict == Verdict::FirstRead
                 && let Some(hooks) = &hooks
             {
@@ -4128,6 +4164,9 @@ fn read_watched(
                 object: e.watched_as.to_string(),
                 source_ref: source_ref.clone(),
             });
+            if let Some((t, _)) = tg {
+                statements.extend(t.by(&e.unit, &subject, &source_ref));
+            }
             statements.push(Statement {
                 subject,
                 predicate: "located_on",
@@ -4172,6 +4211,8 @@ fn read_watched(
                 cause: Some(Cause::NoReader),
                 lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
             }
+        } else if let Some((_, gap)) = tg {
+            gap.clone()
         } else if let Some((_, _, cause)) = &p.coverage {
             Gap::when(*cause)
         } else {
@@ -4325,6 +4366,9 @@ fn read_watched(
                     source_ref: source_ref.clone(),
                 });
             }
+            if let Some((t, _)) = tg {
+                statements.extend(t.signature(&e.unit, &id, &source_ref));
+            }
             if let Some(link) = &e.link {
                 statements.push(Statement {
                     subject: id.clone(),
@@ -4398,17 +4442,21 @@ fn read_watched(
                     _ => e.watched_as,
                 })
                 .collect();
+            // A program a startup item runs, updated by its publisher, raises nothing: the
+            // journal holds the change.
+            let quiet = tg.is_some_and(|(t, _)| t.quiet(&e.unit));
             for &place in &changed {
-                if !(new.contains(&id) && place == e.watched_as) {
+                if !(new.contains(&id) && place == e.watched_as) && !quiet {
                     observe("changed", place, &id);
                 }
             }
             if !changed.is_empty() && !new.contains(&id) {
+                let why = if quiet { targets::PUBLISHER } else { "" };
                 rows.push(vec![
                     "changed".to_string(),
                     e.watched_as.to_string(),
                     e.unit.to_string(),
-                    String::new(),
+                    why.to_string(),
                 ]);
             }
             let content_unit = Unit::whole(&id);

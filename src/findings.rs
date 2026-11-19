@@ -226,6 +226,29 @@ fn git_hook() -> Rule {
     }
 }
 
+fn startup_target() -> Rule {
+    Rule {
+        id: crate::targets::RULE,
+        kind: crate::targets::TARGET,
+        // The levels of the item that names it: what it starts changed behind it. Persistence
+        // through a launch agent or daemon, or a login hook, as the item's own technique.
+        technique: Some("T1543"),
+        severity: "medium",
+        confidence: "low",
+        finds: "event",
+        words: Words {
+            title: "A program that starts by itself on this Mac was replaced, while the item that starts it stayed the same.",
+            short: "Program started by itself was replaced",
+            meaning: "This is normal when an app just updated itself and its new program is not signed the way the old one was; it is also how code is slipped in behind a startup item that nobody looks at again.",
+            advice: "Find out which app the program named here belongs to and whether it just updated itself; if not, do not restart until you know where it came from.",
+        },
+        // A change of what it holds or where its path leads, and losing sight of it. An update
+        // by its publisher is never observed (`targets::by_publisher`); a program newly named
+        // or no longer named is the item's own change, told by the item's rule.
+        fires: |o| o.place == crate::targets::TARGET && matches!(o.change, "changed" | NOT_READ),
+    }
+}
+
 /// The rule of the item that tells the places read for the first time in a check. It is
 /// raised once for a check by `first_read`, never by one thing seen.
 pub const FIRST_READ_RULE: &str = "watched.first-read";
@@ -782,7 +805,7 @@ pub fn hold(
 // ---- End of packages the projects depend on. ----
 
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 23] {
+pub fn rules() -> [Rule; 24] {
     [
         autostart(),
         login_hook(),
@@ -790,6 +813,7 @@ pub fn rules() -> [Rule; 23] {
         ssh_access(),
         authentication(),
         git_hook(),
+        startup_target(),
         first_read_rule(),
         app_seal(),
         app_signer(),
@@ -1750,13 +1774,14 @@ pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 /// case, the one name for it in the app, the pages and the text. `kind` stays the stable name,
 /// stored and matched; the title is only shown. A test walks every kind the program can raise
 /// (`kinds`) and fails for one this table lacks.
-const KIND_TITLES: [(&str, &str); 25] = [
+const KIND_TITLES: [(&str, &str); 26] = [
     (watched::AUTOSTART, "Startup item"),
     (watched::LOGIN_HOOK, "Login hook"),
     (watched::PROFILE, "Shell startup file"),
     (watched::SSH, "SSH file"),
     (watched::AUTH, "Authentication module"),
     (watched::HOOK, "Git hook"),
+    (crate::targets::TARGET, "Program a startup item runs"),
     (FIRST_READ_KIND, "Read for the first time"),
     (integrity::SEAL_BROKEN, "App changed after signing"),
     (integrity::SIGNER_CHANGED, "App signed by someone else"),

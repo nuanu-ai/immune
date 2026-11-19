@@ -8866,6 +8866,7 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             "other places in the home folder where a tool's settings run code by itself",
             "other ways a checkout runs code by itself",
             "package.json of each checkout, the part that runs by itself",
+            "programs that launch agents, daemons and login hooks run",
             "shell profiles of zsh and bash",
             "ssh access files",
             "ways a checkout runs code by itself, as present in each",
@@ -9121,10 +9122,12 @@ const BINARY_LOGIN_WINDOW: &str = "62706c6973743030d2010203045c6c617374557365724
     00000000050000000000000000000000000000004a";
 
 #[test]
-fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_never_kept() {
+fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_kept_only_as_its_program()
+{
     // The login window rewrites its preferences for its own reasons, in binary, with the last
     // user's name among them. Only the hook keys are compared, by a checksum: the rest of the
-    // file changing is no change, and what the hook names is never stored or printed.
+    // file changing is no change and is never stored or printed. What the hook names is kept
+    // only as the name of the program it runs, a watched file of its own.
     let w = Watch::new("login-hook-part");
     let marker = "MARKER-51c2-never-stored";
     login_window(
@@ -9175,8 +9178,22 @@ fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_never_k
     for path in written {
         let bytes = std::fs::read(&path).unwrap();
         let has = |text: &str| bytes.windows(text.len()).any(|b| b == text.as_bytes());
-        assert!(!has(marker) && !has("example.sh"), "{}", path.display());
+        assert!(!has(marker), "{}", path.display());
     }
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT DISTINCT subject, object FROM assertion
+             WHERE layer = 'live' AND (subject LIKE '%example.sh%' OR object LIKE '%example.sh%')
+             ORDER BY subject, object"
+        ),
+        [
+            "file:machine:mac//Library/Scripts/example.sh|dangling link",
+            "file:machine:mac//Library/Scripts/example.sh|file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#/LoginHook",
+            "file:machine:mac//Library/Scripts/example.sh|machine:mac",
+            "file:machine:mac//Library/Scripts/example.sh|program a startup item runs",
+        ]
+    );
     // A file with no hook in it holds no entry: there is nothing that would run.
     login_window(&w.sys, "<key>GuestEnabled</key><false/>");
     w.run();
@@ -11242,7 +11259,38 @@ fn login_window(root: &Path, entries: &str) {
     );
 }
 
-const SAMPLES: [Sample; 22] = [
+/// A launch agent of the home folder that starts `/usr/local/bin/runner`, and that program: a
+/// copy of one macOS ships.
+fn runner(w: &Watch) {
+    put(
+        w.home(),
+        "Library/LaunchAgents/org.example.runner.plist",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>Label</key><string>org.example.runner</string>\
+         <key>ProgramArguments</key><array><string>/usr/local/bin/runner</string></array>\
+         </dict></plist>\n",
+    );
+    let program = w.sys.join("usr/local/bin/runner");
+    std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+    std::fs::copy("/usr/bin/true", program).unwrap();
+}
+
+/// One slice of the program macOS ships where the whole program was: the same program by the
+/// same publisher, signed as it was, in another file.
+fn runner_rebuilt(w: &Watch) {
+    let out = Command::new("/usr/bin/lipo")
+        .args(["/usr/bin/true", "-thin", "arm64e", "-output"])
+        .arg(w.sys.join("usr/local/bin/runner"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+const SAMPLES: [Sample; 23] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -11360,6 +11408,16 @@ const SAMPLES: [Sample; 22] = [
                 "#!/bin/sh\n",
             );
         },
+    },
+    Sample {
+        rule: "watched.startup-target",
+        before: runner,
+        // Replaced by a script behind the item that starts it, which is not touched.
+        raise: |w| {
+            put(&w.sys, "usr/local/bin/runner", "#!/bin/sh\nexit 0\n");
+        },
+        // Another file of the same program by its publisher, signed as before.
+        silent: runner_rebuilt,
     },
     Sample {
         rule: "watched.first-read",
@@ -13798,7 +13856,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_page
     let this_mac = page_named(&pages, "this-mac.html");
     let rules = catalogue(&w.store());
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 23);
+    assert_eq!(rules.len(), 24);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(this_mac.contains(&title), "{}: {this_mac}", r["id"]);

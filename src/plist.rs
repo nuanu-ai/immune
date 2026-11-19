@@ -99,27 +99,7 @@ pub fn values<'k>(
     bytes: &[u8],
     keys: &[&'k str],
 ) -> Result<Vec<(&'k str, Result<Vec<u8>, &'static str>)>, &'static str> {
-    // SAFETY: the bytes are valid for their length; the call copies them. Owned: `Create`.
-    let data = Owned::take(unsafe {
-        CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as CFIndex)
-    })
-    .ok_or(NOT_A_PLIST)?;
-    // SAFETY: `data` is live; neither the format nor an error is asked for, which the header
-    // allows. Owned: `Create`.
-    let list = Owned::take(unsafe {
-        CFPropertyListCreateWithData(
-            std::ptr::null(),
-            data.0,
-            IMMUTABLE,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    })
-    .ok_or(NOT_A_PLIST)?;
-    // SAFETY: plain functions of CoreFoundation on a live object.
-    if unsafe { CFGetTypeID(list.0) != CFDictionaryGetTypeID() } {
-        return Err(NOT_A_DICTIONARY);
-    }
+    let list = dictionary(bytes)?;
     let mut out = Vec::new();
     for key in keys {
         // A key that cannot be looked up was not read: never taken as one that is not there.
@@ -142,6 +122,116 @@ pub fn values<'k>(
         out.push((*key, encoded));
     }
     Ok(out)
+}
+
+/// The file parsed by CoreFoundation, when its top is a dictionary.
+fn dictionary(bytes: &[u8]) -> Result<Owned, &'static str> {
+    // SAFETY: the bytes are valid for their length; the call copies them. Owned: `Create`.
+    let data = Owned::take(unsafe {
+        CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as CFIndex)
+    })
+    .ok_or(NOT_A_PLIST)?;
+    // SAFETY: `data` is live; neither the format nor an error is asked for, which the header
+    // allows. Owned: `Create`.
+    let list = Owned::take(unsafe {
+        CFPropertyListCreateWithData(
+            std::ptr::null(),
+            data.0,
+            IMMUTABLE,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    })
+    .ok_or(NOT_A_PLIST)?;
+    // SAFETY: plain functions of CoreFoundation on a live object.
+    if unsafe { CFGetTypeID(list.0) != CFDictionaryGetTypeID() } {
+        return Err(NOT_A_DICTIONARY);
+    }
+    Ok(list)
+}
+
+/// A value at a top-level key as text, where it is text: a string, or an array with each
+/// element's string by its position.
+#[derive(Debug, PartialEq)]
+pub enum Text {
+    One(String),
+    /// `None` for an element that is not a string.
+    List(Vec<Option<String>>),
+    /// Anything else, or text past `BYTES`, or a string that is not valid UTF-16.
+    Other,
+}
+
+/// For each of `keys` the file holds at its top, in the order given, the value there as text.
+/// A key the dictionary does not hold is left out. A file that is not a property list, or whose
+/// top is not a dictionary, is an error with why, as for `values`.
+pub fn texts<'k>(bytes: &[u8], keys: &[&'k str]) -> Result<Vec<(&'k str, Text)>, &'static str> {
+    let list = dictionary(bytes)?;
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(name) = cf_string(key) else {
+            out.push((*key, Text::Other));
+            continue;
+        };
+        // SAFETY: as in `values`: the value is lent by the live dictionary.
+        let value = unsafe { CFDictionaryGetValue(list.0, name.0) };
+        if value.is_null() {
+            continue;
+        }
+        let mut budget = BYTES;
+        let text = if let Some(s) = string(value, &mut budget) {
+            Text::One(s)
+        } else if unsafe { CFGetTypeID(value) == CFArrayGetTypeID() } {
+            // SAFETY: `value` is a live array; each index is below its count.
+            let n = unsafe { CFArrayGetCount(value) }.clamp(0, NODES as CFIndex);
+            let items = (0..n)
+                .map(|i| string(unsafe { CFArrayGetValueAtIndex(value, i) }, &mut budget))
+                .collect();
+            // One string shared by every element is counted each time: past the budget the
+            // array is not taken.
+            if budget == 0 {
+                Text::Other
+            } else {
+                Text::List(items)
+            }
+        } else {
+            Text::Other
+        };
+        out.push((*key, text));
+    }
+    Ok(out)
+}
+
+/// A live value as a string, when it is one, valid UTF-16 and within what is left of `budget`
+/// bytes, which it takes; past the budget the budget is spent.
+fn string(value: CFTypeRef, budget: &mut usize) -> Option<String> {
+    // SAFETY: plain functions of CoreFoundation on a live object.
+    if unsafe { CFGetTypeID(value) != CFStringGetTypeID() } {
+        return None;
+    }
+    let length = unsafe { CFStringGetLength(value) }.max(0) as usize;
+    if 2 * length > *budget {
+        *budget = 0;
+        return None;
+    }
+    *budget -= 2 * length;
+    String::from_utf16(&units(value, length)).ok()
+}
+
+/// The UTF-16 code units of a live string of `length` units.
+fn units(value: CFTypeRef, length: usize) -> Vec<u16> {
+    let mut units = vec![0u16; length];
+    // SAFETY: `value` is a live string; the buffer holds exactly its length in code units.
+    unsafe {
+        CFStringGetCharacters(
+            value,
+            CFRange {
+                location: 0,
+                length: length as CFIndex,
+            },
+            units.as_mut_ptr(),
+        )
+    };
+    units
 }
 
 /// What is left of what one key's value may cost: `NODES` and `BYTES`.
@@ -198,19 +288,7 @@ fn encode(
         // SAFETY: `value` is a live string.
         let length = unsafe { CFStringGetLength(value) }.max(0);
         budget.spend(0, 2 * length as usize)?;
-        // SAFETY: `value` is a live string; the buffer holds exactly its length in code units.
-        let units = unsafe {
-            let mut units = vec![0u16; length as usize];
-            CFStringGetCharacters(
-                value,
-                CFRange {
-                    location: 0,
-                    length,
-                },
-                units.as_mut_ptr(),
-            );
-            units
-        };
+        let units = units(value, length as usize);
         out.push(b's');
         count(out, units.len());
         for unit in units {

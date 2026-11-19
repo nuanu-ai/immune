@@ -109,6 +109,8 @@ pub fn kinds() -> Vec<(&'static str, &'static str)> {
             out.push(kind);
         }
     }
+    // What the places' files name as the program they start: no row of its own (`targets.rs`).
+    out.push((crate::targets::TARGET, crate::targets::KIND));
     out
 }
 

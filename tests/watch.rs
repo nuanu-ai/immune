@@ -716,6 +716,51 @@ fn every_start_reads_every_place_a_change_made_while_stopped_is_found_and_none_i
 }
 
 #[test]
+fn a_watcher_neither_reads_the_programs_startup_items_run_nor_lets_them_go() {
+    // Programs are read at each check only. A watcher's reading of every place, and its reading
+    // of a startup item that changed, leave them as the check left them.
+    let mac = Mac::new("targets");
+    let program = mac.sys().join("usr/local/bin/runner");
+    std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+    std::fs::copy("/usr/bin/true", &program).unwrap();
+    let item = |more: &str| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>ProgramArguments</key><array><string>/usr/local/bin/runner</string>{more}\
+             </array></dict></plist>\n"
+        )
+    };
+    let agent = "Library/LaunchAgents/org.example.runner.plist";
+    mac.put(agent, &item(""));
+    mac.run();
+    let kind = "programs that launch agents, daemons and login hooks run";
+    let held = || {
+        mac.rows(&format!(
+            "SELECT subject || ' ' || predicate || ' ' || object FROM assertion
+             WHERE layer = 'live' AND (kind = '{kind}' OR scope LIKE '%//usr/local/bin/runner')
+             ORDER BY 1"
+        ))
+    };
+    let before = held();
+    assert!(
+        before.iter().any(|r| r.contains(" started_by ")),
+        "{before:?}"
+    );
+    let mut w = mac.watch().started();
+    mac.put(agent, &item("<string>--quiet</string>"));
+    w.until("read", |v| count(v, "changed") == 1);
+    assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
+    assert!(w.stop().success());
+    assert_eq!(held(), before);
+    assert!(
+        mac.rows(&format!(
+            "SELECT run_id FROM coverage WHERE kind = '{kind}' AND run_id LIKE 'watch-%'"
+        ))
+        .is_empty()
+    );
+}
+
+#[test]
 fn a_full_run_holding_the_store_is_waited_for_and_both_finish() {
     let mac = Mac::new("together");
     mac.put(".zshrc", "0\n");
