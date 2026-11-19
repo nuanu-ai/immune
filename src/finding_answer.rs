@@ -43,21 +43,29 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     })
 }
 
-/// One finding whole; a refusal when the store has no finding with this id. After an answer
-/// given to a pair, `with` is the other finding, named as it stands now.
+/// One finding whole; a refusal when the store has no finding with this id, or with one of
+/// `with`. After an answer given with `--with`, `with` are the other findings named, each as it
+/// stands now, in the order given, and the other of the pair is `answered_with` too.
 pub fn one(
     conn: &Connection,
     id: &str,
-    with: Option<&str>,
+    with: &[&str],
+    pair: bool,
     now: i64,
 ) -> rusqlite::Result<Result<v1::Finding, Refused>> {
     let found = findings::all(conn, now)?;
     let mut one = of(conn, &found, id, now)?;
-    if let (Some(f), Some(with)) = (one.as_mut(), with) {
+    if let Some(f) = one.as_mut() {
         let items: Vec<Item> = found.iter().map(findings::item).collect();
-        f.answered_with = refs(&items).get(with).cloned();
+        let refs = refs(&items);
+        f.answered_together = with.iter().filter_map(|w| refs.get(*w).cloned()).collect();
+        f.answered_with = f.answered_together.first().cloned().filter(|_| pair);
     }
-    Ok(one.ok_or(Refused {
+    // Every finding named is read back, or the answer is refused as a whole.
+    let all_read = one
+        .as_ref()
+        .is_some_and(|f| f.answered_together.len() == with.len());
+    Ok(one.filter(|_| all_read).ok_or(Refused {
         code: "unknown_finding",
         message: "the store has no finding with this id",
         example: "immunity findings --all lists every finding with its id; with --json, every one in every state",
@@ -107,8 +115,11 @@ pub fn of(
         answered_at: now,
         store_id,
         verdicts,
-        // Named by `one` after an answer given to a pair; a read names none.
+        // Named by `one` after an answer given with `--with`; a read names none.
         answered_with: None,
+        answered_together: Vec::new(),
+        group: findings::group_key(&i),
+        folder_text: findings::group_folder(&i).as_deref().map(whole),
         journal_seq: findings::journal_seq(conn)?,
         finding: Some(known::finding_ref(&i)),
         kind: i.kind.to_string(),
@@ -188,6 +199,8 @@ pub fn listed(
             )
         }),
         finding: Some(known::finding_ref(i)),
+        group: findings::group_key(i),
+        folder_text: findings::group_folder(i).as_deref().map(whole),
         kind: i.kind.to_string(),
         title: i.words.title.to_string(),
         where_text: whole(i.place.as_deref().unwrap_or_default()),

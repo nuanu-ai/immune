@@ -830,6 +830,41 @@ pub fn is_finding_id(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The rules whose findings about files of one folder are one group, answered by one command
+/// (`group`). A hooks folder is written as a whole by one tool, so its files changed together
+/// have one cause. The folder of launch agents, the SSH folder and the home folder are shared
+/// places, where neighbours need not have one cause, so their rules are not here.
+const GROUPED: [&str; 1] = ["watched.git-hook"];
+
+/// What the findings of one group share, as the store holds them: the rule, the machine, the
+/// kind of change and the folder that holds the file (`baseline::parent`). `None` for a finding
+/// of a rule not in `GROUPED`, the response layer's included, and for one whose file holds `#`,
+/// which the store's id does not tell apart from a part of a file.
+pub fn group(i: &Item) -> Option<[&str; 4]> {
+    let (machine, unit) = crate::known::place_of(&i.about)?;
+    let rule = GROUPED.into_iter().find(|r| *r == i.rule)?;
+    let change = i.change.as_deref()?;
+    (!unit.contains('#')).then_some([rule, machine, change, crate::baseline::parent(unit)])
+}
+
+/// The key a client groups findings by, equal for the findings of one group (`group`): `g` and
+/// 32 hexadecimal digits of the SHA-256 of what they share, 128 bits, so two groups do not share
+/// one by chance. The parts are joined by NUL, which none of them can hold. Membership is never
+/// decided on it.
+pub fn group_key(i: &Item) -> Option<String> {
+    let hex = sha256::hex(group(i)?.join("\0").as_bytes());
+    Some(format!("g{}", &hex[..32]))
+}
+
+/// The folder of a finding's group as a person reads a place: under the home folder as `~/…`.
+pub fn group_folder(i: &Item) -> Option<String> {
+    Some(match group(i)?[3] {
+        "." => "~".to_string(),
+        f if f.starts_with('/') => f.to_string(),
+        f => format!("~/{f}"),
+    })
+}
+
 /// Looks at what a run saw and raises what the rules find. Marks of `expected` that ended
 /// while the thing happened again during them open their findings again first. Returns how
 /// many findings were opened by this run.
@@ -1295,10 +1330,14 @@ pub enum Refused {
     Closed(String),
     /// There is no answer to take back: the finding is in this state.
     NotAnswered(String),
-    /// The finding named with `--with` is not the other finding of the pair (`pair`).
-    NotPair,
-    /// A refusal about the finding named with `--with`, not the one the answer is for.
-    With(Box<Refused>),
+    /// The finding with this id, named with `--with`, is neither the other finding of the pair
+    /// nor of the first finding's group (`together`).
+    NotTogether(String),
+    /// The finding with this id is named twice.
+    Twice(String),
+    /// A refusal about the finding with this id, named with `--with`, not the one the answer is
+    /// for.
+    With(String, Box<Refused>),
     /// Something joined this finding, by its id, after the read the answer names (`unchanged`).
     ChangedSinceRead(String),
     /// The answer names a read further on in the journal than the store has come: it was not
@@ -1319,30 +1358,44 @@ fn shown(f: &Found, id: &str) -> bool {
     f.id == id
 }
 
-/// Checks that `with` is the other finding of `id`'s pair before one answer is given to both:
-/// one of them is the finding of a rule, the other the response layer's `verdict.suspicious`
-/// finding of that rule (`verdict.suspicious:<rule>` in the store), and both are about the same
-/// thing. The pair is checked by rule and thing, not by occurrence: each answer then refuses a
-/// finding it cannot answer. Both must be findings every answer shows. Nothing is written here.
-pub fn pair(
-    tx: &Transaction,
-    id: &str,
-    with: &str,
-    at: i64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let all = all(tx, at)?;
-    let Some(a) = all.iter().find(|f| shown(f, id)) else {
-        return Err(refused(Refused::Unknown));
-    };
-    let Some(b) = all.iter().find(|f| shown(f, with)) else {
-        return Err(refused(Refused::With(Box::new(Refused::Unknown))));
-    };
-    // The pair is what the page folds into one row.
-    let (a, b) = (item(a), item(b));
-    if !(one_thing(&a, &b) || one_thing(&b, &a)) {
-        return Err(refused(Refused::NotPair));
+/// The findings named, in order, once the whole set is checked to be answered by one command:
+/// one finding; the pair, a rule's finding and the response layer's `verdict.suspicious` finding
+/// of that rule about the same thing (`one_thing`, as the page folds them into one row); or
+/// findings that all share one `group`. Refused, naming the id that does not fit: an id the
+/// store has no finding for, one named twice, and one of another group than the first, a
+/// finding of no group included. The pair is checked by rule and thing, not by occurrence:
+/// each answer then refuses a finding it cannot answer. Returns whether the set is the pair.
+/// Nothing is written here.
+pub fn together<'a>(
+    all: &'a [Found],
+    ids: &[&str],
+) -> Result<(Vec<&'a Found>, bool), Box<dyn std::error::Error>> {
+    let mut named: Vec<&Found> = Vec::new();
+    for (n, id) in ids.iter().enumerate() {
+        let Some(f) = all.iter().find(|f| shown(f, id)) else {
+            return Err(refused(match n {
+                0 => Refused::Unknown,
+                _ => Refused::With(id.to_string(), Box::new(Refused::Unknown)),
+            }));
+        };
+        if ids[..n].contains(id) {
+            return Err(refused(Refused::Twice(id.to_string())));
+        }
+        named.push(f);
     }
-    Ok(())
+    let items: Vec<Item> = named.iter().map(|f| item(f)).collect();
+    let pair = match items.as_slice() {
+        [a, b] => one_thing(a, b) || one_thing(b, a),
+        _ => false,
+    };
+    let first = group(&items[0]);
+    if let Some(odd) = items[1..]
+        .iter()
+        .find(|i| !pair && (first.is_none() || group(i) != first))
+    {
+        return Err(refused(Refused::NotTogether(odd.id.clone())));
+    }
+    Ok((named, pair))
 }
 
 /// The journal's latest sequence number: what a read of the store has seen. An answer that names
@@ -1369,7 +1422,7 @@ pub fn journal_seq(conn: &Connection) -> rusqlite::Result<i64> {
 ///
 /// A rule's finding shows its pair's other finding inside its own message
 /// (`verdicts.verdict_finding`), so the response layer's `verdict.suspicious` findings of its
-/// rule about the same thing (`one_thing`, as `pair` and the page pair them) are covered as if
+/// rule about the same thing (`one_thing`, as `together` and the page pair them) are covered as if
 /// named, one
 /// raised after `seq` included. Nothing else is checked: a newer occurrence of the same rule does
 /// not refuse taking back an older one's answer, which quiets nothing. Each of these is written
@@ -1386,16 +1439,16 @@ pub fn journal_seq(conn: &Connection) -> rusqlite::Result<i64> {
 /// statement about the thing, not more of the same. `reopen` is checked as `seen` is.
 pub fn unchanged(
     tx: &Transaction,
+    all: &[Found],
     ids: &[&str],
     seq: i64,
     act: &Act,
-    at: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if seq > journal_seq(tx)? {
         return Err(refused(Refused::ReadAhead));
     }
     let matches_join = !matches!(act, Act::Answer(Answer::Expected { .. }));
-    let items: Vec<Item> = all(tx, at)?.iter().map(item).collect();
+    let items: Vec<Item> = all.iter().map(item).collect();
     // Each named finding, then the response layer's findings it shows.
     let mut checked: Vec<&str> = Vec::new();
     for id in ids {
@@ -1427,34 +1480,27 @@ pub fn unchanged(
     Ok(())
 }
 
-/// The same failure, about the finding named with `--with`: a refusal says so, anything else is
-/// as it was.
-pub fn of_with(e: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+/// The same failure, about the finding `id` named with `--with`: a refusal says so, anything
+/// else is as it was.
+pub fn of_with(e: Box<dyn std::error::Error>, id: &str) -> Box<dyn std::error::Error> {
     match e.downcast::<RefusedError>() {
-        Ok(r) => Box::new(RefusedError(Refused::With(Box::new(r.0)))),
+        Ok(r) => Box::new(RefusedError(Refused::With(id.to_string(), Box::new(r.0)))),
         Err(e) => e,
     }
-}
-
-fn found(tx: &Transaction, id: &str, at: i64) -> Result<Found, Box<dyn std::error::Error>> {
-    all(tx, at)?
-        .into_iter()
-        .find(|f| shown(f, id))
-        .ok_or_else(|| refused(Refused::Unknown))
 }
 
 /// Takes the owner's answer, kept and journaled with how it was given.
 pub fn answer(
     tx: &Transaction,
-    id: &str,
+    f: &Found,
     a: &Answer,
     via: Via,
     at: i64,
     run_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let f = found(tx, id, at)?;
+    let id = &f.id;
     if f.state != "open" && f.state != "expected" {
-        return Err(Box::new(RefusedError(Refused::Closed(f.state))));
+        return Err(Box::new(RefusedError(Refused::Closed(f.state.clone()))));
     }
     let via = via.literal();
     // The reason is the person's decision and is taken whatever it holds, cut as a source's
@@ -1495,17 +1541,21 @@ pub fn answer(
 /// answer was. An `expected` mark that ended is still an answer that can be taken back.
 pub fn reopen(
     tx: &Transaction,
-    id: &str,
+    f: &Found,
     via: Via,
     at: i64,
     run_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let f = found(tx, id, at)?;
-    let Some(given) = f.answered_at.map(|_| given(&f)) else {
-        return Err(Box::new(RefusedError(Refused::NotAnswered(f.state))));
+    let id = &f.id;
+    let Some(given) = f.answered_at.map(|_| given(f)) else {
+        return Err(Box::new(RefusedError(Refused::NotAnswered(
+            f.state.clone(),
+        ))));
     };
     if f.state != "expected" && f.state != "seen" {
-        return Err(Box::new(RefusedError(Refused::NotAnswered(f.state))));
+        return Err(Box::new(RefusedError(Refused::NotAnswered(
+            f.state.clone(),
+        ))));
     }
     tx.execute(
         "UPDATE finding SET state = 'open', answered_at = NULL, reason = NULL, until_at = NULL,
@@ -1571,11 +1621,12 @@ impl std::fmt::Display for Refused {
                     "the finding is {state}, so there is no answer to take back"
                 )
             }
-            Refused::NotPair => write!(
+            Refused::NotTogether(_) => write!(
                 f,
-                "the finding named by --with is not the other finding of the pair: the response layer's verdict.suspicious finding of the same rule about the same thing, or the finding of that rule"
+                "the finding named by --with cannot be answered with the others: answered together are the pair, a rule's finding and the response layer's verdict.suspicious finding of that rule about the same thing, or findings of one group, as group names it"
             ),
-            Refused::With(r) => write!(f, "about the finding named by --with: {r}"),
+            Refused::Twice(_) => write!(f, "the same finding is named twice: name each once"),
+            Refused::With(_, r) => write!(f, "about the finding named by --with: {r}"),
             Refused::ChangedSinceRead(_) => write!(
                 f,
                 "something joined the finding after the read the answer names: read it again, show the person what is new, and answer with the new journal_seq"
@@ -1631,7 +1682,7 @@ pub struct Item {
 /// The two findings are one thing to the person: `own` is the response layer's
 /// `verdict.suspicious` finding about the rule of `core`'s finding and about the same thing.
 /// Nothing else pairs two findings: findings of two rules about the same machine are two things,
-/// and a verdict finding with no partner is a thing of its own. The page, the answer (`pair` for
+/// and a verdict finding with no partner is a thing of its own. The page, the answer (`together` for
 /// `--with`) and the read guard (`unchanged`, which covers the partner a finding shows) pair by
 /// this alone. `core` is never itself a finding of the response layer: one whose stored subject
 /// is the verdict rule would otherwise pair with itself and be folded out of sight.
