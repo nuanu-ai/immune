@@ -713,6 +713,21 @@ pub const PERSISTENCE_NOT_READ: Cause = Cause {
     advice: "Nothing to do. This is a limit of this version.",
 };
 
+pub const RUN_IN_TURN_NOT_READ: Cause = Cause {
+    id: "run-in-turn-not-read",
+    who: NOTHING,
+    class: store::Cause::NoReader,
+    scope: "this_mac",
+    kind: "scripts that a file which starts by itself runs in turn",
+    title: [
+        "Scripts that a file which starts by itself runs in turn are not checked.",
+        "Scripts that a file which starts by itself runs in turn are not checked.",
+    ],
+    meaning: "A Git hook, a file the terminal runs when it starts and a startup item are read. A script one of them calls or sources is not read in this version, so a change to that script goes unseen. The scripts Husky keeps for Git's hooks are the exception: they are read.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
+};
+
 /// The autorun points not checked on the macOS this Mac runs: the item for a person of the
 /// sentence `autorun::not_checked_said` adds to `cannot_judge`.
 pub const NOT_CHECKED_ON_MACOS: Cause = Cause {
@@ -731,7 +746,7 @@ pub const NOT_CHECKED_ON_MACOS: Cause = Cause {
 };
 
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 26] = [
+pub const CAUSES: [&Cause; 27] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -758,13 +773,15 @@ pub const CAUSES: [&Cause; 26] = [
     &NOT_CHECKED_ON_MACOS,
     // The limits of this version, `LIMITS`, last.
     &PERSISTENCE_NOT_READ,
+    &RUN_IN_TURN_NOT_READ,
     &NOT_COMPARED,
 ];
 
 /// Each sentence of `status::CANNOT_JUDGE`, told for a person, one for one: the builder who
 /// closes a gap deletes the sentence and its line here, and the item goes with them.
-pub const LIMITS: [(&str, &Cause); 3] = [
+pub const LIMITS: [(&str, &Cause); 4] = [
     (crate::status::PERSISTENCE_UNREAD, &PERSISTENCE_NOT_READ),
+    (status::RUN_IN_TURN_UNREAD, &RUN_IN_TURN_NOT_READ),
     (
         "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
         &NOT_COMPARED,
