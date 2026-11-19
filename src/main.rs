@@ -185,7 +185,7 @@ struct Args {
     home: PathBuf,
     /// The one folder to look for checkouts in instead of the home folder.
     checkouts_root: Option<PathBuf>,
-    /// The folder of agent sessions instead of Claude Code's own.
+    /// A folder of Claude Code's sessions instead of its own; other agents' stay in the home.
     sessions_root: Option<PathBuf>,
     /// The one place to look for tailscale instead of the usual ones.
     tailscale: Option<PathBuf>,
@@ -3013,58 +3013,61 @@ fn read_agent_folders(
         at: run.at,
         observed_at: run.at,
     };
-    let dir = args
-        .sessions_root
-        .clone()
-        .unwrap_or_else(|| args.home.join(agent_folders::SESSIONS));
     let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
     let homes = [args.home.as_path(), home.as_path()];
     let held = agent_folders::held(run.tx)?;
-    let sessions = match agent_folders::sessions(&dir, &homes, &held, SystemTime::now()) {
-        // Its sessions lead into a folder macOS asks permission for: not read, and what was
-        // known from them stays as it was.
-        agent_folders::Found::Guarded(folder) => {
-            run.readers += 1;
-            let reason = format!(
-                "{}{}",
-                guarded::NOT_LOOKED_INTO,
-                guarded::leads_into(&folder, &args.home)
-            );
-            let gap = Gap::of(Cause::NotGiven);
-            run.apply(
-                &reading,
-                agent_folders::BASIS,
-                "none",
-                Some(&reason),
-                &gap,
-                &[],
-            )?;
-            not_looked_into(run, agent_folders::READER, &[folder], &args.home)?;
-            return Ok(Vec::new());
+    let (mut sessions, mut failed, mut not_entered) = (None, Vec::new(), Vec::new());
+    for source in &agent_folders::SOURCES {
+        let dir = match &args.sessions_root {
+            Some(dir) if source.dir == agent_folders::SESSIONS => dir.clone(),
+            _ => args.home.join(source.dir),
+        };
+        match agent_folders::sessions(source, &dir, &homes, &held, SystemTime::now()) {
+            agent_folders::Found::Absent => {}
+            agent_folders::Found::Read(s) => match &mut sessions {
+                None => sessions = Some(s),
+                Some(all) => agent_folders::Sessions::add(all, s),
+            },
+            agent_folders::Found::Failed(reason) => failed.push(reason),
+            agent_folders::Found::Guarded(folder) => not_entered.push(folder),
         }
-        agent_folders::Found::Failed(reason) => {
-            run.readers += 1;
-            let gap = Gap::of(Cause::Failed);
-            run.apply(
-                &reading,
-                agent_folders::BASIS,
-                "none",
-                Some(&reason),
-                &gap,
-                &[],
-            )?;
+    }
+    if sessions.is_none() && !(failed.is_empty() && not_entered.is_empty()) {
+        // No sessions were read: what was known from them stays as it was. A folder of them
+        // that leads into a folder macOS asks permission for was not given.
+        run.readers += 1;
+        let (reason, gap) = if failed.is_empty() {
+            let shown: Vec<String> = not_entered
+                .iter()
+                .map(|f| guarded::leads_into(f, &args.home))
+                .collect();
+            let reason = format!("{}{}", guarded::NOT_LOOKED_INTO, shown.join(", "));
+            (reason, Gap::of(Cause::NotGiven))
+        } else {
+            (failed.join("; "), Gap::of(Cause::Failed))
+        };
+        run.apply(
+            &reading,
+            agent_folders::BASIS,
+            "none",
+            Some(&reason),
+            &gap,
+            &[],
+        )?;
+        if failed.is_empty() {
+            not_looked_into(run, agent_folders::READER, &not_entered, &args.home)?;
+        } else {
             run.notes.push(not_read_note("Agent sessions", &reason));
-            return Ok(Vec::new());
         }
-        agent_folders::Found::Absent => None,
-        agent_folders::Found::Read(sessions) => {
-            run.readers += 1;
-            Some(sessions)
-        }
-    };
-    // Where each file was read up to, in the run's transaction: committed with the facts
-    // derived from it or not at all.
-    if let Some(s) = &sessions {
+        return Ok(Vec::new());
+    }
+    if let Some(s) = &mut sessions {
+        run.readers += 1;
+        // A folder of sessions that leads into a folder macOS asks permission for is told as
+        // a session file that does.
+        s.guarded.extend(not_entered);
+        // Where each file was read up to, in the run's transaction: committed with the facts
+        // derived from it or not at all.
         agent_folders::keep(run.tx, &s.held)?;
     }
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -3145,7 +3148,7 @@ fn read_agent_folders(
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
-    let mut reasons = Vec::new();
+    let mut reasons = failed;
     let count = |n: usize, one: &str, many: &str| things(n as i64, one, many);
     if let Some(s) = &sessions {
         if s.unreadable > 0 {
@@ -3183,25 +3186,65 @@ fn read_agent_folders(
     }
     // Every reason above is a session, a folder or a checkout that could not be read; a
     // session file that leads into a folder macOS asks permission for was not given.
-    let failed = !reasons.is_empty();
+    let mut causes = Vec::new();
+    if !reasons.is_empty() {
+        causes.push(Cause::Failed);
+    }
+    // What this version has no reader for: sessions of other agents, named only by the agent,
+    // and session files kept compressed. A checkout is dropped only when it is gone from
+    // disk, so these alone leave what was found compared in full.
+    let unread = agent_folders::unread_here(&args.home, &homes);
+    let mut lacks: Vec<Lack> = unread
+        .iter()
+        .map(|agent| Lack::new(agent_folders::OTHER_AGENT, Some(agent)))
+        .collect();
+    let mut no_reader = Vec::new();
+    if !unread.is_empty() {
+        no_reader.push(format!(
+            "sessions of {} are not read",
+            covered::listed(&unread)
+        ));
+    }
+    for (agent, n) in sessions.iter().flat_map(|s| &s.compressed) {
+        lacks.push(Lack::new(agent_folders::COMPRESSED, Some(agent)));
+        no_reader.push(format!(
+            "{} of {agent} {} not read",
+            count(*n, "compressed session file", "compressed session files"),
+            if *n == 1 { "is" } else { "are" }
+        ));
+    }
+    if !lacks.is_empty() {
+        causes.push(Cause::NoReader);
+    }
+    // A session file that leads into a folder macOS asks permission for was not given. Its
+    // clause comes last, so that what comes before it has no folder in it.
     if let Some(s) = sessions.as_ref().filter(|s| !s.guarded.is_empty()) {
+        causes.push(Cause::NotGiven);
         let folders: Vec<String> = s
             .guarded
             .iter()
             .map(|g| guarded::leads_into(g, &args.home))
             .collect();
-        reasons.push(format!(
-            "session files not looked into: {}",
+        no_reader.push(format!(
+            "{}{}",
+            agent_folders::FILES_NOT_LOOKED_INTO,
             folders.join("; ")
         ));
     }
-    let cause = if failed {
-        Cause::Failed
-    } else {
-        Cause::NotGiven
+    let compared = match causes.iter().any(|c| *c != Cause::NoReader) {
+        true => "partial",
+        false => "full",
     };
+    reasons.append(&mut no_reader);
     let (completeness, reason, gap) = match (reasons.is_empty(), &sessions) {
-        (false, _) => ("partial", Some(reasons.join("; ")), Gap::of(cause)),
+        (false, _) => (
+            "partial",
+            Some(reasons.join("; ")),
+            Gap {
+                cause: Cause::worst(causes),
+                lacks,
+            },
+        ),
         (true, None) => (
             "full",
             Some(agent_folders::NOT_HERE.to_string()),
@@ -3213,7 +3256,7 @@ fn read_agent_folders(
         completeness,
         reason: reason.as_deref(),
         gap: &gap,
-        compared: completeness,
+        compared,
     };
     run.apply_found(&reading, agent_folders::BASIS, &applied, &statements)?;
     Ok(found

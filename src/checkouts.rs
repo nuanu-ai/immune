@@ -107,7 +107,7 @@ const MAX_DEPTH: usize = 5;
 /// words cannot drift from the code.
 pub fn walked() -> String {
     format!(
-        "They are looked for in your home folder, up to {MAX_DEPTH} folders down, and in the folders your coding agents worked in."
+        "They are looked for in your home folder, up to {MAX_DEPTH} folders down, and in the folders Claude Code and Codex CLI worked in."
     )
 }
 /// Folders that are never descended into, wherever they are: tools keep copies of other
