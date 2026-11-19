@@ -280,7 +280,7 @@ pub fn retire_unread(tx: &Transaction, r: &Reading) -> rusqlite::Result<usize> {
         let claimed = subject.strip_prefix(&prefix).is_none_or(|name| {
             // A resolved hook can be anywhere. Its checkout scope, not a static
             // filename pattern, is what claims it for the next comparison.
-            watched::of_checkout(kind) && scope.strip_prefix(&checkout_prefix).is_some_and(checkout)
+            kind == watched::HOOK_KIND && scope.strip_prefix(&checkout_prefix).is_some_and(checkout)
                 || !baseline::candidates(kind, name, checkout).is_empty()
         });
         if claimed {

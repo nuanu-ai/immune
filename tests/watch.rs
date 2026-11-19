@@ -1318,9 +1318,9 @@ const GIT_CONFIG_PLACES: u64 = 4;
 /// The places the watcher subscribes to in each checkout with default hooks. This includes
 /// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's
 /// task file and settings, two dev container paths, `package.json`, two pnpm files, seven
-/// files of coding agents' settings and the 14 scripts Husky keeps for git's hooks. A
-/// workspace file has no fixed name.
-const CHECKOUT_PLACES: u64 = 32;
+/// files of coding agents' settings and the 15 files Husky keeps. A workspace file has no
+/// fixed name.
+const CHECKOUT_PLACES: u64 = 33;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -1863,79 +1863,6 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
             "{order}"
         );
     }
-}
-
-#[test]
-fn a_file_beside_the_hooks_in_a_configured_folder_is_read_whenever_the_hooks_there_are() {
-    let mac = Mac::new("hooks-folder-others");
-    mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
-    mac.put("dev/app/.git/config", "[core]\n hooksPath = .husky/_\n");
-    let hook = "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n";
-    mac.put("dev/app/.husky/_/pre-commit", hook);
-    mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# dispatch\n");
-    mac.run();
-    let mut watcher = mac.watch_with(&["--alive-every", "60"]).started();
-    mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# changed\n");
-    mac.put("dev/app/.husky/_/pre-commit", &format!("{hook}# changed\n"));
-    watcher.until("read", |_| found(&mac).len() == 2);
-    assert_eq!(
-        found(&mac),
-        [
-            (
-                "watched.git-hook".to_string(),
-                "~/dev/app/.husky/_/h".to_string()
-            ),
-            (
-                "watched.git-hook".to_string(),
-                "~/dev/app/.husky/_/pre-commit".to_string()
-            )
-        ]
-    );
-    assert!(watcher.stop().success());
-}
-
-#[test]
-fn a_configured_hooks_folder_is_watched_by_git_hook_names_and_nothing_else() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    let mac = Mac::new("hooks-folder-names");
-    mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
-    let shared = mac.home().join("dev/hooks");
-    mac.put(
-        "dev/app/.git/config",
-        &format!("[core]\n hooksPath = {}\n", shared.display()),
-    );
-    mac.put(
-        "dev/hooks/pre-commit",
-        "#!/bin/sh\n. \"$(dirname \"$0\")/lib.sh\"\n",
-    );
-    mac.put("dev/hooks/lib.sh", "# a helper\n");
-    // An entry that is a link out is not followed: its target is not subscribed to.
-    symlink("/", shared.join("up")).unwrap();
-    mac.run();
-    let base = TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES;
-    // Git's 22 names of a working tree's hooks and its 8 of a push, each by name, in one
-    // folder: two names are in both.
-    let mut w = mac.watch();
-    assert_eq!(w.next("watching")["places"], base + 28);
-    assert!(w.stop().success());
-    // A folder macOS asks permission for, shut as macOS keeps it: neither it nor its names.
-    let docs = mac.home().join("Documents");
-    mac.put("Documents/lib.sh", "# a helper\n");
-    mac.put(
-        "dev/app/.git/config",
-        &format!("[core]\n hooksPath = {}\n", docs.display()),
-    );
-    struct Open(PathBuf);
-    impl Drop for Open {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
-        }
-    }
-    let _open = Open(docs.clone());
-    std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let mut w = mac.watch();
-    assert_eq!(w.next("watching")["places"], base);
-    assert!(w.stop().success());
 }
 
 #[test]
@@ -3151,8 +3078,6 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
     std::fs::write(keg, "#!/bin/sh\n").unwrap();
     mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
     mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
-    mac.put("dev/shop/.git/config", "[core]\n hooksPath = .husky/_\n");
-    mac.put("dev/shop/.husky/_/h", "#!/usr/bin/env sh\n# dispatch\n");
     mac.run();
     // Running programs are sampled only while a watcher runs.
     let sampled = "running programs and their connections";
@@ -3180,14 +3105,6 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
     assert_eq!(how(&m, tasks), "live");
     assert_eq!(how(&m, "Homebrew packages"), "hourly");
     assert_eq!(how(&m, sampled), "sampled");
-    // The files beside the hooks are read at checks: the watcher does not subscribe to them.
-    let others = "other files in git hooks folders";
-    assert_eq!(how(&m, others), "hourly");
-    let page = mac.view_if_stale();
-    assert!(
-        page.contains("<span>Other files in git hooks folders</span><span class=\"wh2 t2\">at full checks</span>"),
-        "{page}"
-    );
     // A watcher that stopped samples nothing: the entry goes with it, and nothing is seen
     // within seconds any more.
     assert!(w.stop().success());

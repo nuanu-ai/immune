@@ -520,10 +520,13 @@ pub const EDITOR_EXTENSION: Watched = (
     "Extensions installed in an editor, each by its publisher and name; a new version of one is not news.",
 );
 
-/// The scripts Husky keeps for git's hooks, by the hook names it writes a dispatcher for in
-/// `.husky/_`, the folder it sets `core.hooksPath` to; the dispatcher runs the script of its
-/// own name one folder up (`index.js` of Husky 9). What a script runs in turn is not read.
+/// The scripts Husky keeps for git's hooks, by the hook names it writes a stub for in
+/// `.husky/_`, the folder it sets `core.hooksPath` to, and `.husky/_/h`, the file every stub
+/// sources: it runs the script of the hook's name one folder up, so a change to it changes
+/// what every hook runs (`index.js` of Husky 9). The stubs are read as git hooks. What a
+/// script runs in turn is not read.
 const HUSKY: &[&str] = &[
+    ".husky/_/h",
     ".husky/pre-commit",
     ".husky/pre-merge-commit",
     ".husky/prepare-commit-msg",
@@ -566,7 +569,7 @@ const AUTH_PLUGINS: &str =
 /// added later is read for the first time on a store that already exists: what it holds is
 /// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
-pub static POINTS: [Point; 89] = [
+pub static POINTS: [Point; 88] = [
     place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD),
     place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD),
     place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD),
@@ -645,8 +648,6 @@ pub static POINTS: [Point; 89] = [
     Point { place: Some(watched::HOOKS), ..row(&[".git/hooks"], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".git/config"], Present, GitCommand, "git", Never, (EVENT, "high", "medium"), "https://git-scm.com/docs/git-config"),
     Point { scope: Scope::NamedBy("core.hooksPath"), place: Some(watched::HOOKS), ..row(&[], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
-    // The other files directly in that folder, such as a dispatcher its hooks run (`watched::other_files`).
-    place(watched::HOOK_FOLDER_FILES, Scope::NamedBy("core.hooksPath"), &[], Entries, "https://git-scm.com/docs/githooks"),
     row(&[".gitmodules", ".git/modules"], Present, GitCommand, "git", Never, (EVENT, "high", "low"), "https://securitylabs.datadoghq.com/articles/git-arbitrary-file-write/"),
     row(&[".pre-commit-config.yaml"], Present, GitCommand, "pre-commit", Never, (EVENT, "medium", "low"), "https://pre-commit.com/"),
     // As git's own hooks, whose rule tells it: no technique, medium and low.
@@ -1826,10 +1827,10 @@ mod tests {
             assert_eq!(is, was);
         }
         assert_eq!(now.lines().count(), before.lines().count());
-        // 38 watched places, 42 ways in a project and 11 in the home folder: one table.
+        // 37 watched places, 42 ways in a project and 11 in the home folder: one table.
         assert_eq!(
             (places().count(), ways().count(), POINTS.len()),
-            (38, 53, 89)
+            (37, 53, 88)
         );
     }
 

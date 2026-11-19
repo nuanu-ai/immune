@@ -107,7 +107,7 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
         };
         // A hook may gain another checkout in the same reading. The hook reader
         // checks its final locations before retracting the content.
-        if kind == "removed" && key.1 == "located_on" && !crate::watched::of_checkout(r.kind) {
+        if kind == "removed" && key.1 == "located_on" && r.kind != crate::watched::HOOK_KIND {
             retract_inside(tx, r, &key.0)?;
         }
         events.push(Event {

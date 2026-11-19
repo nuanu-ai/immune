@@ -8544,7 +8544,7 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
     );
     assert!(
         report.contains(
-            "not read in full: other files in the folder core.hooksPath names (partial), hooks in 1 checkout (nothing read), hooks in 1 checkout (partial)."
+            "not read in full: hooks in 1 checkout (nothing read), hooks in 1 checkout (partial)."
         ),
         "{report}"
     );
@@ -8855,7 +8855,7 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             ".cursor/mcp.json of each checkout, the part that runs by itself",
             ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
             ".gemini/settings.json of each checkout, the part that runs by itself",
-            ".husky/pre-commit, .husky/pre-merge-commit, .husky/prepare-commit-msg, .husky/commit-msg, .husky/post-commit, .husky/applypatch-msg, .husky/pre-applypatch, .husky/post-applypatch, .husky/pre-rebase, .husky/post-rewrite, .husky/post-checkout, .husky/post-merge, .husky/pre-push, .husky/pre-auto-gc of each checkout, the part that runs by itself",
+            ".husky/_/h, .husky/pre-commit, .husky/pre-merge-commit, .husky/prepare-commit-msg, .husky/commit-msg, .husky/post-commit, .husky/applypatch-msg, .husky/pre-applypatch, .husky/post-applypatch, .husky/pre-rebase, .husky/post-rewrite, .husky/post-checkout, .husky/post-merge, .husky/pre-push, .husky/pre-auto-gc of each checkout, the part that runs by itself",
             ".mcp.json of each checkout, the part that runs by itself",
             ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself",
             ".vscode/mcp.json of each checkout, the part that runs by itself",
@@ -10303,13 +10303,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         ])
     );
     assert_eq!(c["failed"], 1, "{c:#}");
-    // The lockfile, the worktree's hooks and the other files of the folder they are run from.
-    assert_eq!(c["no_reader"], 3, "{c:#}");
-    // The worktree's hooks and the other files of their folder are partial, as kept elsewhere.
+    assert_eq!(c["no_reader"], 2, "{c:#}");
     // The second reading of nothing is this Mac's program starts: no event level here.
     assert_eq!(
         (c["partial"].clone(), c["none"].clone()),
-        (3.into(), 2.into()),
+        (2.into(), 2.into()),
         "{c:#}"
     );
     let classes = [

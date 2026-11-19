@@ -622,11 +622,10 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
     // The content of each watched file and the hooks of each checkout are readings of their
     // own; those read in full are shown under watched places, not here. A checkout in which the
     // reading of lockfiles found none is named under machines, as a checkout without a lockfile.
-    let per_thing =
-        |kind: &str| kind == crate::watched::CONTENT || crate::watched::of_checkout(kind);
+    let per_thing = [crate::watched::CONTENT, crate::watched::HOOK_KIND];
     let rows: Vec<&Latest> = rows
         .iter()
-        .filter(|r| !per_thing(&r.kind) || r.completeness != "full")
+        .filter(|r| !per_thing.contains(&r.kind.as_str()) || r.completeness != "full")
         .filter(|r| r.reason.as_deref() != Some(crate::lockfiles::NONE_FOUND_NOTE))
         .collect();
     if rows.is_empty() {
@@ -1415,7 +1414,7 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
         // One reading per checkout: those read in full are counted, the rest are listed.
         let (listed, full): (Vec<&&Latest>, Vec<&&Latest>) = readings
             .iter()
-            .partition(|r| !crate::watched::of_checkout(kind) || r.completeness != "full");
+            .partition(|r| kind != crate::watched::HOOK_KIND || r.completeness != "full");
         if !full.is_empty() {
             writeln!(
                 out,

@@ -3637,9 +3637,8 @@ struct Placed {
     watched_as: &'static str,
     kind: String,
     look: look::Look,
-    /// Why the checkout's hooks were not looked at where they were, and all that was known of
-    /// them is kept: its `.git` is a file, the checkout itself is no longer a folder there, or
-    /// the folder Git's configuration names could not be told or resolved.
+    /// Why the checkout's hooks were not looked at where they were: its `.git` is a file, or
+    /// the checkout itself is no longer a folder there.
     elsewhere: Option<String>,
     /// The completeness, reason and cause the reading says, where its reader gives them.
     coverage: Option<(&'static str, Option<String>, Option<Cause>)>,
@@ -3648,55 +3647,6 @@ struct Placed {
     /// The checkouts it looks into, by their paths as ids name them: the one whose hooks it
     /// reads, or every checkout for a reading over checkouts.
     checkouts: Vec<String>,
-    /// What this build has no reader for in it, beside the cause its coverage gives.
-    lacks: Vec<&'static str>,
-}
-
-/// The coverage `Placed` takes, as completeness, reason and cause.
-type Said = Option<(&'static str, Option<String>, Option<Cause>)>;
-
-/// The reading of the other files of a checkout's configured hooks folder, as `Placed` takes
-/// it: what was read, why all it knew is kept, its coverage and what it has no reader for. A
-/// folder that could not be told reads nothing and keeps what was read in it.
-fn others_placed(
-    o: watched::Others,
-    untold: Option<&(Cause, String)>,
-    configured: bool,
-) -> (look::Look, Option<String>, Said, Vec<&'static str>) {
-    if let Some((cause, why)) = untold {
-        let said = Some(("none", Some(why.clone()), Some(*cause)));
-        return (o.look, Some(why.clone()), said, Vec::new());
-    }
-    if !configured {
-        let note = Some(watched::NO_HOOK_FOLDER.to_string());
-        return (o.look, None, Some(("full", note, None)), Vec::new());
-    }
-    let (completeness, reason) = o.look.completeness();
-    let completeness = match (completeness, o.look.present) {
-        (c, _) if o.lacks.is_empty() => c,
-        ("full", 0) => "none",
-        ("full", _) => "partial",
-        (other, _) => other,
-    };
-    let reason: Vec<String> = (reason.into_iter().chain(o.why))
-        .chain([watched::HOOK_FOLDER_AT_CHECKS.to_string()])
-        .collect();
-    // A folder past the cap is one unit not read; anything else not read failed.
-    let cause = if o.look.not_read().count() > o.cut {
-        o.look.cause()
-    } else {
-        Cause::NoReader
-    };
-    let cause = (completeness != "full").then_some(cause);
-    let reason = reason.join("; ");
-    // A folder not resolved keeps all that was read of it, as one not told does.
-    let elsewhere = o.unplaced.then(|| reason.clone());
-    (
-        o.look,
-        elsewhere,
-        Some((completeness, Some(reason), cause)),
-        o.lacks,
-    )
 }
 
 /// A reading of this machine over its checkouts speaks only for the checkouts it looked into.
@@ -3891,7 +3841,7 @@ fn read_watched(
     }
     let mut placed = Vec::new();
     for (watched_as, kind) in watched::kinds() {
-        if watched::of_checkout(kind) || !wanted(&machine, kind) {
+        if kind == watched::HOOK_KIND || !wanted(&machine, kind) {
             continue;
         }
         placed.push(Placed {
@@ -3903,7 +3853,6 @@ fn read_watched(
             coverage: None,
             kept: Vec::new(),
             checkouts: Vec::new(),
-            lacks: Vec::new(),
         });
     }
     let homes = watched::homes(&args.home);
@@ -3921,8 +3870,7 @@ fn read_watched(
     let mut git = None;
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
-        // Its hooks and the other files of their folder are read together, as either is asked.
-        if !wanted(&scope, watched::HOOK_KIND) && !wanted(&scope, watched::HOOK_FOLDER_KIND) {
+        if !wanted(&scope, watched::HOOK_KIND) {
             continue;
         }
         let git = git
@@ -3939,18 +3887,14 @@ fn read_watched(
         let names = names.as_ref().map(|[a, b]| [a.as_path(), b.as_path()]);
         let given = names.as_ref().map_or(&[][..], |names| names.as_slice());
         let folder = git.folder(&c.path, &args.home, &homes, given);
-        let configured = !folder.configured().is_empty();
-        let (look, elsewhere, coverage, others) =
+        let (look, elsewhere, coverage) =
             match watched::look_checkout(c, &args.home, homes, folder, given) {
-                // The folder's other files are elsewhere as its hooks are, and said as they are.
                 watched::Hooks::GitFile => {
                     let why = Some(watched::GIT_FILE.to_string());
-                    let others = (look::Look::default(), why.clone(), None, Vec::new());
-                    (look::Look::default(), why, None, Some(others))
+                    (look::Look::default(), why, None)
                 }
                 // `.git/hooks` was read; the folder the configuration names was not told.
-                watched::Hooks::Looked(look, untold, others) => {
-                    let others = Some(others_placed(*others, untold.as_ref(), configured));
+                watched::Hooks::Looked(look, untold) => {
                     let coverage = untold.map(|(cause, why)| match look.completeness() {
                         ("full", _) => ("partial", Some(why), Some(cause)),
                         // Never calmer than `.git/hooks` alone: `none` stays `none`.
@@ -3960,56 +3904,42 @@ fn read_watched(
                             (completeness, Some(reason), cause.or(Some(Cause::Failed)))
                         }
                     });
-                    (look, None, coverage, others)
+                    (look, None, coverage)
                 }
             };
         // Every checkout is read, those with no hooks too: the first hook planted in a
         // checkout the store already held is then new, not the baseline. Hooks kept elsewhere
         // were not looked at.
-        // The other files of the folder first: the hooks' reading is the checkout's latest.
-        let hooks = Some((look, elsewhere, coverage, Vec::new()));
-        for ((watched_as, kind), got) in [
-            (watched::HOOK_FOLDER_FILES, others),
-            (watched::HOOKS, hooks),
-        ] {
-            let Some((look, elsewhere, coverage, lacks)) = got else {
-                continue;
-            };
-            placed.push(Placed {
-                scope: scope.clone(),
-                watched_as,
-                kind: kind.to_string(),
-                look,
-                elsewhere,
-                coverage,
-                kept: Vec::new(),
-                checkouts: vec![c.rel.clone()],
-                lacks,
-            });
-        }
+        placed.push(Placed {
+            scope,
+            watched_as: watched::HOOK,
+            kind: watched::HOOK_KIND.to_string(),
+            look,
+            elsewhere,
+            coverage,
+            kept: Vec::new(),
+            checkouts: vec![c.rel.clone()],
+        });
     }
     // A checkout the store holds that is still there in another form, as a link where its
     // folder was: it is not gone, and its hooks are not looked at through the link.
     let start = checkouts::start(args.checkouts_root.as_deref(), &args.home);
     for rel in checkouts::moved(run.tx, &machine, &start)? {
         let scope = format!("checkout:{machine}/{rel}");
-        if !wanted(&scope, watched::HOOK_KIND) && !wanted(&scope, watched::HOOK_FOLDER_KIND) {
+        if !wanted(&scope, watched::HOOK_KIND) {
             continue;
         }
         let why = format!("{rel} {}", checkouts::MOVED);
-        for (watched_as, kind) in [watched::HOOK_FOLDER_FILES, watched::HOOKS] {
-            placed.push(Placed {
-                scope: scope.clone(),
-                watched_as,
-                kind: kind.to_string(),
-                look: look::Look::default(),
-                elsewhere: Some(why.clone()),
-                coverage: None,
-                kept: Vec::new(),
-                checkouts: vec![rel.clone()],
-                lacks: Vec::new(),
-            });
-        }
+        placed.push(Placed {
+            scope,
+            watched_as: watched::HOOK,
+            kind: watched::HOOK_KIND.to_string(),
+            look: look::Look::default(),
+            elsewhere: Some(why),
+            coverage: None,
+            kept: Vec::new(),
+            checkouts: vec![rel],
+        });
     }
     // Each way code runs by itself that is read here, in every checkout or in the home
     // folder, as one reading of this machine. Before checkouts were ever looked for on this
@@ -4070,7 +4000,6 @@ fn read_watched(
             elsewhere: None,
             kept,
             checkouts: over,
-            lacks: Vec::new(),
         });
     }
 
@@ -4187,9 +4116,9 @@ fn read_watched(
                 return c.to_string();
             }
             let folder = baseline::parent(&unit.path);
-            // A folder listed only in part, as past a cap, is the place too.
-            if (p.look.read_units().iter())
-                .chain(p.look.seen_units())
+            if p.look
+                .read_units()
+                .iter()
                 .any(|r| r.part.is_empty() && r.path == folder)
             {
                 folder.to_string()
@@ -4232,11 +4161,10 @@ fn read_watched(
                 || keep_outside && unit.is_none_or(outside)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
-        // A reading that gives its coverage says it, also where it keeps all it knew.
-        let (completeness, reason) = if let Some((completeness, reason, _)) = &p.coverage {
-            (*completeness, reason.clone())
-        } else if let Some(why) = &p.elsewhere {
+        let (completeness, reason) = if let Some(why) = &p.elsewhere {
             ("partial", Some(why.clone()))
+        } else if let Some((completeness, reason, _)) = &p.coverage {
+            (*completeness, reason.clone())
         } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
             match p.look.completeness() {
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
@@ -4247,18 +4175,15 @@ fn read_watched(
         };
         // A place that could not be looked at failed; one that leads into a folder macOS asks
         // permission for was not given; hooks kept elsewhere have no reader.
-        let gap = if let Some((_, _, cause)) = &p.coverage {
-            Gap {
-                cause: *cause,
-                lacks: p.lacks.iter().map(|what| Lack::new(what, None)).collect(),
-            }
-        } else if p.elsewhere.as_deref() != Some(watched::GIT_FILE) && p.elsewhere.is_some() {
+        let gap = if p.elsewhere.as_deref() != Some(watched::GIT_FILE) && p.elsewhere.is_some() {
             Gap::of(Cause::Failed)
         } else if p.elsewhere.is_some() {
             Gap {
                 cause: Some(Cause::NoReader),
                 lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
             }
+        } else if let Some((_, _, cause)) = &p.coverage {
+            Gap::when(*cause)
         } else {
             Gap::when((completeness != "full").then(|| p.look.cause()))
         };
@@ -4325,7 +4250,7 @@ fn read_watched(
                 }
                 (_, "removed", "watched_as") => {
                     if watched::hook_departure(&p.kind, &e) {
-                        hook_departures.push((p.scope.as_str(), p.kind.as_str(), p.watched_as, e));
+                        hook_departures.push((p.scope.as_str(), e));
                         continue;
                     }
                     let place = e.old.unwrap_or_default();
@@ -4380,10 +4305,6 @@ fn read_watched(
                     lost_sight(run.tx, &reading, &id, why)?;
                     observe(findings::NOT_READ, p.watched_as, &id);
                 }
-                // A folder listed in part is told by the files read in it.
-                Verdict::FirstRead
-                    if (p.look.entries.iter())
-                        .any(|e| baseline::parent(&e.unit.path) == unit.path) => {}
                 Verdict::FirstRead => {
                     *first_reads.entry((group(unit), p.watched_as)).or_default() += 1;
                 }
@@ -4531,11 +4452,11 @@ fn read_watched(
     }
     let mut gone = BTreeSet::new();
     let file_prefix = format!("file:{machine}/");
-    for (scope, kind, watched_as, event) in hook_departures {
+    for (scope, event) in hook_departures {
         let reading = Reading {
             reader: watched::READER,
             scope,
-            kind,
+            kind: watched::HOOK_KIND,
             run_id: &run_id,
             at: run.at,
             observed_at: run.at,
@@ -4545,10 +4466,10 @@ fn read_watched(
         let note = (!left).then_some(watched::HOOK_STILL_ACTIVE);
         store::journal_event(run.tx, &reading, &event, note)?;
         if left && gone.insert(event.subject.clone()) {
-            observe("gone", watched_as, &event.subject);
+            observe("gone", watched::HOOK, &event.subject);
             rows.push(vec![
                 "gone".to_string(),
-                watched_as.to_string(),
+                watched::HOOK.to_string(),
                 event
                     .subject
                     .strip_prefix(&file_prefix)
