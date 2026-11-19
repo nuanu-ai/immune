@@ -37,6 +37,10 @@
 //! A last line without its line break is read, as a reading from the first byte reads it,
 //! but the position stays before it.
 //!
+//! Claude Code keeps the sessions of its subagents in folders below a project's folder, so for
+//! it every `.jsonl` file at any depth below one is a session file. That walk lists at most
+//! `LOOK_LIMIT` folders; past it the reading is partial and names `NOT_LOOKED`.
+//!
 //! A session file is a regular file in its folder of sessions. It is opened without following
 //! a link and without waiting, so an entry that is a link, a named pipe or anything else is a
 //! session file that could not be read, and the kept row of a file is keyed by its own path.
@@ -75,6 +79,14 @@ pub const NOT_HERE: &str = "no sessions of Claude Code or Codex CLI on this mach
 pub const FILES_NOT_LOOKED_INTO: &str = "session files not looked into: ";
 /// What a reading names, by the agent's name, as sessions this version does not read.
 pub const OTHER_AGENT: &str = "sessions of a coding agent";
+/// What a reading names when the walk below the level of a source's sessions (`Source::deeper`)
+/// reached `LOOK_LIMIT`: what the folders past it hold is not known.
+pub const NOT_LOOKED: &str = "folders not looked through for agent sessions";
+/// How many folders the walk lists below the level of one source's sessions. The lockfile
+/// reader's walk stops at the same number (`lockfiles::LOOK_LIMIT`). A session with subagents
+/// takes two folders below its project's folder and a workflow of them two more, so this holds
+/// more than ten thousand sessions.
+pub const LOOK_LIMIT: usize = 50_000;
 
 /// One agent's session files this reader reads.
 pub struct Source {
@@ -82,6 +94,8 @@ pub struct Source {
     pub dir: &'static str,
     /// How many folders lie between it and a session file.
     pub depth: usize,
+    /// Whether session files also lie in folders below that level, at any depth.
+    pub deeper: bool,
     /// Where a line states the working folder, as a JSON pointer.
     pub cwd: &'static str,
     /// The quoted values of `type` whose lines always state it: such a line that does not is
@@ -94,9 +108,15 @@ pub struct Source {
 /// Claude Code: `<dir>/<folder>/<session>.jsonl`, the working folder in `cwd`. It keeps them
 /// elsewhere when started with `CLAUDE_CONFIG_DIR`, which this reader cannot know.
 /// https://code.claude.com/docs/en/claude-directory
+/// The sessions of its subagents lie deeper, as observed:
+/// `<folder>/<session>/subagents/agent-<id>.jsonl` and below that, in
+/// `subagents/workflows/<id>/`. Their lines state the working folder in the same field, and a
+/// subagent that works in a worktree of its own may state it only there. So every `.jsonl`
+/// file below a project's folder is read as a session.
 pub const CLAUDE_CODE: Source = Source {
     dir: SESSIONS,
     depth: 1,
+    deeper: true,
     cwd: "/cwd",
     stated_by: &[],
     compressed: None,
@@ -113,6 +133,8 @@ pub const CLAUDE_CODE: Source = Source {
 const CODEX: Source = Source {
     dir: ".codex/sessions",
     depth: 3,
+    // Its layout is fixed by its own code, cited above: nothing below it is a session.
+    deeper: false,
     cwd: "/payload/cwd",
     stated_by: &["\"session_meta\"", "\"turn_context\""],
     compressed: Some(".jsonl.zst"),
@@ -235,6 +257,9 @@ pub struct Sessions {
     pub unreadable: usize,
     /// Folders of sessions that could not be listed.
     pub unlisted: usize,
+    /// Whether the walk below the level of the sessions reached its budget and left folders
+    /// not listed.
+    pub stopped: bool,
     /// Lines that mention `"cwd"` and are not JSON, lines of a kind that always states the
     /// working folder and do not, and lines longer than `LINE_BYTES`.
     pub unparsed: usize,
@@ -304,6 +329,7 @@ impl Sessions {
         self.files += other.files;
         self.unreadable += other.unreadable;
         self.unlisted += other.unlisted;
+        self.stopped |= other.stopped;
         self.unparsed += other.unparsed;
         self.folders.append(&mut other.folders);
         self.guarded.append(&mut other.guarded);
@@ -315,13 +341,14 @@ impl Sessions {
 /// Reads the working folders from every session file of `source` under `dir`, each from where
 /// `held` says the last reading stopped when that can be trusted, at `now`. The folder may be
 /// a link: it is not followed into a folder macOS asks permission for. `homes` are the home
-/// folder's names.
+/// folder's names. Below the level of its sessions, at most `budget` folders are listed.
 pub fn sessions(
     source: &'static Source,
     dir: &Path,
     homes: &[&Path],
     held: &BTreeMap<PathBuf, Held>,
     now: SystemTime,
+    budget: usize,
 ) -> Found {
     let listed = match crate::guarded::real(dir, homes) {
         crate::guarded::Real::At(real) => real,
@@ -346,6 +373,7 @@ pub fn sessions(
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
             .saturating_sub(SETTLE_NS),
+        budget,
         out: Sessions::default(),
     };
     walk.entries(entries, source.depth);
@@ -358,34 +386,34 @@ struct Walk<'a> {
     source: &'static Source,
     held: &'a BTreeMap<PathBuf, Held>,
     settled_before: i64,
+    /// The folders below the level of the sessions still to be listed.
+    budget: usize,
     out: Sessions,
 }
 
 impl Walk<'_> {
-    /// Reads the session files `depth` folders below the entries of a folder. A folder in
-    /// between is entered only when it is one, not a link to one.
+    /// Reads the session files `depth` folders below the entries of a folder, and in every
+    /// folder below that level when the source keeps sessions there, within the budget. A
+    /// folder is entered only when it is one, not a link to one, and only once the folder
+    /// above it is closed, so a walk holds one folder open however deep it goes. How deep it
+    /// goes is bounded by the length of a path, 1024 bytes on macOS.
     fn entries(&mut self, entries: std::fs::ReadDir, depth: usize) {
+        let mut below = Vec::new();
         for entry in entries {
             let Ok(entry) = entry else {
                 self.out.unlisted += 1;
                 continue;
             };
             let path = entry.path();
-            if depth > 0 {
-                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    continue;
-                }
-                match std::fs::read_dir(&path) {
-                    Ok(inner) => self.entries(inner, depth - 1),
-                    Err(_) => self.out.unlisted += 1,
-                }
-                continue;
-            }
             let compressed = self
                 .source
                 .compressed
                 .is_some_and(|end| path.as_os_str().as_bytes().ends_with(end.as_bytes()));
-            if !compressed && path.extension().is_none_or(|e| e != "jsonl") {
+            if depth > 0 || (!compressed && path.extension().is_none_or(|e| e != "jsonl")) {
+                if (depth > 0 || self.source.deeper) && entry.file_type().is_ok_and(|t| t.is_dir())
+                {
+                    below.push(path);
+                }
                 continue;
             }
             self.out.files += 1;
@@ -398,6 +426,19 @@ impl Walk<'_> {
                 compressed.then_some(DECODED_BYTES),
                 &mut self.out,
             );
+        }
+        for path in below {
+            if depth == 0 {
+                if self.budget == 0 {
+                    self.out.stopped = true;
+                    break;
+                }
+                self.budget -= 1;
+            }
+            match std::fs::read_dir(&path) {
+                Ok(inner) => self.entries(inner, depth.saturating_sub(1)),
+                Err(_) => self.out.unlisted += 1,
+            }
         }
     }
 }
@@ -1000,7 +1041,7 @@ mod tests {
             now: SystemTime,
         ) -> Sessions {
             let homes = [Path::new("/nonexistent-home")];
-            match sessions(source, &self.root, &homes, held, now) {
+            match sessions(source, &self.root, &homes, held, now, LOOK_LIMIT) {
                 Found::Read(s) => s,
                 _ => panic!("the folder of sessions was not read"),
             }
@@ -1721,8 +1762,10 @@ mod tests {
         std::fs::write(day.join("rollout-2026-11-05T09-00-00-b.jsonl.zst"), ZST).unwrap();
         // A folder of a session's name is not a file: a session that could not be read.
         std::fs::create_dir(day.join("rollout-2026-11-07T09-00-00-d.jsonl.zst")).unwrap();
-        // Not at the depth sessions are kept at.
+        // Not at the depth sessions are kept at, above it or below it.
         std::fs::write(t.file("2026/stray.jsonl"), codex_meta("/invented/c9")).unwrap();
+        std::fs::create_dir(day.join("deeper")).unwrap();
+        std::fs::write(day.join("deeper/stray.jsonl"), codex_meta("/invented/c8")).unwrap();
 
         let read = t.read_as(&SOURCES[1], &BTreeMap::new(), later(10));
 
@@ -1731,7 +1774,7 @@ mod tests {
         assert_eq!(read.folders, expected);
         assert_eq!((read.files, read.unreadable, read.unparsed), (3, 1, 0));
         // Claude Code's sessions are not Codex's: the same folder read as Claude Code's finds
-        // no session at its depth.
+        // no working folder where Claude Code states one.
         assert!(t.read(&BTreeMap::new(), later(10)).folders.is_empty());
     }
 
@@ -2120,7 +2163,14 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let homes = [Path::new("/nonexistent-home")];
-            let read = match sessions(&SOURCES[0], &root, &homes, &BTreeMap::new(), later(10)) {
+            let read = match sessions(
+                &SOURCES[0],
+                &root,
+                &homes,
+                &BTreeMap::new(),
+                later(10),
+                LOOK_LIMIT,
+            ) {
                 Found::Read(s) => (s.files, s.unreadable, s.folders),
                 _ => panic!("the folder of sessions was not read"),
             };
@@ -2132,6 +2182,160 @@ mod tests {
             .expect("the reading waited on the pipe");
 
         assert_eq!(read, (2, 1, BTreeSet::from(["/invented/w0".to_string()])));
+    }
+
+    /// Writes `text` at `rel` under the trial's folder, making the folders on the way.
+    fn deep(t: &Trial, rel: &str, text: &str) -> PathBuf {
+        let path = t.file(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_subagents_session_below_a_projects_folder_gives_its_working_folder_at_any_depth() {
+        // Claude Code keeps a subagent's session in the folder of the session that started it,
+        // and a workflow's two folders deeper. Their working folder may be stated nowhere else.
+        let t = Trial::new("subagents");
+        deep(&t, "-invented-a/s1.jsonl", &turn("/invented/w0", 1));
+        deep(
+            &t,
+            "-invented-a/s1/subagents/agent-x.jsonl",
+            &turn("/invented/w1", 1),
+        );
+        let workflow = "-invented-a/s1/subagents/workflows/wf1";
+        deep(
+            &t,
+            &format!("{workflow}/agent-y.jsonl"),
+            &turn("/invented/w2", 1),
+        );
+        // A file of the same ending that states no working folder adds nothing.
+        deep(
+            &t,
+            &format!("{workflow}/journal.jsonl"),
+            "{\"type\":\"step\",\"step\":\"invented step\"}\n",
+        );
+        // Files of other endings beside them are not sessions.
+        deep(
+            &t,
+            "-invented-a/s1/tool-results/r1.txt",
+            &turn("/invented/w8", 1),
+        );
+        deep(
+            &t,
+            "-invented-a/s1/tool-results/r2.json",
+            &turn("/invented/w9", 1),
+        );
+        // A folder down there that cannot be listed is counted.
+        let locked = t.file("-invented-b/s2");
+        std::fs::create_dir(&locked).unwrap();
+        let mode = |m: u32| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+
+        mode(0o000);
+        let read = t.read(&BTreeMap::new(), later(10));
+        mode(0o755);
+
+        assert_eq!(
+            folders(&read),
+            ["/invented/w0", "/invented/w1", "/invented/w2"]
+        );
+        assert_eq!(
+            (read.files, read.unreadable, read.unparsed, read.unlisted),
+            (4, 0, 0, 1)
+        );
+        assert!(!read.stopped);
+    }
+
+    #[test]
+    fn a_second_reading_opens_no_deeper_file_that_did_not_change_and_reads_one_that_grew_from_where_it_stopped()
+     {
+        let t = Trial::new("subagents-grew");
+        let grows = deep(
+            &t,
+            "-invented-a/s1/subagents/agent-x.jsonl",
+            &(turn("/invented/w0", 1) + &reply(2)),
+        );
+        deep(
+            &t,
+            "-invented-b/s2/subagents/workflows/wf1/agent-y.jsonl",
+            &turn("/invented/w1", 1),
+        );
+        let first = t.read(&BTreeMap::new(), later(10));
+        append(&grows, &turn("/invented/w2", 3));
+
+        let next = t.read(&first.held, later(10));
+
+        assert_eq!(
+            next.cost,
+            Cost {
+                unchanged: 1,
+                from_position: 1,
+                from_start: 0,
+                bytes: std::fs::metadata(&grows).unwrap().len(),
+            }
+        );
+        assert_eq!(
+            folders(&next),
+            ["/invented/w0", "/invented/w1", "/invented/w2"]
+        );
+    }
+
+    #[test]
+    fn a_link_below_a_projects_folder_is_not_followed_whether_to_a_folder_or_to_a_session() {
+        let t = Trial::new("subagents-link");
+        let real = deep(
+            &t,
+            "-invented-b/s2/subagents/agent-x.jsonl",
+            &turn("/invented/w0", 1),
+        );
+        std::fs::create_dir(t.file("-invented-a/s1")).unwrap();
+        // A link to a folder of sessions is not entered: its session is read once, by its own
+        // path.
+        let folder = real.parent().unwrap();
+        std::os::unix::fs::symlink(folder, t.file("-invented-a/s1/subagents")).unwrap();
+        // A link in place of a session is a session file that could not be read.
+        std::os::unix::fs::symlink(&real, t.file("-invented-b/s2/agent-l.jsonl")).unwrap();
+
+        let read = t.read(&BTreeMap::new(), later(10));
+
+        assert_eq!((read.files, read.unreadable), (2, 1));
+        assert_eq!(read.held.keys().collect::<Vec<_>>(), [&real]);
+        assert_eq!(folders(&read), ["/invented/w0"]);
+    }
+
+    #[test]
+    fn the_walk_below_the_level_of_the_sessions_stops_at_its_budget_and_says_so() {
+        // Three folders below the projects' folders: `s1`, `s1/subagents` and `s2`.
+        let t = Trial::new("subagents-budget");
+        deep(
+            &t,
+            "-invented-a/s1/subagents/agent-x.jsonl",
+            &turn("/invented/w0", 1),
+        );
+        deep(&t, "-invented-b/s2/agent-y.jsonl", &turn("/invented/w1", 1));
+        let homes = [Path::new("/nonexistent-home")];
+        let read = |budget: usize| match sessions(
+            &SOURCES[0],
+            &t.root,
+            &homes,
+            &BTreeMap::new(),
+            later(10),
+            budget,
+        ) {
+            Found::Read(s) => s,
+            _ => panic!("the folder of sessions was not read"),
+        };
+
+        let within = read(3);
+        assert!(!within.stopped);
+        assert_eq!(folders(&within), ["/invented/w0", "/invented/w1"]);
+
+        let past = read(2);
+        assert!(past.stopped);
+        assert!(past.files < 2, "{}", past.files);
     }
 
     #[test]
@@ -2155,6 +2359,8 @@ mod tests {
             files: n,
             unreadable: n,
             unlisted: n,
+            // Only the second walk stopped.
+            stopped: n == 2,
             unparsed: n,
             folders: BTreeSet::from([format!("/invented/{n}")]),
             guarded: BTreeSet::from([PathBuf::from(format!("/invented/g{n}"))]),
@@ -2165,6 +2371,8 @@ mod tests {
         };
         let mut all = one(1, 0..40);
         all.add(one(2, 40..80));
+        // A walk that did not stop, added after one that did, leaves it said.
+        all.add(Sessions::default());
 
         assert_eq!(
             said(&all),
@@ -2177,6 +2385,7 @@ mod tests {
             )
         );
         assert_eq!(all.guarded.len(), 2);
+        assert!(all.stopped);
         assert_eq!(all.held.len(), 64);
     }
 

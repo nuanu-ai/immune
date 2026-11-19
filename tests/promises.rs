@@ -3841,6 +3841,28 @@ fn a_checkout_outside_the_home_folder_is_found_through_an_agent_session_and_its_
 }
 
 #[test]
+fn a_checkout_in_a_hidden_folder_that_only_a_subagents_session_states_is_found() {
+    // A subagent that works in a worktree of its own, in a hidden folder the walk of the home
+    // folder does not enter, states it only in its own session, below the main one's folder.
+    let a = Agents::new("agent-subagent");
+    let tree = checkout(&a.home, ".invented-worktrees/agent-x");
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    session(&a.sessions, "s1", &[]);
+    session(&a.sessions, "s1/subagents/agent-x", &[&tree.join("src")]);
+
+    a.run();
+
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'"
+        ),
+        ["checkout:machine:mac/.invented-worktrees/agent-x"]
+    );
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+}
+
+#[test]
 fn a_checkout_named_only_in_a_codex_session_compressed_or_not_is_found_and_an_agent_whose_sessions_are_not_read_is_named()
  {
     // Codex CLI's sessions, compressed or not, are read as Claude Code's are. Another agent's

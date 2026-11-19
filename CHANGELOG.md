@@ -8,6 +8,7 @@ Immunity Core has no numbered release yet. Entries go by the day a change reache
 
 ### Added
 
+- Projects are also found by the working folders in the sessions of Claude Code's subagents, which it keeps in folders below a project's folder in `~/.claude/projects`, such as `<session>/subagents/agent-<id>.jsonl`. A subagent that works in a worktree of its own, in a hidden folder the search for projects does not enter, states it only there; until now such a project was not found. At most 50,000 folders below the projects' folders are listed; past that the reading of `agent-folders` is partial with the cause `no_reader`.
 - Projects are also found by the working folders in Codex CLI's sessions, in `~/.codex/sessions` and `~/.codex/archived_sessions`, read the way Claude Code's are. A session Codex CLI has compressed with zstd, to `.jsonl.zst`, is decoded and read too, once while it is unchanged. One that cannot be decoded is a session file that could not be read, and the reading of `agent-folders` is partial.
 - When Gemini CLI, Continue or GitHub Copilot CLI keeps sessions in the home folder, the reading of `agent-folders` is partial with the cause `no_reader` and names that agent in `immunity status`, under `no_reader_for` and in the item `not-understood`. Their sessions are not read. Until now the reading was full, and what was said of the projects as a whole spoke for every project although these agents' working folders were never looked at. It now speaks of the projects found, with the reason.
 
