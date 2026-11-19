@@ -206,9 +206,7 @@ pub fn real_in(path: &Path, homes: &[&Path], given: &[&Path]) -> Real {
             Ok(m) if m.file_type().is_symlink() => {
                 links += 1;
                 if links > MAX_LINKS {
-                    return Real::Failed(std::io::Error::other(
-                        "too many levels of symbolic links",
-                    ));
+                    return Real::Failed(std::io::Error::from_raw_os_error(libc::ELOOP));
                 }
                 let target = match std::fs::read_link(&next) {
                     Ok(t) => t,

@@ -861,6 +861,300 @@ fn a_place_that_cannot_be_subscribed_to_is_a_problem_line_and_the_rest_is_still_
     w.until("read", |v| count(v, "new") == 1);
 }
 
+/// What the status says of the watcher's failures: whether this Mac is watched live, and the kind
+/// of each failure that stands.
+fn failing(mac: &Mac) -> (Value, Vec<Value>) {
+    let status = mac.status();
+    let failed = status["watching"]["failed"].as_array().cloned();
+    let whats = failed
+        .unwrap_or_default()
+        .iter()
+        .map(|f| f["what"].clone())
+        .collect();
+    (status["this_mac"]["live"].clone(), whats)
+}
+
+#[test]
+fn a_place_left_unsubscribed_is_not_watched_live_until_a_later_subscription_takes_it() {
+    // The first invariant: under launchd a problem line goes nowhere, so a place the watcher
+    // could not subscribe to stands as a failure in the status, the text and the page.
+    let mac = Mac::new("unsubscribed");
+    let etc = mac.sys().join("etc");
+    std::fs::create_dir_all(etc.join("ssh")).unwrap();
+    std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let closed = Mode(etc, 0o755);
+    let mut w = mac.watch_with(&["--alive-every", "1"]).started();
+    let problems = w.lines("problem");
+    assert!(!problems.is_empty() && problems.iter().all(|p| p["code"] == "place_not_watched"));
+    let status = mac.status();
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    let failed = &status["watching"]["failed"];
+    assert_eq!(failed.as_array().unwrap().len(), 1, "{status}");
+    assert_eq!(failed[0]["what"], "places");
+    assert!(failed[0]["at"].as_i64().unwrap() > 0);
+    let detail = failed[0]["detail_text"].as_str().unwrap();
+    assert!(
+        detail.contains(" not watched live: ") && detail.contains("etc/ssh"),
+        "{detail}"
+    );
+    let text = within(mac.immunity().args(["status", "--store"]).arg(mac.store()));
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("subscription to some watched places failed, so it does not watch live"),
+        "{text}"
+    );
+    let page = mac.view();
+    assert!(
+        page.contains("the watcher's latest subscription to some watched places failed")
+            && !page.contains(" · watched live · "),
+        "the page says calm"
+    );
+    // The places it subscribed to are still watched.
+    mac.put("Library/LaunchAgents/seen.plist", "<plist/>\n");
+    w.until("read", |v| count(v, "new") == 1);
+
+    // The next look at what to watch subscribes to it, and the reading after it ends the failure.
+    drop(closed);
+    for _ in 0..5 {
+        w.next("read");
+        if failing(&mac).0 == true {
+            break;
+        }
+    }
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+}
+
+#[test]
+fn a_subscription_that_leaves_no_place_unwatched_records_no_failure() {
+    let mac = Mac::new("subscribed");
+    let _w = mac.watch().started();
+    assert!(mac.rows("SELECT what FROM watcher_failed").is_empty());
+    assert_eq!(failing(&mac).1, Vec::<Value>::new());
+}
+
+#[test]
+fn places_left_unwatched_are_the_watchers_own_word_whatever_store_is_put_in_place() {
+    // The first invariant: what is left unwatched is said in the watcher's lock file for as
+    // long as it lasts. A store put in place of the one it wrote to holds no row of it, and the
+    // status still does not say live, also while another holds the run lock; once the watcher
+    // can write, the new store says which places again.
+    let mac = Mac::new("unwatched-anew");
+    let etc = mac.sys().join("etc");
+    std::fs::create_dir_all(etc.join("ssh")).unwrap();
+    std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _closed = Mode(etc, 0o755);
+    let mut w = mac
+        .watch_with(&["--alive-every", "1", "--events-every", "1"])
+        .started();
+    let places = || (Value::from(false), vec![Value::from("places")]);
+    assert_eq!(failing(&mac), places());
+    // A copy of the store without the row, renamed over it: there is a store at every moment.
+    let swap = |mac: &Mac| {
+        let fresh = mac.root.join("store/fresh.db");
+        let old = Connection::open(mac.store()).unwrap();
+        old.execute("VACUUM INTO ?1", [fresh.to_str().unwrap()])
+            .unwrap();
+        let new = Connection::open(&fresh).unwrap();
+        new.execute("DELETE FROM watcher_failed", []).unwrap();
+        drop(new);
+        std::fs::rename(&fresh, mac.store()).unwrap();
+    };
+    swap(&mac);
+    for _ in 0..3 {
+        w.next("alive");
+        assert_eq!(failing(&mac), places());
+    }
+    let folder = std::fs::File::open(mac.root.join("store")).unwrap();
+    folder.lock().unwrap();
+    swap(&mac);
+    for _ in 0..3 {
+        w.next("alive");
+        assert_eq!(failing(&mac), places());
+    }
+    folder.unlock().unwrap();
+    let detail = |mac: &Mac| mac.status()["watching"]["failed"][0]["detail_text"].to_string();
+    for _ in 0..5 {
+        w.next("alive");
+        if detail(&mac).contains("etc/ssh") {
+            break;
+        }
+    }
+    assert!(detail(&mac).contains("etc/ssh"), "{}", detail(&mac));
+}
+
+#[test]
+fn a_place_left_unwatched_ends_at_the_next_look_after_its_cause_is_gone_though_the_paths_stay() {
+    // Hooks named in a folder that cannot be searched cannot be watched, and add no path to
+    // watch: when the setting goes, the paths watched are the same, and the failure still ends.
+    let mac = Mac::new("unwatched-stale");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    let closed = mac.home().join("dev/closed");
+    std::fs::create_dir_all(&closed).unwrap();
+    mac.put(
+        "dev/api/.git/config",
+        &format!("[core]\n hooksPath = {}\n", closed.join("hooks").display()),
+    );
+    mac.run();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _open = Mode(closed, 0o755);
+    let mut w = mac.watch_with(&["--alive-every", "1"]).started();
+    let problems = w.lines("problem").len();
+    assert!(problems > 0);
+    assert_eq!(failing(&mac), (false.into(), vec!["places".into()]));
+    // A look that leaves the same places unwatched says nothing new.
+    w.next("alive");
+    w.next("alive");
+    assert_eq!(w.lines("problem").len(), problems);
+
+    mac.put("dev/api/.git/config", "[core]\n");
+    for _ in 0..5 {
+        w.next("read");
+        if failing(&mac).0 == true {
+            break;
+        }
+    }
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+}
+
+#[test]
+fn hooks_named_under_a_regular_file_leave_nothing_unwatched_and_are_read_when_they_appear() {
+    // Not there is not a failure: a folder on the way that is a file is a folder not there yet.
+    let mac = Mac::new("hooks-under-file");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/file", "a regular file\n");
+    mac.put(
+        "dev/api/.git/config",
+        &format!(
+            "[core]\n hooksPath = {}\n",
+            mac.home().join("dev/file/hooks").display()
+        ),
+    );
+    mac.run();
+    let mut w = mac.watch_with(&["--alive-every", "1"]).started();
+    assert!(w.lines("problem").is_empty());
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+    std::fs::remove_file(mac.home().join("dev/file")).unwrap();
+    mac.put("dev/file/hooks/pre-commit", "# appears later\n");
+    w.until("read", |v| v["opened"] == 1);
+}
+
+#[test]
+fn hooks_named_where_nothing_can_be_now_leave_nothing_unwatched() {
+    // A link in a loop, a name longer than a file's name can be, and `..` after a folder that
+    // is not there: nothing is there now, which is not a failure.
+    let mac = Mac::new("nothing-there");
+    let dev = mac.home().join("dev");
+    std::fs::create_dir_all(&dev).unwrap();
+    std::os::unix::fs::symlink("loop-b", dev.join("loop-a")).unwrap();
+    std::os::unix::fs::symlink("loop-a", dev.join("loop-b")).unwrap();
+    for (repo, hooks) in [
+        ("a", dev.join("loop-a/hooks")),
+        ("b", dev.join("l".repeat(256)).join("hooks")),
+        ("c", dev.join("missing/../hooks")),
+    ] {
+        mac.put(&format!("dev/{repo}/.git/HEAD"), "ref: refs/heads/main\n");
+        mac.put(
+            &format!("dev/{repo}/.git/config"),
+            &format!("[core]\n hooksPath = {}\n", hooks.display()),
+        );
+    }
+    mac.run();
+    let mut w = mac.watch().started();
+    assert!(w.lines("problem").is_empty(), "{:?}", w.lines("problem"));
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+}
+
+#[test]
+fn a_hook_path_longer_than_fsevents_takes_is_a_place_left_unwatched_with_its_reason() {
+    let mac = Mac::new("unwatched-long");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    // A folder of about 1000 bytes, which the system takes, so that a hook's file in it is
+    // longer than FSEvents takes.
+    let mut long = mac.home().join("dev");
+    while long.as_os_str().len() < 980 {
+        let room = 1000 - long.as_os_str().len() - 1;
+        long.push("l".repeat(room.min(200)));
+    }
+    std::fs::create_dir_all(&long).unwrap();
+    mac.put(
+        "dev/api/.git/config",
+        &format!("[core]\n hooksPath = {}\n", long.display()),
+    );
+    mac.run();
+    let mut w = mac.watch().started();
+    // The name is shortened and the reason is shown, in the problem line and in the status.
+    const SHOWN: &str = "…: the path is longer than FSEvents takes";
+    let problems = w.lines("problem");
+    assert!(!problems.is_empty());
+    for p in &problems {
+        let detail = p["detail_text"].as_str().unwrap();
+        assert!(
+            p["code"] == "place_not_watched" && detail.ends_with(SHOWN),
+            "{detail}"
+        );
+    }
+    let status = mac.status();
+    let detail = status["watching"]["failed"][0]["detail_text"]
+        .as_str()
+        .unwrap();
+    assert!(detail.contains(&format!("{SHOWN}; ")), "{detail}");
+    assert_eq!(failing(&mac), (false.into(), vec!["places".into()]));
+}
+
+#[test]
+fn a_place_left_unwatched_that_the_store_did_not_take_is_not_calm_and_is_recorded_when_it_can_be() {
+    let mac = Mac::new("unsubscribed-unrecorded");
+    let etc = mac.sys().join("etc");
+    std::fs::create_dir_all(etc.join("ssh")).unwrap();
+    let mut w = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    w.next("alive");
+    assert_eq!(failing(&mac).1, Vec::<Value>::new());
+    let store = mac.store();
+    let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+    let restore = Mode(store.clone(), mode);
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let _closed = Mode(etc.clone(), 0o755);
+    std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // The next look leaves the place unwatched, and the reading after it cannot write.
+    w.until("problem", |v| v["code"] == "place_not_watched");
+    w.until("problem", |v| v["code"] == "read_failed");
+    let (live, whats) = failing(&mac);
+    assert!(
+        live == false && whats.contains(&"store".into()),
+        "{whats:?}"
+    );
+
+    // Once the store takes it, it stands in the store, and nothing is left unrecorded.
+    drop(restore);
+    mac.put(".zshrc", "two\n");
+    w.next("read");
+    assert_eq!(failing(&mac), (false.into(), vec!["places".into()]));
+
+    // Its end, which the store does not take either, is written once the store takes it.
+    let restore = Mode(store.clone(), mode);
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o444)).unwrap();
+    std::fs::set_permissions(&etc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    w.until("problem", |v| v["code"] == "read_failed");
+    drop(restore);
+    for i in 0..5 {
+        mac.put(".zshrc", &format!("{i}\n"));
+        w.next("read");
+        if failing(&mac).0 == true {
+            break;
+        }
+    }
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+}
+
 #[test]
 fn no_content_of_a_watched_file_is_in_stdout_or_the_store() {
     const SECRET: &str = "export TOKEN=watcher-must-never-keep-this";

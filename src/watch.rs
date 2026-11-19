@@ -59,11 +59,17 @@
 //!
 //! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
-//! the store can hold it; the next success of the same kind clears it. A failure the store did
+//! the store can hold it; the next success of the same kind clears it. Places a look at what to
+//! watch leaves unwatched are a `problem` line each, printed when they change, and a failure
+//! of the kind `places`. The watcher's lock file says it at once and for as long as the latest
+//! look leaves any, and the status goes by that; the store's row, written at the run lock after
+//! each such look, says which places. A place where nothing can be now (a folder on the way
+//! that is not there or not a folder, a link that leads nowhere or in a loop, a name too long)
+//! is no failure: it is watched from the nearest folder that is there. A failure the store did
 //! not take is said in the watcher's lock file instead, and reads as a failure of the kind
-//! `store`. While one stands, `immunity status` does not say this Mac is watched live. A look at
-//! what to watch that succeeds
-//! after one that failed prints `watching` again and reads the watched places at once.
+//! `store`. While one stands,
+//! `immunity status` does not say this Mac is watched live. A look at what to watch that
+//! succeeds after one that failed prints `watching` again and reads the watched places at once.
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
@@ -116,6 +122,8 @@ const STALLED: Duration = Duration::from_secs(180);
 const HEARTBEAT: &str = "heartbeat";
 const READY: &str = "ready";
 const UNRECORDED: &str = "unrecorded";
+/// The lock file's third line, with the time after it, while places are left unwatched.
+const UNWATCHED: &str = "unwatched";
 /// The lock file's third line, with the time after it, of a watcher that left because the file it
 /// was started from was replaced.
 const CORE_REPLACED: &str = "core-replaced";
@@ -143,7 +151,7 @@ pub const RUN_PREFIX: &str = "watch-";
 pub const CANNOT_SEE: [&str; 3] = [
     "who made a change: it sees that a watched place changed, not who changed it",
     "a change undone within the quiet period of one second: the reading after it finds the place as it was and records no change",
-    "a symbolic link among the watched places pointed elsewhere, within seconds: FSEvents watches where a link leads, so the new target is seen at the watcher's next look at what to watch, within a minute",
+    "a symbolic link among the watched places pointed elsewhere, within seconds: FSEvents watches where a link leads, so the new target is seen at the watcher's next look at what to watch, within a minute. A place reached through a link that leads nowhere, or through something that later becomes a link, is noticed at that look too",
 ];
 
 /// The watcher's tables, part of the store's schema (`store::schema`).
@@ -159,30 +167,37 @@ CREATE TABLE watcher (
 -- failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
 -- lock now is a past watcher's and is not read.
 CREATE TABLE watcher_failed (
-    what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe`, `events` or `full_check`
+    what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe`, `places`, `events` or `full_check`
     at     INTEGER NOT NULL,  -- when it failed, UTC seconds
     detail TEXT NOT NULL      -- what the failure said
 );
 ";
 
 /// The kinds of failure kept in `watcher_failed`: a reading of the watched places, a sample of
-/// running programs, a look at what to watch, a reading of the event level. A failed reading
-/// of the event level stands for that kind alone: program starts are not claimed as seen,
-/// and what is watched live otherwise still is.
+/// running programs, a look at what to watch, a look that left some watched places unwatched,
+/// a reading of the event level. A failed reading of the event level stands for that kind
+/// alone: program starts are not claimed as seen, and what is watched live otherwise still is.
 pub const READ: &str = "read";
 pub const SAMPLED: &str = "sample";
 pub const RESUBSCRIBE: &str = "resubscribe";
+pub const PLACES: &str = "places";
 pub const EVENTS: &str = "events";
 pub const FULL_CHECK: &str = "full_check";
 /// A failure of another kind that the store did not take: it is not in `watcher_failed` but in
 /// the watcher's lock file, with what the store's error said.
 pub const STORE: &str = "store";
+/// How many of the places a look left unwatched the failure `PLACES` names.
+const NAMED: usize = 3;
+/// What the lock file says of places a look left unwatched until the store holds them.
+/// The detail of `PLACES` while the lock file says it and the store holds no row of it yet.
+const UNWATCHED_SAID: &str = "the watcher's latest look left watched places unwatched; which ones is said once the store holds them";
 
 /// A kind of failure in words, for a person.
 pub fn failed_words(what: &str) -> &'static str {
     match what {
         READ => "reading of the watched places",
         SAMPLED => "sample of running programs",
+        PLACES => "subscription to some watched places",
         EVENTS => "reading of program starts",
         FULL_CHECK => "full check",
         STORE => "write to the store",
@@ -359,6 +374,8 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         standing: BTreeSet::new(),
         checks,
         check_result: None,
+        left_out: BTreeMap::new(),
+        unwatched: None,
         heartbeat,
         core,
         left: false,
@@ -477,11 +494,17 @@ struct Watcher<'a> {
     /// Who signed what the samples track, kept across samples.
     signers: crate::processes::Signers,
     /// The kinds whose latest attempt failed, or whose failure may still stand in the store
-    /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`, `EVENTS`.
+    /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`, `PLACES`, `EVENTS`,
+    /// `FULL_CHECK`.
     standing: BTreeSet<&'static str>,
     checks: Option<crate::background::Checks>,
     /// Applied under the next run lock, so a failed full check is visible in status too.
     check_result: Option<Result<(), String>>,
+    /// The places the latest look left unwatched, each with why.
+    left_out: BTreeMap<PathBuf, String>,
+    /// What the latest look left unwatched, as the detail of `PLACES`, or `None` inside when it
+    /// left nothing: recorded under the next run lock.
+    unwatched: Option<Option<String>>,
     heartbeat: Heartbeat<'a>,
     /// The file the job's watcher was started from; `None` for any other watcher, and when it
     /// could not be looked at.
@@ -522,13 +545,15 @@ fn replaced(started: (u64, u64), now: std::io::Result<std::fs::Metadata>) -> boo
     now.is_ok_and(|m| identity(&m) != started)
 }
 
-/// What a watcher's lock file says of it: it has not completed its first reading, it has and
-/// every failure since is in the store, or a failure is not in the store, with when the store
+/// What a watcher's lock file says of it: it has not completed its first reading; it has, its
+/// latest look left nothing unwatched and every failure since is in the store; its latest look
+/// left places unwatched, since when; or a failure is not in the store, with when the store
 /// refused it and what the store's error said.
 #[derive(Debug, PartialEq)]
 enum LockState {
     Starting,
     Ready,
+    Unwatched { at: i64 },
     Unrecorded { at: i64, said: String },
 }
 
@@ -538,6 +563,7 @@ fn lock_text(since: i64, state: &LockState) -> String {
     match state {
         LockState::Starting => format!("{since}\n{HEARTBEAT}"),
         LockState::Ready => format!("{since}\n{HEARTBEAT}\n{READY}"),
+        LockState::Unwatched { at } => format!("{since}\n{HEARTBEAT}\n{UNWATCHED} {at}"),
         LockState::Unrecorded { at, said } => {
             format!("{since}\n{HEARTBEAT}\n{UNRECORDED} {at}\n{said}")
         }
@@ -554,22 +580,22 @@ fn read_lock(text: &str) -> Option<(i64, LockState)> {
     if lines.get(1) != Some(&HEARTBEAT) {
         return None;
     }
-    let unrecorded = |line: &str| -> Option<i64> {
-        line.strip_prefix(UNRECORDED)?
-            .strip_prefix(' ')?
-            .parse()
-            .ok()
+    let stamped = |line: &str, word: &str| -> Option<i64> {
+        line.strip_prefix(word)?.strip_prefix(' ')?.parse().ok()
     };
     let state = match lines[2..] {
         [READY] => LockState::Ready,
         // An error that said nothing leaves no fourth line.
-        [third, ref said @ ..] if said.len() <= 1 => match unrecorded(third) {
-            Some(at) => LockState::Unrecorded {
-                at,
-                said: said.first().copied().unwrap_or_default().to_string(),
-            },
-            None => LockState::Starting,
-        },
+        [third, ref said @ ..] if said.len() <= 1 => {
+            match (stamped(third, UNWATCHED), stamped(third, UNRECORDED)) {
+                (Some(at), _) if said.is_empty() => LockState::Unwatched { at },
+                (_, Some(at)) => LockState::Unrecorded {
+                    at,
+                    said: said.first().copied().unwrap_or_default().to_string(),
+                },
+                _ => LockState::Starting,
+            }
+        }
         _ => LockState::Starting,
     };
     Some((since, state))
@@ -587,6 +613,8 @@ struct Heartbeat<'a> {
     /// The kinds whose latest failure the store did not take, each with when and what the
     /// store's error said.
     unrecorded: BTreeMap<&'static str, (i64, String)>,
+    /// Since when the latest looks at what to watch have left places unwatched.
+    unwatched: Option<i64>,
     /// Why a rewrite failed; the watcher stops at its next turn.
     broken: Option<String>,
 }
@@ -612,19 +640,33 @@ impl<'a> Heartbeat<'a> {
             next: Instant::now(),
             read: false,
             unrecorded: BTreeMap::new(),
+            unwatched: None,
             broken: None,
         })
     }
 
-    /// What the file should say now: a failure the store did not take withdraws `ready`.
+    /// What the file should say now: a failure the store did not take, and places left
+    /// unwatched, each withdraw `ready`.
     fn state(&self) -> LockState {
         match self.unrecorded.values().max_by_key(|(at, _)| *at) {
             Some((at, said)) => LockState::Unrecorded {
                 at: *at,
                 said: said.clone(),
             },
-            None if self.read => LockState::Ready,
-            None => LockState::Starting,
+            None if !self.read => LockState::Starting,
+            None => match self.unwatched {
+                Some(at) => LockState::Unwatched { at },
+                None => LockState::Ready,
+            },
+        }
+    }
+
+    /// Whether the latest look left places unwatched: said at once when that changes, and kept
+    /// in the file for as long as it is true.
+    fn left(&mut self, any: bool) {
+        if any != self.unwatched.is_some() {
+            self.unwatched = any.then(crate::now_secs);
+            let _ = self.write();
         }
     }
 
@@ -709,15 +751,38 @@ impl Watcher<'_> {
     /// Subscribes to the watched places: the stream is running when it returns. Returns the
     /// problem lines.
     fn subscribe(&mut self) -> Result<Vec<Value>, String> {
-        let (wanted, targets, mut problems) = self.derive().map_err(|e| e.to_string())?;
+        let (wanted, targets, left) = self.derive().map_err(|e| e.to_string())?;
         self.targets = targets;
-        problems.extend(self.start(wanted)?);
-        Ok(problems)
+        self.start(wanted)?;
+        Ok(self.left_unwatched(left))
     }
 
-    /// Starts a stream on `wanted` in place of the one running, if any. Returns the problem
-    /// lines of the paths FSEvents refused.
-    fn start(&mut self, wanted: Vec<PathBuf>) -> Result<Vec<Value>, String> {
+    /// What a look left unwatched, each place with why. The lock file says whether any is, at
+    /// once and for as long as it is true, and that is what the status goes by. The store keeps
+    /// which ones, the failure `PLACES`, recorded at the next run lock. When it changed, the
+    /// problem lines of every place it left are returned, else none.
+    fn left_unwatched(&mut self, left: BTreeMap<PathBuf, String>) -> Vec<Value> {
+        self.heartbeat.left(!left.is_empty());
+        // Every look is an attempt, recorded at the next lock as one of any other kind is: a
+        // store made anew holds which places again, and an end is written until the store
+        // takes it (`standing`).
+        if !left.is_empty() || self.standing.contains(PLACES) {
+            self.unwatched = Some(unwatched(&left));
+        }
+        if left == self.left_out {
+            return Vec::new();
+        }
+        let problems = left
+            .iter()
+            .map(|(place, why)| place_problem(place, why))
+            .collect();
+        self.left_out = left;
+        problems
+    }
+
+    /// Starts a stream on `wanted` in place of the one running, if any. The paths FSEvents
+    /// refuses are not watched; a look tells them by `fsevents::refuses`.
+    fn start(&mut self, wanted: Vec<PathBuf>) -> Result<(), String> {
         let deliver = || -> fsevents::Deliver {
             let tx = self.tx.clone();
             Box::new(move |b: fsevents::Batch| {
@@ -726,10 +791,6 @@ impl Watcher<'_> {
         };
         let refs: Vec<&Path> = wanted.iter().map(PathBuf::as_path).collect();
         let (streams, refused) = fsevents::Stream::start_all(&refs, LATENCY, &deliver)?;
-        let problems = refused
-            .iter()
-            .map(|(i, why)| place_problem(&wanted[*i], why))
-            .collect();
         let refused: BTreeSet<usize> = refused.into_iter().map(|(i, _)| i).collect();
         // The new streams run before the old ones stop, so no change falls between them.
         self.streams = streams;
@@ -740,19 +801,19 @@ impl Watcher<'_> {
             .filter(|(i, _)| !refused.contains(i))
             .map(|(_, p)| p)
             .collect();
-        Ok(problems)
+        Ok(())
     }
 
     /// The paths to watch now, from the table of places and the checkouts the store holds,
-    /// each path with the reading its place belongs to, and a problem line for each place that
-    /// cannot be watched.
+    /// each path with the reading its place belongs to, and each place that cannot be watched,
+    /// or path FSEvents does not take, with why.
     fn derive(&self) -> Result<Derived, Box<dyn Error>> {
         let (machine, found) = holds(self.args)?;
         let homes = watched::homes(&self.args.home);
         let homes = [homes[0].as_path(), homes[1].as_path()];
         let mut wanted = BTreeSet::new();
         let mut targets = Vec::new();
-        let mut problems = Vec::new();
+        let mut left = BTreeMap::new();
         for p in places(
             &self.args.home,
             &self.args.system_root,
@@ -762,13 +823,20 @@ impl Watcher<'_> {
         ) {
             match subscribed(&p.path, p.folder, &homes) {
                 Ok(paths) => {
+                    for path in &paths {
+                        if let Some(why) = fsevents::refuses(path) {
+                            left.insert(path.clone(), why.to_string());
+                        }
+                    }
                     targets.extend(paths.iter().map(|path| (path.clone(), p.reading.clone())));
                     wanted.extend(paths);
                 }
-                Err(why) => problems.push(place_problem(&p.path, &why)),
+                Err(why) => {
+                    left.insert(p.path, why);
+                }
             }
         }
-        Ok((wanted.into_iter().collect(), targets, problems))
+        Ok((wanted.into_iter().collect(), targets, left))
     }
 
     /// Runs until stopped, starting with a reading of every place, due at once. The stream is
@@ -906,10 +974,8 @@ impl Watcher<'_> {
                     }
                 }
                 match again {
-                    Ok(found) => {
-                        if let Some(problems) = &found
-                            && problems.iter().any(|p| !emit(p))
-                        {
+                    Ok((moved, problems)) => {
+                        if problems.iter().any(|p| !emit(p)) {
                             return;
                         }
                         // After a look that failed, the watcher says it watches again.
@@ -918,7 +984,7 @@ impl Watcher<'_> {
                         }
                         // What changed in a place newly watched, or in one not watched while
                         // looks failed, is read now.
-                        if found.is_some() || recovered {
+                        if moved || recovered {
                             due = Some(every_place(now));
                         }
                     }
@@ -946,21 +1012,22 @@ impl Watcher<'_> {
     }
 
     /// Looks again at what should be watched, after a full run may have changed the
-    /// checkouts. Returns `None` when the paths did not change, else the new problem lines. What
+    /// checkouts. Returns whether the paths changed, and the problem lines when what is left
+    /// unwatched changed, which this look tells whether or not the stream is started again. What
     /// a change in each path reads is taken anew every time, and when that changed, a reading of
     /// every place is owed (`owed`).
-    fn again(&mut self) -> Result<Option<Vec<Value>>, String> {
-        let (wanted, targets, mut problems) = self.derive().map_err(|e| e.to_string())?;
+    fn again(&mut self) -> Result<(bool, Vec<Value>), String> {
+        let (wanted, targets, left) = self.derive().map_err(|e| e.to_string())?;
         // Where a watched path now leads to the place of another reading, as when a link on
         // the way to it, outside every watched place, was turned, nothing watched need have
         // been written: every place is owed, and read at this look.
         self.owed |= targets != self.targets;
         self.targets = targets;
-        if wanted == self.wanted {
-            return Ok(None);
+        let moved = wanted != self.wanted;
+        if moved {
+            self.start(wanted)?;
         }
-        problems.extend(self.start(wanted)?);
-        Ok(Some(problems))
+        Ok((moved, self.left_unwatched(left)))
     }
 
     /// One reading of the watched places, as a small run of that reader alone: of the readings
@@ -980,14 +1047,17 @@ impl Watcher<'_> {
             && only
                 .as_ref()
                 .is_none_or(|readings| readings.iter().any(|(_, kind)| kind == watched::HOOK_KIND))
-            && let Some(problems) = self.again()?
         {
+            let (moved, problems) = self.again()?;
             for p in problems {
                 if !emit(&p) {
                     return Ok(None);
                 }
             }
-            only = None;
+            if moved {
+                only = None;
+            }
+            self.mark_pending();
         }
         let read = read_held(self.args, &self.folder, only.as_ref());
         self.mark_held(READ, read.as_ref().err().map(|e| e.to_string()));
@@ -1014,9 +1084,7 @@ impl Watcher<'_> {
             }
             // Waits a little each time.
             if let Some(lock) = store::lock_run(&self.folder)? {
-                if let Some(result) = self.check_result.take() {
-                    self.mark_held(FULL_CHECK, result.err());
-                }
+                self.mark_pending();
                 return Ok(Some(lock));
             }
             if alive <= Instant::now() {
@@ -1131,17 +1199,30 @@ impl Watcher<'_> {
         match failed {
             Some(detail) => {
                 self.standing.insert(what);
-                match mark(&self.args.store, what, Some(&detail)) {
+                match mark(&self.args.store, what, Some(&detail), self.heartbeat.since) {
                     Ok(()) => self.heartbeat.recorded(what),
                     Err(e) => self.heartbeat.unrecorded(what, &e.to_string()),
                 }
             }
             None => {
                 self.heartbeat.recorded(what);
-                if self.standing.contains(what) && mark(&self.args.store, what, None).is_ok() {
+                if self.standing.contains(what)
+                    && mark(&self.args.store, what, None, self.heartbeat.since).is_ok()
+                {
                     self.standing.remove(what);
                 }
             }
+        }
+    }
+
+    /// Under the run lock the caller holds: records what was learned outside it, the result of
+    /// a full check and what the latest look left unwatched.
+    fn mark_pending(&mut self) {
+        if let Some(result) = self.check_result.take() {
+            self.mark_held(FULL_CHECK, result.err());
+        }
+        if let Some(left) = self.unwatched.take() {
+            self.mark_held(PLACES, left);
         }
     }
 
@@ -1161,14 +1242,15 @@ impl Watcher<'_> {
 }
 
 /// Records a failure of `what` with what it said, or with `None` clears it. The caller holds
-/// the run lock.
-fn mark(store: &Path, what: &str, failed: Option<&str>) -> Result<(), Box<dyn Error>> {
+/// the run lock. It is recorded now, and never before `since`, when the watcher started: the
+/// status reads no failure older than that, and a clock set back must not hide one.
+fn mark(store: &Path, what: &str, failed: Option<&str>, since: i64) -> Result<(), Box<dyn Error>> {
     let conn = store::open(store)?;
     match failed {
         Some(detail) => conn.execute(
             "INSERT INTO watcher_failed (what, at, detail) VALUES (?1, ?2, ?3)
              ON CONFLICT (what) DO UPDATE SET at = excluded.at, detail = excluded.detail",
-            params![what, crate::now_secs(), detail],
+            params![what, crate::now_secs().max(since), detail],
         )?,
         None => conn.execute("DELETE FROM watcher_failed WHERE what = ?1", [what])?,
     };
@@ -1322,8 +1404,13 @@ fn held_checkouts(
 /// A reading of the watched places as `immunity run` writes its coverage: its scope and kind.
 pub type Reading = (String, String);
 
-/// The paths to watch, each path with the reading its place belongs to, and the problem lines.
-type Derived = (Vec<PathBuf>, Vec<(PathBuf, Reading)>, Vec<Value>);
+/// The paths to watch, each path with the reading its place belongs to, and each place that
+/// cannot be watched with why.
+type Derived = (
+    Vec<PathBuf>,
+    Vec<(PathBuf, Reading)>,
+    BTreeMap<PathBuf, String>,
+);
 
 /// One watched place: its path, whether it is a folder whose entries are watched, and the
 /// reading it belongs to.
@@ -1483,28 +1570,40 @@ fn real(path: &Path, homes: &[&Path]) -> Result<Option<PathBuf>, String> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(Some(path.to_path_buf()));
     };
+    use std::path::Component;
     let mut missing = Vec::new();
     let mut existing = parent.to_path_buf();
+    // How many names before this one a `..` takes back.
+    let mut back = 0;
     let mut out = loop {
-        match crate::guarded::real(&existing, homes) {
-            crate::guarded::Real::At(real) => break real,
-            crate::guarded::Real::Guarded(_) => return Ok(None),
-            // A folder that is not there yet: its own folder is watched. Looking at it
-            // without following it fails only where making it real failed.
-            crate::guarded::Real::Failed(e)
-                if e.kind() == std::io::ErrorKind::NotFound
-                    && matches!(std::fs::symlink_metadata(&existing),
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                let Some(last) = existing.file_name() else {
+        if back == 0 {
+            match crate::guarded::real(&existing, homes) {
+                crate::guarded::Real::At(real) => break real,
+                crate::guarded::Real::Guarded(_) => return Ok(None),
+                // Only a folder that could not be looked at, or an i/o error, leaves the place
+                // unwatched. Anything that means nothing is there now (not there, not a
+                // folder, a link that leads nowhere or in a loop, a name too long) is a place
+                // not there yet: its nearest folder that is there is watched, as for a folder
+                // that is missing.
+                crate::guarded::Real::Failed(e)
+                    if !matches!(
+                        e.raw_os_error(),
+                        Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ENAMETOOLONG)
+                    ) =>
+                {
                     return Err(e.to_string());
-                };
-                missing.push(last.to_os_string());
-                existing.pop();
+                }
+                crate::guarded::Real::Failed(_) => {}
             }
-            // Any other error, such as a folder that cannot be searched.
-            crate::guarded::Real::Failed(e) => return Err(e.to_string()),
         }
+        // `..` takes back the name before it, as it would if that folder were there.
+        match existing.components().next_back() {
+            Some(Component::ParentDir) => back += 1,
+            Some(Component::Normal(_)) if back > 0 => back -= 1,
+            Some(Component::Normal(last)) => missing.push(last.to_os_string()),
+            _ => return Err("no folder on the way to it is there".into()),
+        }
+        existing.pop();
     };
     out.extend(missing.iter().rev());
     out.push(name);
@@ -1512,14 +1611,67 @@ fn real(path: &Path, homes: &[&Path]) -> Result<Option<PathBuf>, String> {
 }
 
 fn place_problem(place: &Path, why: &str) -> Value {
-    // The place is a name, never cut, and why is cut on its own: it never takes the name with
-    // it. Both are written with a source's backslash as `\u{5c}`.
-    problem_of(
-        "place_not_watched",
-        Text::ours(&place.display().to_string())
-            .then(Text::ours(": "))
-            .then(Text::source(why)),
+    line(
+        "problem",
+        json!({ "code": "place_not_watched", "detail_text": place_said(place, why) }),
     )
+}
+
+/// A place that is not watched and why, within `TEXT_CAP` characters. The place is a name: it
+/// is never searched for secrets, and is shortened when long. Why is cut on its own, so it never
+/// takes the name with it, and keeps room of its own, so it is always shown: what the name
+/// leaves, and at least half when both are long. Both are written with a source's backslash as
+/// `\u{5c}`.
+fn place_said(place: &Path, why: &str) -> String {
+    let (name, why) = (Text::ours(&place.display().to_string()), Text::source(why));
+    let room = status::TEXT_CAP - ": ".len();
+    let length = |t: &Text| t.said().chars().count();
+    let for_why = length(&why).min(room.saturating_sub(length(&name)).max(room / 2));
+    format!(
+        "{}: {}",
+        name.said_within(room - for_why),
+        why.said_within(for_why)
+    )
+}
+
+/// The detail of the failure `PLACES` as the store keeps it, raw as every detail is: how many
+/// places a look left unwatched, and the first `NAMED` of them, each with why, as JSON. `None`
+/// when it left none.
+fn unwatched(left: &BTreeMap<PathBuf, String>) -> Option<String> {
+    if left.is_empty() {
+        return None;
+    }
+    let named: Vec<[String; 2]> = left
+        .iter()
+        .take(NAMED)
+        .map(|(place, why)| [place.display().to_string(), why.clone()])
+        .collect();
+    Some(json!({ "count": left.len(), "named": named }).to_string())
+}
+
+/// The detail of `PLACES` as every output shows it, put together as a problem line is: the
+/// count and the rest are the core's words, and each place is said as its problem line says it
+/// (`place_said`). `None` when the detail is not that JSON.
+fn unwatched_said(detail: &str) -> Option<String> {
+    let kept: Value = serde_json::from_str(detail).ok()?;
+    let count = usize::try_from(kept["count"].as_u64()?).ok()?;
+    let named = kept["named"]
+        .as_array()?
+        .iter()
+        .map(|p| {
+            let (place, why) = (p[0].as_str()?, p[1].as_str()?);
+            Some(place_said(Path::new(place), why))
+        })
+        .collect::<Option<Vec<String>>>()?;
+    let more = match count.saturating_sub(named.len()) {
+        0 => String::new(),
+        n => format!("; and {n} more"),
+    };
+    Some(format!(
+        "{} not watched live: {}{more}",
+        crate::view::plural(count, "place", "places"),
+        named.join("; ")
+    ))
 }
 
 /// SIGTERM and SIGINT stop the watcher: the handler writes one byte to a pipe, which is all it
@@ -1595,8 +1747,13 @@ pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
             .map(|f| v1::WatcherFailure {
                 what: f.what.clone(),
                 at: f.at,
-                // What the failure said, which can repeat what the system or a tool said.
-                detail_text: crate::secrets::said(&f.detail),
+                // What the failure said, which can repeat what the system or a tool said. The
+                // places left unwatched are said each as its problem line says it.
+                detail_text: match f.what.as_str() {
+                    PLACES => unwatched_said(&f.detail),
+                    _ => None,
+                }
+                .unwrap_or_else(|| crate::secrets::said(&f.detail)),
             })
             .collect(),
         cannot_see: CANNOT_SEE.iter().map(|s| s.to_string()).collect(),
@@ -1612,6 +1769,7 @@ pub fn basis(conn: &Connection, folder: &Path) -> rusqlite::Result<String> {
     let state = match state {
         LockState::Starting => "starting",
         LockState::Ready => "ready",
+        LockState::Unwatched { .. } => "unwatched",
         LockState::Unrecorded { .. } => "unrecorded",
     };
     let failed: Vec<String> = failures(conn, folder)?
@@ -1717,7 +1875,8 @@ pub fn seen(store: &Path) -> Option<Seen> {
     if state == LockState::Starting {
         return Some(Seen::Starting);
     }
-    // Ready, or a failure the store did not take, which `failures` gives as one of `STORE`.
+    // Ready, places left unwatched or a failure the store did not take, which `failures` gives
+    // as one of `PLACES` or `STORE`.
     let conn = store::open_read_only(store).ok()?;
     let failed = failures(&conn, &folder).ok()?;
     Some(if live_with(&failed) {
@@ -1754,8 +1913,8 @@ fn left_at(text: &str) -> Option<i64> {
 }
 
 /// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`,
-/// `EVENTS`, `FULL_CHECK`, or `STORE` for one the store did not take), when, and what the
-/// failure said.
+/// `PLACES`, `EVENTS`, `FULL_CHECK`, or `STORE` for one the store did not take), when, and what
+/// the failure said.
 pub struct Failure {
     pub what: String,
     pub at: i64,
@@ -1765,7 +1924,7 @@ pub struct Failure {
 /// What has failed in the watcher that holds its lock on this store now and not succeeded
 /// since. Empty while no watcher runs; a failure recorded before this one started is a past
 /// watcher's and is left out. A failure the store did not take, which the lock file says, is
-/// one of the kind `STORE`.
+/// one of the kind `STORE`; places the lock file says are left unwatched are one of `PLACES`.
 pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failure>> {
     let Some((since, state)) = responsive(folder) else {
         return Ok(Vec::new());
@@ -1780,11 +1939,20 @@ pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failur
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if let LockState::Unrecorded { at, said } = state {
+    let said = match state {
+        LockState::Unrecorded { at, said } => Some((STORE, at, said)),
+        // Places left unwatched are the lock file's word, whatever the store holds; its row,
+        // when there is one, says which.
+        LockState::Unwatched { at } if !failed.iter().any(|f| f.what == PLACES) => {
+            Some((PLACES, at, UNWATCHED_SAID.to_string()))
+        }
+        _ => None,
+    };
+    if let Some((what, at, detail)) = said {
         failed.push(Failure {
-            what: STORE.into(),
+            what: what.into(),
             at,
-            detail: said,
+            detail,
         });
         failed.sort_by(|a, b| a.what.cmp(&b.what));
     }
@@ -1883,14 +2051,14 @@ mod tests {
         assert_eq!(seen(&store_path), None);
         store::open_or_make(&store_path).unwrap();
         assert_eq!(seen(&store_path), Some(Seen::Live));
-        mark(&store_path, EVENTS, Some("invented")).unwrap();
+        mark(&store_path, EVENTS, Some("invented"), 0).unwrap();
         assert_eq!(seen(&store_path), Some(Seen::Live));
-        mark(&store_path, READ, Some("invented")).unwrap();
+        mark(&store_path, READ, Some("invented"), 0).unwrap();
         assert_eq!(
             seen(&store_path),
             Some(Seen::Failing(vec![EVENTS.into(), READ.into()]))
         );
-        mark(&store_path, READ, None).unwrap();
+        mark(&store_path, READ, None, 0).unwrap();
         put_lock(
             &lock,
             &format!("{since}\nheartbeat\nunrecorded {since}\ninvented"),
@@ -1953,6 +2121,9 @@ mod tests {
             "17\nheartbeat\nready\nthe disk is full",
             "17\nheartbeat\nrea",
             "17\nheartbeat\nunrec",
+            "17\nheartbeat\nunwatched",
+            "17\nheartbeat\nunwatched 18\nthe disk is full",
+            "17\nheartbeat\nwatched by another word",
         ] {
             let (_, state) = read_lock(text).unwrap();
             assert_ne!(state, LockState::Ready, "{text:?}");
@@ -1960,6 +2131,7 @@ mod tests {
         for state in [
             LockState::Starting,
             LockState::Ready,
+            LockState::Unwatched { at: 18 },
             LockState::Unrecorded {
                 at: 18,
                 said: "the disk is full".into(),
@@ -2439,5 +2611,150 @@ mod tests {
             failure["errors"][0]["detail_text"],
             format!("{} ?t=…", "y".repeat(240))
         );
+    }
+
+    #[test]
+    fn a_failure_recorded_while_the_clock_is_behind_the_watcher_s_start_is_still_read() {
+        let (dir, lock) = held("watch-clock-behind");
+        let store_path = dir.join("store.db");
+        store::open_or_make(&store_path).unwrap();
+        let since = crate::now_secs() + 600;
+        put_lock(&lock, &format!("{since}\nheartbeat\nready"));
+        mark(&store_path, PLACES, Some("invented"), since).unwrap();
+        let conn = store::open_read_only(&store_path).unwrap();
+        let failed: Vec<_> = failures(&conn, &dir)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.what, f.at))
+            .collect();
+        assert_eq!(failed, [(PLACES.to_string(), since)]);
+    }
+
+    #[test]
+    fn the_status_names_three_unwatched_places_as_their_problem_lines_do_and_counts_the_rest() {
+        // Each named place is said as its problem line says it: the name whole, whatever it
+        // looks like, and why cut on its own, so neither takes the other places or the count
+        // with it. What a source wrote breaks no line and carries no secret.
+        let (dir, lock) = held("watch-unwatched");
+        let store_path = dir.join("store.db");
+        store::open_or_make(&store_path).unwrap();
+        put_lock(
+            &lock,
+            &format!("{}\nheartbeat\nready", crate::now_secs() - 10),
+        );
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let shown = |left: &BTreeMap<PathBuf, String>| {
+            mark(&store_path, PLACES, unwatched(left).as_deref(), 0).unwrap();
+            watcher(&store_path).unwrap().failed[0].detail_text.clone()
+        };
+        let lines = |left: &BTreeMap<PathBuf, String>| -> Vec<String> {
+            left.iter()
+                .take(3)
+                .map(|(place, why)| {
+                    place_problem(place, why)["detail_text"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        let denied = |first: String| -> BTreeMap<PathBuf, String> {
+            [
+                first,
+                "/Users/example/b".into(),
+                "/Users/example/c".into(),
+                "/Users/example/d".into(),
+            ]
+            .into_iter()
+            .map(|p| (PathBuf::from(p), "denied".to_string()))
+            .collect()
+        };
+        for first in [
+            "/Users/example/a`b --secret x/pre-commit".to_string(),
+            "/Users/example/a/x?token=/pre-commit".to_string(),
+            format!("/Users/example/a/{token}/hooks"),
+        ] {
+            let left = denied(first.clone());
+            let shown = shown(&left);
+            assert_eq!(
+                shown,
+                format!(
+                    "4 places not watched live: {}; and 1 more",
+                    lines(&left).join("; ")
+                )
+            );
+            assert!(shown.starts_with(&format!("4 places not watched live: {first}: denied; ")));
+        }
+        let mut left = denied("/Users/example/a'b".into());
+        left.insert(
+            "/Users/example/a'c --password x/pre-commit".into(),
+            "denied".into(),
+        );
+        assert_eq!(
+            shown(&left),
+            "5 places not watched live: /Users/example/a'b: denied; \
+             /Users/example/a'c --password x/pre-commit: denied; /Users/example/b: denied; \
+             and 2 more"
+        );
+
+        let left: BTreeMap<PathBuf, String> = [
+            (
+                "/Users/example/a\nodd",
+                "denied \\cut{gitleaks:github-pat 40}".to_string(),
+            ),
+            ("/Users/example/b", format!("refused ?t={token}")),
+            ("/Users/example/c", "x".repeat(300)),
+            ("/Users/example/d", "denied".to_string()),
+            ("/Users/example/e", "denied".to_string()),
+        ]
+        .into_iter()
+        .map(|(p, why)| (PathBuf::from(p), why))
+        .collect();
+        let said = lines(&left);
+        let all = shown(&left);
+        assert_eq!(
+            all,
+            format!("5 places not watched live: {}; and 2 more", said.join("; "))
+        );
+        assert!(
+            !all.contains('\n')
+                && !all.contains(&token)
+                && all.contains("/Users/example/a\\u{a}odd: denied \\u{5c}cut{")
+                && all.contains(&crate::secrets::mark("gitleaks:github-pat", 40))
+                && said[2].ends_with('…')
+                && said[2].chars().count() == status::TEXT_CAP,
+            "{all}"
+        );
+        let one: BTreeMap<PathBuf, String> = [("/Users/example/d".into(), "denied".into())]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            shown(&one),
+            "1 place not watched live: /Users/example/d: denied"
+        );
+        assert_eq!(unwatched(&BTreeMap::new()), None);
+        // A long name is shortened, and the reason always keeps room: all it needs, or half
+        // when both are long.
+        let name = format!("/Users/example/{}", "l".repeat(300));
+        let said = place_said(Path::new(&name), "denied");
+        assert!(said.ends_with("l…: denied") && said.starts_with("/Users/example/lll"));
+        assert_eq!(said.chars().count(), status::TEXT_CAP);
+        let said = place_said(Path::new(&name), &"x".repeat(300));
+        let (name_part, why) = said.split_once(": ").unwrap();
+        assert_eq!(
+            (name_part.chars().count(), why.chars().count()),
+            (127, 127),
+            "{said}"
+        );
+        // A detail that is not what this build keeps is a source's text, cut whole.
+        let odd = format!("not kept by this build ?t={token}");
+        mark(&store_path, PLACES, Some(&odd), 0).unwrap();
+        let shown = watcher(&store_path).unwrap().failed[0].detail_text.clone();
+        assert_eq!(shown, crate::secrets::said(&odd));
+        assert!(!shown.contains(&token));
     }
 }
