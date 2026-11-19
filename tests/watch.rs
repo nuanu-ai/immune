@@ -1040,17 +1040,26 @@ fn hooks_named_under_a_regular_file_leave_nothing_unwatched_and_are_read_when_th
 
 #[test]
 fn hooks_named_where_nothing_can_be_now_leave_nothing_unwatched() {
-    // A link in a loop, a name longer than a file's name can be, and `..` after a folder that
-    // is not there: nothing is there now, which is not a failure.
+    // A link in a loop, a link that leads nowhere, a name longer than a file's name can be,
+    // alone and in a path longer than FSEvents takes, and `..` after a folder that is not
+    // there: nothing can be there now, which is not a failure.
     let mac = Mac::new("nothing-there");
     let dev = mac.home().join("dev");
-    std::fs::create_dir_all(&dev).unwrap();
-    std::os::unix::fs::symlink("loop-b", dev.join("loop-a")).unwrap();
-    std::os::unix::fs::symlink("loop-a", dev.join("loop-b")).unwrap();
+    std::fs::create_dir_all(dev.join("target")).unwrap();
+    let link = |to: &str, at: &str| std::os::unix::fs::symlink(to, dev.join(at)).unwrap();
+    link("loop-b", "loop-a");
+    link("loop-a", "loop-b");
+    link("nowhere", "broken");
+    link("target", "link");
+    let long = "l".repeat(256);
     for (repo, hooks) in [
         ("a", dev.join("loop-a/hooks")),
-        ("b", dev.join("l".repeat(256)).join("hooks")),
+        ("b", dev.join(&long).join("hooks")),
         ("c", dev.join("missing/../hooks")),
+        ("d", dev.join("x/".repeat(400)).join(&long).join("hooks")),
+        ("e", dev.join(format!("gone/{}hooks", "../".repeat(40)))),
+        ("f", dev.join("link/missing/../../c")),
+        ("g", dev.join("broken/hooks")),
     ] {
         mac.put(&format!("dev/{repo}/.git/HEAD"), "ref: refs/heads/main\n");
         mac.put(
@@ -1061,6 +1070,45 @@ fn hooks_named_where_nothing_can_be_now_leave_nothing_unwatched() {
     mac.run();
     let mut w = mac.watch().started();
     assert!(w.lines("problem").is_empty(), "{:?}", w.lines("problem"));
+    assert_eq!(failing(&mac), (true.into(), vec![]));
+}
+
+#[test]
+fn a_look_that_leaves_nothing_takes_back_what_an_earlier_look_left_for_the_store() {
+    // Hooks named under a file give no path; while a folder that cannot be searched stands in
+    // its place they are left unwatched; when the file is back, nothing is, and no row of it
+    // reaches the store at the next run lock, though none was taken between the two looks.
+    let mac = Mac::new("unwatched-taken-back");
+    mac.put("dev/api/.git/HEAD", "ref: refs/heads/main\n");
+    let file = mac.put("dev/file", "a regular file\n");
+    mac.put(
+        "dev/api/.git/config",
+        &format!("[core]\n hooksPath = {}\n", file.join("hooks").display()),
+    );
+    mac.run();
+    let mut w = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let closed = Mode(file.clone(), 0o755);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    w.until("problem", |v| v["code"] == "place_not_watched");
+    drop(closed);
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::write(&file, "a regular file\n").unwrap();
+    w.next("alive");
+    w.next("alive");
+    mac.put(".zshrc", "after\n");
+    w.next("read");
+    assert!(mac.rows("SELECT what FROM watcher_failed").is_empty());
     assert_eq!(failing(&mac), (true.into(), vec![]));
 }
 

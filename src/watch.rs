@@ -63,13 +63,14 @@
 //! watch leaves unwatched are a `problem` line each, printed when they change, and a failure
 //! of the kind `places`. The watcher's lock file says it at once and for as long as the latest
 //! look leaves any, and the status goes by that; the store's row, written at the run lock after
-//! each such look, says which places. A place where nothing can be now (a folder on the way
-//! that is not there or not a folder, a link that leads nowhere or in a loop, a name too long)
-//! is no failure: it is watched from the nearest folder that is there. A failure the store did
-//! not take is said in the watcher's lock file instead, and reads as a failure of the kind
-//! `store`. While one stands,
-//! `immunity status` does not say this Mac is watched live. A look at what to watch that
-//! succeeds after one that failed prints `watching` again and reads the watched places at once.
+//! each such look, says which places. A place whose folder is not there yet is watched from
+//! the folder that is. One that cannot be there now (a file or a link that leads nowhere or in
+//! a loop on the way, a name longer than a file's name can be) is no failure and gives nothing
+//! to watch: it is looked at again at every look and read at the full check. A failure the
+//! store did not take is said in the watcher's lock file instead, and reads as a failure of the
+//! kind `store`. While one stands, `immunity status` does not say this Mac is watched live. A
+//! look at what to watch that succeeds after one that failed prints `watching` again and reads
+//! the watched places at once.
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
@@ -151,7 +152,7 @@ pub const RUN_PREFIX: &str = "watch-";
 pub const CANNOT_SEE: [&str; 3] = [
     "who made a change: it sees that a watched place changed, not who changed it",
     "a change undone within the quiet period of one second: the reading after it finds the place as it was and records no change",
-    "a symbolic link among the watched places pointed elsewhere, within seconds: FSEvents watches where a link leads, so the new target is seen at the watcher's next look at what to watch, within a minute. A place reached through a link that leads nowhere, or through something that later becomes a link, is noticed at that look too",
+    "a symbolic link among the watched places pointed elsewhere, within seconds: FSEvents watches where a link leads, so the new target is seen at the watcher's next look at what to watch, within a minute. A place whose folder cannot be there now, with a file or a broken link on the way or behind a link that leads nowhere, is noticed at that look and at the full check, not within seconds",
 ];
 
 /// The watcher's tables, part of the store's schema (`store::schema`).
@@ -765,10 +766,9 @@ impl Watcher<'_> {
         self.heartbeat.left(!left.is_empty());
         // Every look is an attempt, recorded at the next lock as one of any other kind is: a
         // store made anew holds which places again, and an end is written until the store
-        // takes it (`standing`).
-        if !left.is_empty() || self.standing.contains(PLACES) {
-            self.unwatched = Some(unwatched(&left));
-        }
+        // takes it (`standing`). A look that leaves nothing takes back what is still pending.
+        self.unwatched =
+            (!left.is_empty() || self.standing.contains(PLACES)).then(|| unwatched(&left));
         if left == self.left_out {
             return Vec::new();
         }
@@ -1565,45 +1565,45 @@ fn subscribed(place: &Path, folder: bool, homes: &[&Path]) -> Result<Vec<PathBuf
 
 /// The path as FSEvents names it: the real path of its folder, which need not exist yet, and
 /// its own name. FSEvents reports real paths, and `/etc` is a link to `/private/etc`. `None`
-/// when its folder leads into a folder macOS asks permission for, which is not entered.
+/// when its folder leads into a folder macOS asks permission for, which is not entered, or
+/// cannot be there now. `Err` only when it could not be looked at.
 fn real(path: &Path, homes: &[&Path]) -> Result<Option<PathBuf>, String> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(Some(path.to_path_buf()));
     };
-    use std::path::Component;
+    // Nothing can be there now: no path, and no failure. Such a place is looked at again at every
+    // look, so it is subscribed at the first one after it can be, and the full check reads it.
+    // A name longer than a file's name can be is one (`NAME_MAX`, `sys/syslimits.h`).
+    if path.components().any(|c| c.as_os_str().len() > 255) {
+        return Ok(None);
+    }
     let mut missing = Vec::new();
     let mut existing = parent.to_path_buf();
-    // How many names before this one a `..` takes back.
-    let mut back = 0;
     let mut out = loop {
-        if back == 0 {
-            match crate::guarded::real(&existing, homes) {
-                crate::guarded::Real::At(real) => break real,
-                crate::guarded::Real::Guarded(_) => return Ok(None),
-                // Only a folder that could not be looked at, or an i/o error, leaves the place
-                // unwatched. Anything that means nothing is there now (not there, not a
-                // folder, a link that leads nowhere or in a loop, a name too long) is a place
-                // not there yet: its nearest folder that is there is watched, as for a folder
-                // that is missing.
-                crate::guarded::Real::Failed(e)
-                    if !matches!(
-                        e.raw_os_error(),
-                        Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ENAMETOOLONG)
-                    ) =>
+        match crate::guarded::real(&existing, homes) {
+            crate::guarded::Real::At(real) => break real,
+            crate::guarded::Real::Guarded(_) => return Ok(None),
+            crate::guarded::Real::Failed(e) => match e.raw_os_error() {
+                // A folder that is not there yet: its own folder is watched. Looking at it
+                // without following it fails only where making it real failed.
+                Some(libc::ENOENT)
+                    if matches!(std::fs::symlink_metadata(&existing),
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound) =>
                 {
-                    return Err(e.to_string());
+                    // A walk that cannot stand on a name, as after a `..`, is nothing there.
+                    let Some(last) = existing.file_name() else {
+                        return Ok(None);
+                    };
+                    missing.push(last.to_os_string());
+                    existing.pop();
                 }
-                crate::guarded::Real::Failed(_) => {}
-            }
+                // A link that leads nowhere, a file on the way, a link in a loop.
+                Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP) => return Ok(None),
+                // Could not look, such as a folder that cannot be searched, a path longer than
+                // the system takes that may be there, or an i/o error.
+                _ => return Err(e.to_string()),
+            },
         }
-        // `..` takes back the name before it, as it would if that folder were there.
-        match existing.components().next_back() {
-            Some(Component::ParentDir) => back += 1,
-            Some(Component::Normal(_)) if back > 0 => back -= 1,
-            Some(Component::Normal(last)) => missing.push(last.to_os_string()),
-            _ => return Err("no folder on the way to it is there".into()),
-        }
-        existing.pop();
     };
     out.extend(missing.iter().rev());
     out.push(name);
@@ -2495,7 +2495,8 @@ mod tests {
     }
 
     #[test]
-    fn a_place_is_named_by_the_real_path_of_its_folder_even_before_it_exists() {
+    fn a_place_is_named_by_the_real_path_of_its_folder_before_it_exists_and_one_not_looked_at_fails()
+     {
         let dir = std::env::temp_dir().join(format!("immunity-watch-real-{}", std::process::id()));
         let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(dir.join("real")).unwrap();
@@ -2512,6 +2513,24 @@ mod tests {
             real(&dir.join("link"), &homes).unwrap(),
             Some(base.join("link"))
         );
+        // A folder whose whole path is longer than the system takes, every name in it short,
+        // may be there: not being able to look at it is a failure. Made from inside.
+        let name = "d".repeat(200);
+        let made = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!(
+                    "cd \"$1\" && {}",
+                    vec![format!("mkdir {name} && cd {name}"); 6].join(" && ")
+                ),
+                "sh",
+            ])
+            .arg(&dir)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let deep = dir.join(vec![name; 6].join("/")).join("hooks/pre-commit");
+        assert!(real(&deep, &homes).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
