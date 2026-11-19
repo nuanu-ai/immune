@@ -392,6 +392,8 @@ pub struct Others {
     pub lacks: Vec<&'static str>,
     pub cut: usize,
     pub why: Vec<String>,
+    /// A folder could not be resolved, or leads into a guarded one.
+    pub unplaced: bool,
 }
 
 impl Others {
@@ -403,20 +405,41 @@ impl Others {
 }
 
 /// What a configured folder is when it is too wide for its other files to be read: the
-/// checkout, its `.git` folder, the home folder or `/`, each compared as given, by its real
-/// path.
+/// checkout, its `.git` folder, the home folder or `/`. Compared by what each folder is, not
+/// by how it is spelt: a volume may ignore case, and a link gives one folder two names.
 pub fn wide(folder: &Path, checkout: &Path, homes: &[&Path]) -> Option<&'static str> {
-    if folder == Path::new("/") {
+    let is = |other: &Path| same(folder, other);
+    if is(Path::new("/")) {
         Some("/")
-    } else if homes.contains(&folder) {
+    } else if homes.iter().any(|home| is(home)) {
         Some("the home folder")
-    } else if folder == checkout {
+    } else if is(checkout) {
         Some("the checkout itself")
-    } else if folder == checkout.join(".git") {
+    } else if is(&checkout.join(".git")) {
         Some("the checkout's .git folder")
     } else {
         None
     }
+}
+
+/// Whether two paths lead to one folder or file: the same device and inode.
+fn same(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let id = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
+    id(a).is_some_and(|a| id(b) == Some(a))
+}
+
+/// The entries of a folder, `None` past `HOOK_FOLDER_LISTED` of them. Any error once the folder
+/// is open fails the whole listing: an entry missed is never a file gone.
+fn listed<T>(entries: impl Iterator<Item = std::io::Result<T>>) -> Result<Option<Vec<T>>, String> {
+    let mut found = Vec::new();
+    for entry in entries {
+        if found.len() == HOOK_FOLDER_LISTED {
+            return Ok(None);
+        }
+        found.push(entry.map_err(|e| reason(&e))?);
+    }
+    Ok(Some(found))
 }
 
 /// How the reason of a checkout's hooks reading says the configured folder was not told.
@@ -486,55 +509,57 @@ pub fn look_checkout(
 /// runs by `names`, at most `HOOK_FOLDER_CAP` of them, and a link among them as `examine`
 /// does. A folder below is not entered. Not done where the folder is too wide (`wide`).
 fn other_files(others: &mut Others, path: &Path, names: &[&str], checkout: &Path, at: &Where) {
-    let look = &mut others.look;
     let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
-    // A folder not there, or what is not a folder, holds nothing: listing a named pipe fails
-    // at once without waiting.
-    let failed = |look: &mut Look, e: std::io::Error| match Absent::on_the_way(&e) {
-        Some(absent) => look.absent(unit.clone(), absent),
-        None => look.not_looked_at(unit.clone(), reason(&e)),
-    };
+    // Which of the files read before a folder not resolved holds is not known: all are kept.
+    // A folder not there, or what is not a folder, holds nothing.
     let folder = match guarded::real_in(path, &at.homes, at.given) {
         Real::At(folder) => folder,
-        Real::Guarded(g) => return look.not_into(unit, g, at.home),
-        Real::Failed(e) => return failed(look, e),
+        Real::Guarded(g) => {
+            others.unplaced = true;
+            return others.look.not_into(unit, g, at.home);
+        }
+        Real::Failed(e) => match Absent::on_the_way(&e) {
+            Some(absent) => return others.look.absent(unit, absent),
+            None => {
+                others.unplaced = true;
+                return others.look.not_looked_at(unit, reason(&e));
+            }
+        },
     };
-    let checkout = match guarded::real_in(checkout, &at.homes, at.given) {
-        Real::At(real) => real,
-        _ => checkout.to_path_buf(),
-    };
-    if let Some(what) = wide(&folder, &checkout, &at.homes) {
+    if let Some(what) = wide(&folder, checkout, &at.homes) {
         others.lack(HOOK_FOLDER_WIDE);
         return others.why.push(format!(
             "the folder core.hooksPath names is {what}: only the files with Git's hook names are read there"
         ));
     }
     // Every file of `.git/hooks` is read as a hook already.
-    if folder == checkout.join(".git/hooks") {
-        look.present += 1;
+    if same(&folder, &checkout.join(".git/hooks")) {
+        others.look.present += 1;
         return;
     }
-    // Only a folder that cannot be opened may be absent; what fails after is a failed listing.
+    // From here the folder is named as its files are, so a failure covers exactly them. Only
+    // one that cannot be opened may be absent: listing a named pipe fails without waiting.
+    let shown = crate::checkouts::rel(at.homes[1], &folder);
     let entries = match std::fs::read_dir(&folder) {
         Ok(entries) => entries,
-        Err(e) => return failed(look, e),
+        Err(e) => match Absent::on_the_way(&e) {
+            Some(absent) => return others.look.absent(Unit::whole(shown), absent),
+            None => return others.look.not_looked_at(Unit::whole(shown), reason(&e)),
+        },
     };
-    let shown = crate::checkouts::rel(at.homes[1], &folder);
-    let mut found = Vec::new();
-    for entry in entries {
-        match entry.and_then(|e| Ok((e.file_name(), e.file_type()?))) {
-            Ok(_) if found.len() == HOOK_FOLDER_LISTED => {
-                let why = format!(
-                    "the folder holds more than {HOOK_FOLDER_LISTED} entries: its other files were not read"
-                );
-                others.cut += 1;
-                others.lack(HOOK_FOLDER_PAST_CAP);
-                return others.look.unread(Unit::whole(&shown), why);
-            }
-            Ok(got) => found.push(got),
-            Err(e) => return others.look.not_looked_at(Unit::whole(&shown), reason(&e)),
+    let entries = entries.map(|entry| entry.and_then(|e| Ok((e.file_name(), e.file_type()?))));
+    let mut found = match listed(entries) {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            let why = format!(
+                "the folder holds more than {HOOK_FOLDER_LISTED} entries: its other files were not read"
+            );
+            others.cut += 1;
+            others.lack(HOOK_FOLDER_PAST_CAP);
+            return others.look.unread(Unit::whole(&shown), why);
         }
-    }
+        Err(why) => return others.look.not_looked_at(Unit::whole(&shown), why),
+    };
     // A link is examined as a file; only a folder itself is below.
     found.retain(|(name, kind)| !kind.is_dir() && !names.iter().any(|n| name == *n));
     found.sort_by(|a, b| a.0.cmp(&b.0));
@@ -916,17 +941,38 @@ mod tests {
     #[test]
     fn a_hooks_folder_that_is_the_root_the_home_folder_the_checkout_or_its_git_folder_is_too_wide_to_read()
      {
-        let home = Path::new("/Users/example");
+        // Each is known by what it is: a link names the checkout and its `.git` a second time,
+        // as another case does on a volume that ignores case.
+        let home = crate::common::Scratch::new("hooks-folder-wide");
         let checkout = home.join("dev/app");
-        let wide = |folder: &Path| wide(folder, &checkout, &[home]);
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        std::fs::create_dir_all(checkout.join(".husky/_")).unwrap();
+        std::os::unix::fs::symlink(&checkout, home.join("alias")).unwrap();
+        let wide = |folder: &Path| wide(folder, &checkout, &[&*home]);
         assert_eq!(wide(Path::new("/")), Some("/"));
-        assert_eq!(wide(home), Some("the home folder"));
-        assert_eq!(wide(&checkout.join(".")), Some("the checkout itself"));
+        assert_eq!(wide(&home.join("dev/..")), Some("the home folder"));
+        assert_eq!(wide(&home.join("alias")), Some("the checkout itself"));
         assert_eq!(
-            wide(&checkout.join(".git")),
+            wide(&home.join("alias/.git")),
             Some("the checkout's .git folder")
         );
         assert_eq!(wide(&checkout.join(".husky/_")), None);
+        assert_eq!(wide(&home.join("absent")), None);
+    }
+
+    #[test]
+    fn a_listing_that_fails_after_its_first_entries_is_a_failure_and_never_those_entries() {
+        let gone = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        let entries = [Ok(1), Err(gone()), Ok(2)].into_iter();
+        assert_eq!(listed(entries), Err(reason(&gone())));
+        assert_eq!(listed([Ok(1), Ok(2)].into_iter()), Ok(Some(vec![1, 2])));
+        let many = (0..=HOOK_FOLDER_LISTED).map(Ok::<_, std::io::Error>);
+        assert_eq!(listed(many), Ok(None));
+        let all = (0..HOOK_FOLDER_LISTED).map(Ok::<_, std::io::Error>);
+        assert_eq!(
+            listed(all).map(|l| l.map(|l| l.len())),
+            Ok(Some(HOOK_FOLDER_LISTED))
+        );
     }
 
     #[test]

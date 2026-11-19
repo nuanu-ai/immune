@@ -2866,6 +2866,24 @@ fn a_hooks_folder_reached_through_a_link_that_cannot_be_listed_keeps_all_that_wa
     );
     let reading = other_files_reading(&e);
     assert!(!reading.starts_with("full|"), "{reading}");
+    // A link that leads into a folder macOS asks permission for: which files that folder
+    // holds is not known, and all that was read is kept.
+    std::fs::remove_file(&linked).unwrap();
+    let docs = e.home().join("Documents/hooks");
+    std::fs::create_dir_all(&docs).unwrap();
+    link(docs.to_str().unwrap(), &linked);
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), [id]);
+    assert_eq!(e.rows(&content), digest);
+    let reading = other_files_reading(&e);
+    assert!(reading.starts_with("none|not_given|"), "{reading}");
+    // Nor is it known of a link in a loop, which cannot be resolved.
+    std::fs::remove_file(&linked).unwrap();
+    link(linked.to_str().unwrap(), &linked);
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), [id]);
+    let reading = other_files_reading(&e);
+    assert!(reading.starts_with("none|failed|"), "{reading}");
 }
 
 #[test]
@@ -2921,13 +2939,14 @@ fn the_files_beside_the_hooks_of_a_checkout_whose_git_is_a_file_or_that_moved_be
     assert_eq!(live_as(&e, "other file in a git hooks folder"), live);
     let reading = other_files_reading(&e);
     assert!(
-        reading.starts_with("none|no_reader|.git is a file"),
+        reading.starts_with("partial|no_reader|.git is a file"),
         "{reading}"
     );
     std::fs::remove_file(app.join(".git")).unwrap();
     std::fs::rename(e.home().join("dev/app-git"), app.join(".git")).unwrap();
     e.full();
     assert!(other_files_reading(&e).starts_with("full|"));
+    e.seen();
     // Moved, with a link where its folder was.
     let moved = e.0.join("moved-app");
     std::fs::rename(&app, &moved).unwrap();
@@ -2935,12 +2954,58 @@ fn the_files_beside_the_hooks_of_a_checkout_whose_git_is_a_file_or_that_moved_be
     e.full();
     assert_eq!(live_as(&e, "other file in a git hooks folder"), live);
     let reading = other_files_reading(&e);
-    assert!(reading.starts_with("none|failed|"), "{reading}");
+    assert!(reading.starts_with("partial|failed|"), "{reading}");
     assert!(
-        !e.found().iter().any(|(rule, _)| rule == "gone"),
+        !e.found()
+            .iter()
+            .any(|(_, path)| path.contains("/.husky/_/")),
         "{:?}",
         e.found()
     );
+}
+
+#[test]
+fn of_two_folders_beside_the_hooks_one_that_cannot_be_listed_keeps_its_files_and_the_other_tells_a_file_gone()
+ {
+    // A relative setting gives the working tree's hooks one folder and a push's another.
+    let e = Estate::new("hooks-folder-two");
+    let app = e.checkout("dev/app");
+    put(&app.join(".git/config"), "[core]\n hooksPath = h\n");
+    put(&app.join("h/lib.sh"), "# a helper\n");
+    put(&app.join(".git/h/push.sh"), "# a helper of a push\n");
+    e.full();
+    e.full();
+    let both = [
+        "file:machine:mac/dev/app/.git/h/push.sh",
+        "file:machine:mac/dev/app/h/lib.sh",
+    ];
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), both);
+    mode(&app.join(".git/h"), 0o000);
+    std::fs::remove_file(app.join("h/lib.sh")).unwrap();
+    e.full();
+    mode(&app.join(".git/h"), 0o755);
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), [both[0]]);
+    assert!(
+        e.found()
+            .contains(&pair("watched.git-hook", "~/dev/app/h/lib.sh")),
+        "{:?}",
+        e.found()
+    );
+}
+
+#[test]
+fn two_folders_past_the_cap_are_two_folders_not_read_and_nothing_failed() {
+    let e = Estate::new("hooks-folder-two-capped");
+    let app = e.checkout("dev/app");
+    put(&app.join(".git/config"), "[core]\n hooksPath = h\n");
+    for i in 0..40 {
+        put(&app.join(format!("h/lib-{i:02}.sh")), "# a helper\n");
+        put(&app.join(format!(".git/h/push-{i:02}.sh")), "# a helper\n");
+    }
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder").len(), 64);
+    let reading = other_files_reading(&e);
+    assert!(reading.starts_with("partial|no_reader|"), "{reading}");
 }
 
 #[test]

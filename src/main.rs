@@ -3637,8 +3637,9 @@ struct Placed {
     watched_as: &'static str,
     kind: String,
     look: look::Look,
-    /// Why the checkout's hooks were not looked at where they were: its `.git` is a file, or
-    /// the checkout itself is no longer a folder there.
+    /// Why the checkout's hooks were not looked at where they were, and all that was known of
+    /// them is kept: its `.git` is a file, the checkout itself is no longer a folder there, or
+    /// the folder Git's configuration names could not be told or resolved.
     elsewhere: Option<String>,
     /// The completeness, reason and cause the reading says, where its reader gives them.
     coverage: Option<(&'static str, Option<String>, Option<Cause>)>,
@@ -3687,8 +3688,15 @@ fn others_placed(
         Cause::NoReader
     };
     let cause = (completeness != "full").then_some(cause);
-    let said = Some((completeness, Some(reason.join("; ")), cause));
-    (o.look, None, said, o.lacks)
+    let reason = reason.join("; ");
+    // A folder not resolved keeps all that was read of it, as one not told does.
+    let elsewhere = o.unplaced.then(|| reason.clone());
+    (
+        o.look,
+        elsewhere,
+        Some((completeness, Some(reason), cause)),
+        o.lacks,
+    )
 }
 
 /// A reading of this machine over its checkouts speaks only for the checkouts it looked into.
@@ -3934,17 +3942,11 @@ fn read_watched(
         let configured = !folder.configured().is_empty();
         let (look, elsewhere, coverage, others) =
             match watched::look_checkout(c, &args.home, homes, folder, given) {
-                // Its hooks' reading says they are elsewhere, for the folder's other files too.
+                // The folder's other files are elsewhere as its hooks are, and said as they are.
                 watched::Hooks::GitFile => {
-                    let why = watched::GIT_FILE.to_string();
-                    let not_read = Some(("none", Some(why.clone()), Some(Cause::NoReader)));
-                    let others = (
-                        look::Look::default(),
-                        Some(why.clone()),
-                        not_read,
-                        Vec::new(),
-                    );
-                    (look::Look::default(), Some(why), None, Some(others))
+                    let why = Some(watched::GIT_FILE.to_string());
+                    let others = (look::Look::default(), why.clone(), None, Vec::new());
+                    (look::Look::default(), why, None, Some(others))
                 }
                 // `.git/hooks` was read; the folder the configuration names was not told.
                 watched::Hooks::Looked(look, untold, others) => {
@@ -3995,18 +3997,14 @@ fn read_watched(
             continue;
         }
         let why = format!("{rel} {}", checkouts::MOVED);
-        let not_read = Some(("none", Some(why.clone()), Some(Cause::Failed)));
-        for ((watched_as, kind), coverage) in [
-            (watched::HOOK_FOLDER_FILES, not_read),
-            (watched::HOOKS, None),
-        ] {
+        for (watched_as, kind) in [watched::HOOK_FOLDER_FILES, watched::HOOKS] {
             placed.push(Placed {
                 scope: scope.clone(),
                 watched_as,
                 kind: kind.to_string(),
                 look: look::Look::default(),
                 elsewhere: Some(why.clone()),
-                coverage,
+                coverage: None,
                 kept: Vec::new(),
                 checkouts: vec![rel.clone()],
                 lacks: Vec::new(),
@@ -4228,12 +4226,9 @@ fn read_watched(
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        // The other files of a folder that could not be listed whole keep all they were,
-        // under whatever path they were saved: the folder may be reached through a link.
         statements.extend(kept(tx, &reading, |_, unit| {
             p.elsewhere.is_some()
                 || !p.look.retracts(unit)
-                || p.kind == watched::HOOK_FOLDER_KIND && !p.look.retracts(None)
                 || keep_outside && unit.is_none_or(outside)
         })?);
         baseline::remember_units(tx, &reading, &units)?;

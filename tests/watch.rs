@@ -3151,6 +3151,8 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
     std::fs::write(keg, "#!/bin/sh\n").unwrap();
     mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
     mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
+    mac.put("dev/shop/.git/config", "[core]\n hooksPath = .husky/_\n");
+    mac.put("dev/shop/.husky/_/h", "#!/usr/bin/env sh\n# dispatch\n");
     mac.run();
     // Running programs are sampled only while a watcher runs.
     let sampled = "running programs and their connections";
@@ -3178,6 +3180,14 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
     assert_eq!(how(&m, tasks), "live");
     assert_eq!(how(&m, "Homebrew packages"), "hourly");
     assert_eq!(how(&m, sampled), "sampled");
+    // The files beside the hooks are read at checks: the watcher does not subscribe to them.
+    let others = "other files in git hooks folders";
+    assert_eq!(how(&m, others), "hourly");
+    let page = mac.view_if_stale();
+    assert!(
+        page.contains("<span>Other files in git hooks folders</span><span class=\"wh2 t2\">at full checks</span>"),
+        "{page}"
+    );
     // A watcher that stopped samples nothing: the entry goes with it, and nothing is seen
     // within seconds any more.
     assert!(w.stop().success());

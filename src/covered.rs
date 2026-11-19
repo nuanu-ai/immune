@@ -24,10 +24,11 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
         (Count::Files(watched::SSH), "SSH files", true),
         (Count::Files(watched::AUTH), LOGIN_MODULES, true),
         (Count::Files(watched::HOOK), "git hooks in projects", true),
+        // Read at each check: the watcher does not subscribe to them.
         (
             Count::Files(watched::HOOK_FOLDER_FILE),
             "other files in git hooks folders",
-            true,
+            false,
         ),
     ];
     out.extend(

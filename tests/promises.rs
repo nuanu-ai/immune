@@ -8544,7 +8544,7 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
     );
     assert!(
         report.contains(
-            "not read in full: other files in the folder core.hooksPath names (nothing read), hooks in 1 checkout (nothing read), hooks in 1 checkout (partial)."
+            "not read in full: other files in the folder core.hooksPath names (partial), hooks in 1 checkout (nothing read), hooks in 1 checkout (partial)."
         ),
         "{report}"
     );
@@ -10305,11 +10305,11 @@ fn unknown_is_never_given_as_zero_or_full() {
     assert_eq!(c["failed"], 1, "{c:#}");
     // The lockfile, the worktree's hooks and the other files of the folder they are run from.
     assert_eq!(c["no_reader"], 3, "{c:#}");
-    // The readings of nothing are this Mac's program starts, no event level here, and the
-    // worktree's other files of a hooks folder.
+    // The worktree's hooks and the other files of their folder are partial, as kept elsewhere.
+    // The second reading of nothing is this Mac's program starts: no event level here.
     assert_eq!(
         (c["partial"].clone(), c["none"].clone()),
-        (2.into(), 3.into()),
+        (3.into(), 2.into()),
         "{c:#}"
     );
     let classes = [
