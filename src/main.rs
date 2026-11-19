@@ -3199,11 +3199,11 @@ fn read_agent_folders(
     if !reasons.is_empty() {
         causes.push(Cause::Failed);
     }
-    // What this version has no reader for: sessions of other agents, named only by the agent,
-    // and session files kept compressed. A checkout is dropped only when it is gone from
-    // disk, so these alone leave what was found compared in full.
+    // What this version has no reader for: sessions of other agents, named only by the agent.
+    // A checkout is dropped only when it is gone from disk, so these alone leave what was
+    // found compared in full.
     let unread = agent_folders::unread_here(&args.home, &homes);
-    let mut lacks: Vec<Lack> = unread
+    let lacks: Vec<Lack> = unread
         .iter()
         .map(|agent| Lack::new(agent_folders::OTHER_AGENT, Some(agent)))
         .collect();
@@ -3212,14 +3212,6 @@ fn read_agent_folders(
         no_reader.push(format!(
             "sessions of {} are not read",
             covered::listed(&unread)
-        ));
-    }
-    for (agent, n) in sessions.iter().flat_map(|s| &s.compressed) {
-        lacks.push(Lack::new(agent_folders::COMPRESSED, Some(agent)));
-        no_reader.push(format!(
-            "{} of {agent} {} not read",
-            count(*n, "compressed session file", "compressed session files"),
-            if *n == 1 { "is" } else { "are" }
         ));
     }
     if !lacks.is_empty() {

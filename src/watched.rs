@@ -20,7 +20,7 @@ use crate::baseline::Unit;
 use crate::git_hooks::{Folder, Unread};
 use crate::guarded::{self, Real};
 use crate::look::{Absent, Look};
-use std::fs::{FileType, Metadata, OpenOptions};
+use std::fs::{File, FileType, Metadata, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -699,14 +699,10 @@ fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
         return Err(Content::Special(kind_of(meta.file_type())));
     }
     let read = || -> std::io::Result<Result<Vec<u8>, &'static str>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(path)?;
-        let opened = file.metadata()?;
-        if !opened.is_file() {
-            return Ok(Err(kind_of(opened.file_type())));
-        }
+        let file = match open_regular(path)? {
+            Ok((file, _)) => file,
+            Err(what) => return Ok(Err(what)),
+        };
         let mut bytes = Vec::new();
         file.take(CAP + 1).read_to_end(&mut bytes)?;
         Ok(Ok(bytes))
@@ -721,6 +717,23 @@ fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
         )),
         Ok(Ok(bytes)) => Ok(bytes),
     }
+}
+
+/// Opens `path` to read only when it is a regular file: without following a link in its last
+/// part and without waiting, so that a file swapped for a link or a named pipe after it was
+/// looked at is neither followed nor able to hold the reader. A link fails to open; anything
+/// else that is not a regular file is told by what it is. The file is returned with its
+/// metadata as opened.
+pub fn open_regular(path: &Path) -> std::io::Result<Result<(File, Metadata), &'static str>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() {
+        return Ok(Err(kind_of(opened.file_type())));
+    }
+    Ok(Ok((file, opened)))
 }
 
 /// What a thing that is not a regular file is, after links are followed: then nothing else

@@ -36,6 +36,21 @@
 //! trust an index entry that is "racily clean". Anything else is read from the first byte.
 //! A last line without its line break is read, as a reading from the first byte reads it,
 //! but the position stays before it.
+//!
+//! A session file is a regular file in its folder of sessions. It is opened without following
+//! a link and without waiting, so an entry that is a link, a named pipe or anything else is a
+//! session file that could not be read, and the kept row of a file is keyed by its own path.
+//! A line is held up to `LINE_BYTES`; the rest of a longer one is passed over without being
+//! held, and the line is counted as unparsed.
+//!
+//! Codex CLI compresses a session it has not changed for seven days with zstd. Only `decode`
+//! reads such a file's bytes: as a stream, its lines read as a plain file's are, never all in
+//! memory. It does not grow, so it gives all or nothing: its position is its length, its
+//! digest is that of its compressed bytes, and it is trusted by the same rule. A trusted file
+//! gives the folders kept without its content being read; anything else is decoded from the
+//! first byte. One that is not a single zstd frame, is cut short, asks for a window over
+//! `WINDOW_BYTES` or decodes to more than `DECODED_BYTES` could not be read, and gives no
+//! folder.
 
 use crate::sha256::Hasher;
 use rusqlite::{Connection, Transaction, params};
@@ -60,12 +75,9 @@ pub const NOT_HERE: &str = "no sessions of Claude Code or Codex CLI on this mach
 pub const FILES_NOT_LOOKED_INTO: &str = "session files not looked into: ";
 /// What a reading names, by the agent's name, as sessions this version does not read.
 pub const OTHER_AGENT: &str = "sessions of a coding agent";
-/// What it names, the same way, as session files kept compressed, which it does not read.
-pub const COMPRESSED: &str = "compressed session files of a coding agent";
 
 /// One agent's session files this reader reads.
 pub struct Source {
-    pub agent: &'static str,
     /// The folder of the sessions, inside the home folder.
     pub dir: &'static str,
     /// How many folders lie between it and a session file.
@@ -75,7 +87,7 @@ pub struct Source {
     /// The quoted values of `type` whose lines always state it: such a line that does not is
     /// of a shape this version does not know, and is counted as unparsed.
     pub stated_by: &'static [&'static str],
-    /// The end of the name of a session file the agent compressed, which is not read.
+    /// The end of the name of a session file the agent compressed with zstd.
     pub compressed: Option<&'static str>,
 }
 
@@ -83,7 +95,6 @@ pub struct Source {
 /// elsewhere when started with `CLAUDE_CONFIG_DIR`, which this reader cannot know.
 /// https://code.claude.com/docs/en/claude-directory
 pub const CLAUDE_CODE: Source = Source {
-    agent: "Claude Code",
     dir: SESSIONS,
     depth: 1,
     cwd: "/cwd",
@@ -95,12 +106,11 @@ pub const CLAUDE_CODE: Source = Source {
 /// archived flat in `archived_sessions`, inside `~/.codex`. Each line is
 /// `{"timestamp", "type", "payload"}`; the first, `session_meta`, and every `turn_context`
 /// state the working folder in `payload.cwd`. A file not changed for seven days is compressed
-/// with zstd to `.jsonl.zst`, which this version has no reader for.
+/// with zstd to `.jsonl.zst`.
 /// https://github.com/openai/codex/blob/main/codex-rs/rollout/src/lib.rs (the folders),
 /// https://github.com/openai/codex/blob/main/codex-rs/history/src/rollout_payload.rs (a line),
 /// https://github.com/openai/codex/blob/main/codex-rs/rollout/src/compression.rs
 const CODEX: Source = Source {
-    agent: "Codex CLI",
     dir: ".codex/sessions",
     depth: 3,
     cwd: "/payload/cwd",
@@ -184,6 +194,27 @@ const SETTLE_NS: i64 = 1_000_000_000;
 const HELD_FOLDERS: usize = 64;
 const HELD_FOLDER_BYTES: usize = 1024;
 const HELD_BYTES: usize = 4 << 20;
+/// What the working folders one file names, as it is read, may come to. A row keeps at most
+/// `HELD_FOLDERS` of `HELD_FOLDER_BYTES`, 64 KiB; four times that leaves room for a session of
+/// more folders than a row keeps, which is read every time as before. A file past it could not
+/// be read, so that a file written to be hostile cannot make the reader hold a gigabyte of
+/// folder names.
+const FILE_FOLDER_BYTES: usize = 4 * HELD_FOLDERS * HELD_FOLDER_BYTES;
+/// What one compressed session file may decode to. A plain file is read to its size on disk;
+/// a compressed one can stand for far more than it holds, since a block of three bytes may
+/// repeat one byte 128 KiB times. 1 GiB leaves room for the text of turns and tool output of
+/// a long session, and keeps what one file can cost to seconds of decoding.
+const DECODED_BYTES: u64 = 1 << 30;
+/// The largest window a zstd frame may ask the decoder to keep in memory: 128 MiB, libzstd's
+/// own default limit for decoding (`ZSTD_WINDOWLOG_LIMIT_DEFAULT`, a window log of 27), which
+/// every frame its levels up to 22 write stays within. A frame that asks for more is refused
+/// before anything is kept for it.
+const WINDOW_BYTES: u64 = 128 << 20;
+/// How much of one line of a session, plain or compressed, is held to be parsed. A line is one
+/// item of a session; the longest are images given as base64, and 64 MiB holds one of 48 MiB.
+/// The rest of a longer line is passed over without being held, and the line is counted as
+/// unparsed.
+const LINE_BYTES: u64 = 64 << 20;
 
 /// What the session files hold that this reader uses.
 pub enum Found {
@@ -204,14 +235,12 @@ pub struct Sessions {
     pub unreadable: usize,
     /// Folders of sessions that could not be listed.
     pub unlisted: usize,
-    /// Lines that mention `"cwd"` and are not JSON, or lines of a kind that always states the
-    /// working folder and do not.
+    /// Lines that mention `"cwd"` and are not JSON, lines of a kind that always states the
+    /// working folder and do not, and lines longer than `LINE_BYTES`.
     pub unparsed: usize,
-    /// Session files kept compressed, by agent: not read.
-    pub compressed: BTreeMap<&'static str, usize>,
     /// Every distinct working folder, as recorded.
     pub folders: BTreeSet<String>,
-    /// Folders macOS asks permission for that a session file, a link, leads into: not read.
+    /// Folders macOS asks permission for that a folder of sessions leads into: not read.
     pub guarded: BTreeSet<PathBuf>,
     /// What the store is to keep for the next reading: an entry for each file read, and the
     /// entry it had for a file that could not be read.
@@ -228,7 +257,8 @@ pub struct Cost {
     pub from_position: usize,
     /// Files read from their first byte.
     pub from_start: usize,
-    /// Bytes read from session files, to hash and to parse.
+    /// Bytes read from session files, to hash and to parse, and those a compressed one
+    /// decoded to.
     pub bytes: u64,
 }
 
@@ -275,9 +305,6 @@ impl Sessions {
         self.unreadable += other.unreadable;
         self.unlisted += other.unlisted;
         self.unparsed += other.unparsed;
-        for (agent, n) in other.compressed {
-            *self.compressed.entry(agent).or_default() += n;
-        }
         self.folders.append(&mut other.folders);
         self.guarded.append(&mut other.guarded);
         self.held.append(&mut other.held);
@@ -286,9 +313,9 @@ impl Sessions {
 }
 
 /// Reads the working folders from every session file of `source` under `dir`, each from where
-/// `held` says the last reading stopped when that can be trusted, at `now`. The folder, and a
-/// session file, may be a link: it is not followed into a folder macOS asks permission for.
-/// `homes` are the home folder's names.
+/// `held` says the last reading stopped when that can be trusted, at `now`. The folder may be
+/// a link: it is not followed into a folder macOS asks permission for. `homes` are the home
+/// folder's names.
 pub fn sessions(
     source: &'static Source,
     dir: &Path,
@@ -313,7 +340,6 @@ pub fn sessions(
     };
     let mut walk = Walk {
         source,
-        homes,
         held,
         // A file whose change time is before this had not changed for a while.
         settled_before: now
@@ -330,7 +356,6 @@ pub fn sessions(
 /// One reading of a source's folder.
 struct Walk<'a> {
     source: &'static Source,
-    homes: &'a [&'a Path],
     held: &'a BTreeMap<PathBuf, Held>,
     settled_before: i64,
     out: Sessions,
@@ -356,22 +381,13 @@ impl Walk<'_> {
                 }
                 continue;
             }
-            if let Some(end) = self.source.compressed
-                && path.as_os_str().as_bytes().ends_with(end.as_bytes())
-            {
-                *self.out.compressed.entry(self.source.agent).or_default() += 1;
+            let compressed = self
+                .source
+                .compressed
+                .is_some_and(|end| path.as_os_str().as_bytes().ends_with(end.as_bytes()));
+            if !compressed && path.extension().is_none_or(|e| e != "jsonl") {
                 continue;
             }
-            if path.extension().is_none_or(|e| e != "jsonl") {
-                continue;
-            }
-            let path = match crate::guarded::followed(&path, self.homes) {
-                Ok(path) => path,
-                Err(g) => {
-                    self.out.guarded.insert(g);
-                    continue;
-                }
-            };
             self.out.files += 1;
             let before = self.held.get(&path);
             read_session(
@@ -379,6 +395,7 @@ impl Walk<'_> {
                 &path,
                 before,
                 self.settled_before,
+                compressed.then_some(DECODED_BYTES),
                 &mut self.out,
             );
         }
@@ -390,6 +407,8 @@ struct Parsed {
     source: &'static Source,
     folders: BTreeSet<String>,
     unparsed: usize,
+    /// The bytes of the distinct folders named, held or not.
+    text: usize,
 }
 
 impl Parsed {
@@ -398,7 +417,15 @@ impl Parsed {
             source,
             folders: BTreeSet::new(),
             unparsed: 0,
+            text: 0,
         }
+    }
+
+    /// Starts from what the entry before holds of the bytes not read again.
+    fn kept(&mut self, b: &Held) {
+        self.folders.clone_from(&b.folders);
+        self.unparsed = b.unparsed;
+        self.text = b.folders.iter().map(String::len).sum();
     }
 
     fn take(&mut self, line: &[u8]) {
@@ -412,9 +439,14 @@ impl Parsed {
             return;
         };
         match value.pointer(self.source.cwd).and_then(|v| v.as_str()) {
-            Some(cwd) => {
-                self.folders.insert(cwd.to_string());
+            // Past what one file may name, a folder is not held.
+            Some(cwd) if !self.folders.contains(cwd) => {
+                self.text += cwd.len();
+                if self.text <= FILE_FOLDER_BYTES {
+                    self.folders.insert(cwd.to_string());
+                }
             }
+            Some(_) => {}
             // A line of a kind that always states it, and does not: a shape not known.
             None if value
                 .get("type")
@@ -426,27 +458,51 @@ impl Parsed {
             None => {}
         }
     }
+
+    /// Takes a line `read_line` read: one longer than what is held of it is counted. Fails
+    /// once the folders named come to more than one file may name.
+    fn line(&mut self, line: &[u8], read: Line) -> std::io::Result<()> {
+        if read.long {
+            self.unparsed += 1;
+        } else {
+            self.take(line);
+        }
+        if self.text > FILE_FOLDER_BYTES {
+            return Err(std::io::Error::other(format!(
+                "working folders of more than {FILE_FOLDER_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Reads one session file into `out`. A file that cannot be read keeps its entry, and what
 /// that entry holds still counts: what was established is not dropped because a reading
-/// failed, and the reading is partial.
+/// failed, and the reading is partial. `compressed` is what a compressed file may decode to.
 fn read_session(
     source: &'static Source,
     path: &Path,
     before: Option<&Held>,
     settled_before: i64,
+    compressed: Option<u64>,
     out: &mut Sessions,
 ) {
     let (mut whole, mut last) = (Parsed::of(source), Parsed::of(source));
-    let read = File::open(path).and_then(|mut file| {
+    let read = crate::watched::open_regular(path).and_then(|opened| {
+        let (mut file, meta) = opened.map_err(|what| std::io::Error::other(format!("a {what}")))?;
         let then = Then {
-            stat: Stat::of(&file.metadata()?),
+            stat: Stat::of(&meta),
             before,
             settled_before,
             change_time_kept: change_time_kept(&file),
         };
-        read_from(&mut file, &then, &mut whole, &mut last, &mut out.cost)
+        match compressed {
+            Some(most) => {
+                let len = meta.len();
+                read_compressed(&mut file, &then, len, most, &mut whole, &mut out.cost)
+            }
+            None => read_from(&mut file, &then, &mut whole, &mut last, &mut out.cost),
+        }
     });
     match read {
         Ok(Some(held)) => {
@@ -475,6 +531,36 @@ struct Then<'a> {
     change_time_kept: bool,
 }
 
+impl<'a> Then<'a> {
+    /// The entry before, when it is of this file.
+    fn same_file(&self) -> Option<&'a Held> {
+        // Another file at the path is read from its first byte, even one that begins with
+        // the same bytes.
+        self.before.filter(|b| b.stat.inode == self.stat.inode)
+    }
+
+    /// The entry before, when the file has not been written to since it was taken.
+    fn unchanged(&self) -> Option<&'a Held> {
+        self.same_file()
+            .filter(|b| self.change_time_kept && b.settled && b.stat == self.stat)
+    }
+
+    /// The entry to keep of the bytes before `position`, or `None` when it would hold more
+    /// than the store keeps.
+    fn held(&self, position: u64, digest: String, whole: &Parsed) -> Option<Held> {
+        let fits = whole.folders.len() <= HELD_FOLDERS
+            && whole.folders.iter().all(|f| f.len() <= HELD_FOLDER_BYTES);
+        fits.then(|| Held {
+            stat: self.stat,
+            settled: self.stat.ctime_ns < self.settled_before,
+            position,
+            digest,
+            folders: whole.folders.clone(),
+            unparsed: whole.unparsed,
+        })
+    }
+}
+
 /// The file systems whose change time no program can set, by the type name `statfs` gives:
 /// APFS and HFS+.
 const CHANGE_TIME_KEPT: [&[u8]; 2] = [b"apfs", b"hfs"];
@@ -501,10 +587,10 @@ fn kept_by(fs_type: &[u8]) -> bool {
     CHANGE_TIME_KEPT.contains(&fs_type)
 }
 
-/// Reads a session from where it can be trusted that the last reading stopped. The whole
-/// lines before the new position go to `whole`, together with what the entry before holds
-/// of the bytes not read again; a last line without its line break goes to `last`. Returns
-/// the entry to keep, or `None` when it would hold more than the store keeps.
+/// Reads a plain session from where it can be trusted that the last reading stopped. The
+/// whole lines before the new position go to `whole`, together with what the entry before
+/// holds of the bytes not read again; a last line without its line break goes to `last`.
+/// Returns the entry to keep, or `None` when it would hold more than the store keeps.
 fn read_from<R: Read + Seek>(
     file: &mut R,
     then: &Then,
@@ -512,30 +598,24 @@ fn read_from<R: Read + Seek>(
     last: &mut Parsed,
     cost: &mut Cost,
 ) -> std::io::Result<Option<Held>> {
-    let stat = then.stat;
-    // Another file at the path is read from its first byte, even one that begins with the
-    // same bytes.
-    let same_file = then.before.filter(|b| b.stat.inode == stat.inode);
-    if let Some(b) = same_file.filter(|b| then.change_time_kept && b.settled && b.stat == stat) {
+    if let Some(b) = then.unchanged() {
         // Not written to since: only what follows the position, a line still being written.
         cost.unchanged += 1;
-        whole.folders.clone_from(&b.folders);
-        whole.unparsed = b.unparsed;
+        whole.kept(b);
         file.seek(SeekFrom::Start(b.position))?;
         let mut reader = BufReader::with_capacity(1 << 20, file);
         let mut line = Vec::new();
-        while read_line(&mut reader, &mut line, cost)? {
-            last.take(&line);
+        while let Some(read) = read_line(&mut reader, &mut line, cost, |_| {})? {
+            last.line(&line, read)?;
         }
         return Ok(Some(b.clone()));
     }
     let mut hasher = Hasher::new();
     let mut position = 0;
-    match same_file {
+    match then.same_file() {
         Some(b) if head_is(file, b, &mut hasher, cost)? => {
             cost.from_position += 1;
-            whole.folders.clone_from(&b.folders);
-            whole.unparsed = b.unparsed;
+            whole.kept(b);
             position = b.position;
         }
         _ => {
@@ -546,39 +626,160 @@ fn read_from<R: Read + Seek>(
     }
     let mut reader = BufReader::with_capacity(1 << 20, file);
     let mut line = Vec::new();
-    while read_line(&mut reader, &mut line, cost)? {
-        if line.last() == Some(&b'\n') {
-            hasher.update(&line);
-            position += line.len() as u64;
-            whole.take(&line);
+    loop {
+        // A line is hashed as it is read, and taken back if it turns out to be the last one,
+        // still being written.
+        let before = hasher.clone();
+        let Some(read) = read_line(&mut reader, &mut line, cost, |b| hasher.update(b))? else {
+            break;
+        };
+        if read.ends {
+            position += read.len;
+            whole.line(&line, read)?;
         } else {
             // The last line, still being written: read now, and again next time.
-            last.take(&line);
+            hasher = before;
+            last.line(&line, read)?;
         }
     }
-    let held = Held {
-        stat,
-        settled: stat.ctime_ns < then.settled_before,
-        position,
-        digest: hasher.hex(),
-        folders: whole.folders.clone(),
-        unparsed: whole.unparsed,
-    };
-    let fits = held.folders.len() <= HELD_FOLDERS
-        && held.folders.iter().all(|f| f.len() <= HELD_FOLDER_BYTES);
-    Ok(fits.then_some(held))
+    Ok(then.held(position, hasher.hex(), whole))
 }
 
-/// Reads the next line into `line`, its line break included; `false` at the end.
+/// Reads a compressed session, which gives all or nothing. Its content is read only by
+/// `decode`, from the first byte and no further than `len`, its length when it was opened; a
+/// file trusted as read before gives the folders kept.
+fn read_compressed<R: Read + Seek>(
+    file: &mut R,
+    then: &Then,
+    len: u64,
+    most: u64,
+    whole: &mut Parsed,
+    cost: &mut Cost,
+) -> std::io::Result<Option<Held>> {
+    if let Some(b) = then.unchanged() {
+        cost.unchanged += 1;
+        whole.kept(b);
+        return Ok(Some(b.clone()));
+    }
+    let mut hasher = Hasher::new();
+    if let Some(b) = then.same_file()
+        // Its bytes are the bytes read: the same digest, and no byte after them.
+        && head_is(file, b, &mut hasher, cost)?
+        && len == b.position
+    {
+        cost.from_position += 1;
+        whole.kept(b);
+        return Ok(then.held(b.position, hasher.hex(), whole));
+    }
+    cost.from_start += 1;
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Hasher::new();
+    // A file that grows while it is decoded is cut where it ended when it was opened.
+    let mut reader = BufReader::with_capacity(1 << 20, file.take(len));
+    let position = decode(&mut reader, most, &mut hasher, whole, cost)?;
+    Ok(then.held(position, hasher.hex(), whole))
+}
+
+/// What `read_line` read of one line.
+#[derive(Clone, Copy)]
+struct Line {
+    /// Its length, its line break included.
+    len: u64,
+    /// Whether it ends with its line break.
+    ends: bool,
+    /// Whether it is longer than what was held of it, `LINE_BYTES`.
+    long: bool,
+}
+
+/// Reads the next line, holding its first `LINE_BYTES` bytes in `line` and passing over the
+/// rest without holding it, a mebibyte at a time. Every byte of it is given to `seen`. `None`
+/// at the end.
+///
+/// Each turn of the loop takes up to a line break, and no more than a bound: what is left of
+/// `LINE_BYTES` while the line is held, a mebibyte after that. A turn that takes its line
+/// break ends the line, which `ends`. A turn that takes less than its bound without one met
+/// the end of what there is to read: the line does not end, and is read again the next time.
+/// Only a turn that took all of its bound looks on. The line is `long` when more than
+/// `LINE_BYTES` of its bytes, its line break included, were taken. Nothing is looked at once
+/// the line has ended, so a line break that arrives after the end was met belongs to the next
+/// reading.
 fn read_line(
     reader: &mut impl BufRead,
     line: &mut Vec<u8>,
     cost: &mut Cost,
-) -> std::io::Result<bool> {
+    mut seen: impl FnMut(&[u8]),
+) -> std::io::Result<Option<Line>> {
     line.clear();
-    let n = reader.read_until(b'\n', line)?;
-    cost.bytes += n as u64;
-    Ok(n > 0)
+    let mut rest = Vec::new();
+    let mut read = Line {
+        len: 0,
+        ends: false,
+        long: false,
+    };
+    loop {
+        let (into, bound) = match LINE_BYTES.checked_sub(read.len).filter(|&b| b > 0) {
+            Some(left) => (&mut *line, left),
+            None => {
+                rest.clear();
+                (&mut rest, 1 << 20)
+            }
+        };
+        let start = into.len();
+        let n = Read::take(&mut *reader, bound).read_until(b'\n', into)? as u64;
+        seen(&into[start..]);
+        read.len += n;
+        read.ends = into.last() == Some(&b'\n');
+        if read.ends || n < bound {
+            break;
+        }
+    }
+    read.long = read.len > LINE_BYTES;
+    cost.bytes += read.len;
+    Ok((read.len > 0).then_some(read))
+}
+
+/// Reads the lines of the one zstd frame `file` holds into `whole`, hashing its bytes into
+/// `hasher`, and returns how many bytes it has. Fails on anything that is not one whole
+/// frame and nothing after it, on a frame that asks for a window over `WINDOW_BYTES`, and on
+/// one that decodes to more than `most`, and then gives no folder. The frame's checksum is
+/// read and not checked, since the decoder checks it only with a hash this program does not
+/// take in. A damaged frame often fails to decode; one that does not gives other text, as a
+/// damaged plain file does.
+fn decode(
+    file: &mut impl Read,
+    most: u64,
+    hasher: &mut Hasher,
+    whole: &mut Parsed,
+    cost: &mut Cost,
+) -> std::io::Result<u64> {
+    let mut source = Hashing {
+        inner: file,
+        hasher,
+        bytes: 0,
+    };
+    let mut frame =
+        ruzstd::decoding::StreamingDecoder::new_with_max_window_size(&mut source, WINDOW_BYTES)
+            .map_err(std::io::Error::other)?;
+    let mut reader = BufReader::new((&mut frame).take(most.saturating_add(1)));
+    let (mut got, mut line, mut decoded) = (Parsed::of(whole.source), Vec::new(), 0);
+    while let Some(read) = read_line(&mut reader, &mut line, cost, |_| {})? {
+        decoded += read.len;
+        got.line(&line, read)?;
+    }
+    if decoded > most {
+        return Err(std::io::Error::other(format!(
+            "decodes to more than {most} bytes"
+        )));
+    }
+    drop(reader);
+    if frame.get_mut().read(&mut [0])? > 0 {
+        return Err(std::io::Error::other("bytes after the frame"));
+    }
+    // Accepted whole: only now does what it holds count.
+    whole.folders.append(&mut got.folders);
+    whole.unparsed += got.unparsed;
+    cost.bytes += source.bytes;
+    Ok(source.bytes)
 }
 
 /// Whether the file's first `b.position` bytes hash to `b.digest`, hashing them into
@@ -590,21 +791,29 @@ fn head_is<R: Read>(
     hasher: &mut Hasher,
     cost: &mut Cost,
 ) -> std::io::Result<bool> {
-    cost.bytes += std::io::copy(&mut file.take(b.position), &mut Hashing(hasher))?;
-    Ok(hasher.clone().hex() == b.digest)
+    let mut head = Hashing {
+        inner: file.take(b.position),
+        hasher,
+        bytes: 0,
+    };
+    std::io::copy(&mut head, &mut std::io::sink())?;
+    cost.bytes += head.bytes;
+    Ok(head.hasher.clone().hex() == b.digest)
 }
 
-/// Hashes what is written to it.
-struct Hashing<'a>(&'a mut Hasher);
+/// Hashes and counts what is read through it.
+struct Hashing<'a, R> {
+    inner: R,
+    hasher: &'a mut Hasher,
+    bytes: u64,
+}
 
-impl std::io::Write for Hashing<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+impl<R: Read> Read for Hashing<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        self.bytes += n as u64;
+        Ok(n)
     }
 }
 
@@ -1476,10 +1685,25 @@ mod tests {
         )
     }
 
+    /// A session of Codex CLI compressed by the reference implementation of zstd, and the
+    /// lines it holds (`tests/codex/README.md`).
+    const ZST: &[u8] = include_bytes!("../tests/codex/session.jsonl.zst");
+    const ZST_LINES: &str = include_str!("../tests/codex/session.jsonl");
+    /// Another, with another working folder.
+    const LATER_ZST: &[u8] = include_bytes!("../tests/codex/later.jsonl.zst");
+
+    fn zst_folders() -> BTreeSet<String> {
+        BTreeSet::from([
+            "/Users/example/dev/api".into(),
+            "/Users/example/dev/worker".into(),
+        ])
+    }
+
     #[test]
-    fn a_working_folder_named_only_in_a_codex_session_is_read_and_a_compressed_one_is_counted() {
+    fn a_working_folder_named_only_in_a_codex_session_is_read_compressed_or_not() {
         // Codex CLI keeps its sessions by date, three folders deep, and states the working
-        // folder in the payload of its first line and of each turn's context.
+        // folder in the payload of its first line and of each turn's context. A session it
+        // compressed after a week is read as well.
         let t = Trial::new("codex");
         let day = t.file("2026/11/19");
         std::fs::create_dir_all(&day).unwrap();
@@ -1494,20 +1718,18 @@ mod tests {
                 "{\"type\":\"user_message\",\"message\":\"the cwd is /invented/not-a-folder\"}",
             );
         std::fs::write(day.join("rollout-2026-11-19T09-00-00-a.jsonl"), text).unwrap();
-        // Compressed after a week: not read, and counted by agent.
-        std::fs::write(
-            day.join("rollout-2026-11-12T09-00-00-b.jsonl.zst"),
-            "\u{28}",
-        )
-        .unwrap();
+        std::fs::write(day.join("rollout-2026-11-05T09-00-00-b.jsonl.zst"), ZST).unwrap();
+        // A folder of a session's name is not a file: a session that could not be read.
+        std::fs::create_dir(day.join("rollout-2026-11-07T09-00-00-d.jsonl.zst")).unwrap();
         // Not at the depth sessions are kept at.
         std::fs::write(t.file("2026/stray.jsonl"), codex_meta("/invented/c9")).unwrap();
 
         let read = t.read_as(&SOURCES[1], &BTreeMap::new(), later(10));
 
-        assert_eq!(folders(&read), ["/invented/c0", "/invented/c1"]);
-        assert_eq!((read.files, read.unparsed), (1, 0));
-        assert_eq!(read.compressed, BTreeMap::from([("Codex CLI", 1)]));
+        let mut expected = zst_folders();
+        expected.extend(["/invented/c0", "/invented/c1"].map(String::from));
+        assert_eq!(read.folders, expected);
+        assert_eq!((read.files, read.unreadable, read.unparsed), (3, 1, 0));
         // Claude Code's sessions are not Codex's: the same folder read as Claude Code's finds
         // no session at its depth.
         assert!(t.read(&BTreeMap::new(), later(10)).folders.is_empty());
@@ -1534,6 +1756,384 @@ mod tests {
         assert_eq!(read.held[&path].unparsed, 2);
     }
 
+    /// Reads archived Codex sessions at `now`, going on from `held`.
+    fn read_archived(t: &Trial, held: &BTreeMap<PathBuf, Held>, now: SystemTime) -> Sessions {
+        t.read_as(&SOURCES[2], held, now)
+    }
+
+    /// A zstd frame written by hand to RFC 8878: the magic number, a frame header with no
+    /// content size and the window descriptor `window`, and one raw block, marked last.
+    fn raw_frame(window: u8, bytes: &[u8]) -> Vec<u8> {
+        let header = (bytes.len() as u32) << 3 | 1;
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, window];
+        frame.extend_from_slice(&header.to_le_bytes()[..3]);
+        frame.extend_from_slice(bytes);
+        frame
+    }
+
+    #[test]
+    fn a_compressed_session_read_once_is_not_decoded_again_while_unchanged_and_is_read_again_when_its_bytes_change()
+     {
+        let t = Trial::new("zst-once");
+        let path = t.file("rollout-2026-11-05T09-00-00-a.jsonl.zst");
+        std::fs::write(&path, ZST).unwrap();
+        let first = read_archived(&t, &BTreeMap::new(), SystemTime::now());
+        assert_eq!(first.cost.from_start, 1);
+        assert_eq!(first.folders, zst_folders());
+        // It is kept whole: its length, and the digest of its compressed bytes.
+        let entry = &first.held[&path];
+        assert_eq!(entry.position, ZST.len() as u64);
+        assert_eq!(entry.digest, crate::sha256::hex(ZST));
+        assert_eq!(entry.folders, zst_folders());
+
+        // Soon after, its digest stands for it: hashed, not decoded.
+        let soon = read_archived(&t, &first.held, SystemTime::now());
+        let hashed = Cost {
+            unchanged: 0,
+            from_position: 1,
+            from_start: 0,
+            bytes: ZST.len() as u64,
+        };
+        assert_eq!(soon.cost, hashed);
+        assert_eq!(soon.folders, zst_folders());
+        // Once it has settled, its stat does: nothing of it is read.
+        let settled = read_archived(&t, &soon.held, later(10));
+        let settled = read_archived(&t, &settled.held, later(10));
+        assert_eq!(
+            settled.cost,
+            Cost {
+                unchanged: 1,
+                ..Cost::default()
+            }
+        );
+        assert_eq!(settled.folders, zst_folders());
+
+        // Bytes after the frame: decoded again, and not one frame.
+        append(&path, "{\"cwd\":\"/invented/z9\"}\n");
+        let grown = read_archived(&t, &settled.held, later(10));
+        assert_eq!((grown.cost.from_start, grown.unreadable), (1, 1));
+        // Rewritten with another session: decoded again.
+        std::fs::write(&path, LATER_ZST).unwrap();
+        let other = read_archived(&t, &grown.held, later(10));
+        assert_eq!((other.cost.from_start, other.unreadable), (1, 0));
+        assert_eq!(folders(&other), ["/Users/example/dev/web"]);
+    }
+
+    #[test]
+    fn a_compressed_session_rewritten_in_place_to_the_same_length_is_decoded_again() {
+        // The same file and the same length: only its bytes say it changed.
+        let t = Trial::new("zst-same-length");
+        let path = t.file("rollout-2026-11-05T09-00-00-a.jsonl.zst");
+        std::fs::write(&path, ZST).unwrap();
+        let first = read_archived(&t, &BTreeMap::new(), later(10));
+        let meta = codex_meta("/invented/z1");
+        let pad = ZST.len() - 9 - meta.len() - 1;
+        let other = raw_frame(0x38, format!("{meta}{}\n", " ".repeat(pad)).as_bytes());
+        assert_eq!(other.len(), ZST.len());
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        (&file).write_all(&other).unwrap();
+
+        let next = read_archived(&t, &first.held, later(10));
+
+        assert_eq!(next.cost.from_start, 1);
+        assert_eq!(folders(&next), ["/invented/z1"]);
+    }
+
+    #[test]
+    fn a_plain_codex_session_replaced_by_its_compressed_copy_keeps_its_folders() {
+        let t = Trial::new("zst-replaced");
+        let plain = t.file("rollout-2026-11-05T09-00-00-a.jsonl");
+        std::fs::write(&plain, ZST_LINES).unwrap();
+        let first = read_archived(&t, &BTreeMap::new(), later(10));
+        assert_eq!(first.folders, zst_folders());
+        let copy = t.file("rollout-2026-11-05T09-00-00-a.jsonl.zst");
+        std::fs::write(&copy, ZST).unwrap();
+        std::fs::remove_file(&plain).unwrap();
+
+        let next = read_archived(&t, &first.held, later(10));
+
+        assert_eq!(next.folders, first.folders);
+        assert_eq!((next.files, next.unreadable, next.unparsed), (1, 0, 0));
+        assert_eq!(next.held.keys().collect::<Vec<_>>(), [&copy]);
+    }
+
+    #[test]
+    fn a_compressed_session_that_is_not_one_whole_zstd_frame_is_told_as_not_read_and_gives_no_folder()
+     {
+        // Never dropped in silence and never taken as read: each is a session file that could
+        // not be read, and nothing of it counts. A whole first frame followed by another gives
+        // none of its folders either.
+        let t = Trial::new("zst-damaged");
+        let cut = |n: usize| ZST[..ZST.len() - n].to_vec();
+        let meta = codex_meta("/invented/z2");
+        let damaged = [
+            ("not-zstd", ZST_LINES.as_bytes().to_vec()),
+            ("empty", Vec::new()),
+            ("cut-in-half", ZST[..ZST.len() / 2].to_vec()),
+            ("cut-in-its-checksum", cut(2)),
+            ("two-frames", [ZST, LATER_ZST].concat()),
+            // A window of 144 MiB, past what the decoder may keep.
+            ("window-too-large", raw_frame(0x89, meta.as_bytes())),
+        ];
+        for (name, bytes) in &damaged {
+            std::fs::write(t.file(&format!("{name}.jsonl.zst")), bytes).unwrap();
+        }
+
+        let read = read_archived(&t, &BTreeMap::new(), later(10));
+
+        assert_eq!((read.files, read.unreadable), (6, 6));
+        assert!(read.folders.is_empty(), "{:?}", read.folders);
+        assert!(read.held.is_empty());
+        // A window of 128 MiB is within it.
+        let path = t.file("window-at-the-bound.jsonl.zst");
+        std::fs::write(&path, raw_frame(0x88, meta.as_bytes())).unwrap();
+        let read = read_archived(&t, &BTreeMap::new(), later(10));
+        assert_eq!(read.unreadable, 6);
+        assert_eq!(folders(&read), ["/invented/z2"]);
+    }
+
+    /// Reads `bytes` as a compressed session that may decode to `most`: what it gave, and what
+    /// it cost.
+    fn decoded(bytes: &[u8], most: u64) -> (std::io::Result<Option<Held>>, Parsed, Cost) {
+        decoded_within(bytes, bytes.len() as u64, most)
+    }
+
+    /// The same, of a file that was `len` bytes long when it was opened.
+    fn decoded_within(
+        bytes: &[u8],
+        len: u64,
+        most: u64,
+    ) -> (std::io::Result<Option<Held>>, Parsed, Cost) {
+        let then = Then {
+            stat: Stat {
+                inode: 1,
+                ctime_ns: 1,
+            },
+            before: None,
+            settled_before: 0,
+            change_time_kept: true,
+        };
+        let mut whole = Parsed::of(&CODEX);
+        let mut cost = Cost::default();
+        let read = read_compressed(
+            &mut Cursor::new(bytes.to_vec()),
+            &then,
+            len,
+            most,
+            &mut whole,
+            &mut cost,
+        );
+        (read, whole, cost)
+    }
+
+    #[test]
+    fn a_compressed_session_is_read_no_further_than_its_length_when_it_was_opened() {
+        // What it grew by while it was decoded is not taken in: it is read up to where it
+        // ended, and told as not read when its frame does not end there.
+        let grown = [ZST, LATER_ZST].concat();
+        let (read, whole, _) = decoded_within(&grown, ZST.len() as u64, DECODED_BYTES);
+        assert_eq!(read.unwrap().unwrap().position, ZST.len() as u64);
+        assert_eq!(whole.folders, zst_folders());
+        let (read, whole, _) = decoded_within(ZST, ZST.len() as u64 - 1, DECODED_BYTES);
+        assert!(read.is_err());
+        assert!(whole.folders.is_empty());
+    }
+
+    #[test]
+    fn a_compressed_session_that_decodes_to_more_than_the_bound_is_not_read_nor_decoded_past_it() {
+        // A small file may decode to far more than it holds. The bound is given small here, so
+        // that the file of the tests goes past it.
+        let size = ZST_LINES.len() as u64;
+        let (read, whole, cost) = decoded(ZST, size);
+        assert!(read.unwrap().is_some());
+        assert_eq!(whole.folders, zst_folders());
+        assert_eq!(cost.bytes, ZST.len() as u64 + size);
+
+        let (read, whole, _) = decoded(ZST, size - 1);
+        assert!(read.is_err());
+        assert!(whole.folders.is_empty());
+        let (read, _, cost) = decoded(ZST, 100);
+        assert!(read.is_err());
+        assert_eq!(cost.bytes, 101);
+    }
+
+    /// A line longer than `LINE_BYTES` that names a working folder past what is held of it.
+    fn long_line() -> String {
+        format!(
+            "{{\"text\":\"{}\",\"type\":\"user\",\"cwd\":\"/invented/w9\"}}\n",
+            "a".repeat(LINE_BYTES as usize)
+        )
+    }
+
+    #[test]
+    fn a_line_longer_than_the_bound_is_counted_and_the_lines_after_it_are_read_plain_or_compressed()
+    {
+        // What is held of one line is bounded, for both kinds of file; the rest of it is
+        // passed over, the line is counted as unparsed, and the session goes on.
+        let t = Trial::new("long-line");
+        let path = t.file("-invented-a/s1.jsonl");
+        let text = turn("/invented/w0", 1) + &long_line() + &turn("/invented/w1", 2);
+        std::fs::write(&path, &text).unwrap();
+        let read = t.read(&BTreeMap::new(), later(10));
+        assert_eq!(folders(&read), ["/invented/w0", "/invented/w1"]);
+        assert_eq!((read.unreadable, read.unparsed), (0, 1));
+        // Every byte of it is read past and hashed: the position is after it.
+        let entry = &read.held[&path];
+        assert_eq!(entry.position, text.len() as u64);
+        assert_eq!(entry.digest, crate::sha256::hex(text.as_bytes()));
+        // Cut off in the middle, it is the last line and the position stays before it.
+        let head = turn("/invented/w0", 1);
+        std::fs::write(
+            &path,
+            head.clone() + &long_line()[..LINE_BYTES as usize + 10],
+        )
+        .unwrap();
+        let read = t.read(&BTreeMap::new(), later(10));
+        assert_eq!(read.held[&path].position, head.len() as u64);
+        assert_eq!(read.unparsed, 1);
+
+        let t = Trial::new("long-line-zst");
+        std::fs::write(
+            t.file("rollout-a.jsonl.zst"),
+            include_bytes!("../tests/codex/long-line.jsonl.zst"),
+        )
+        .unwrap();
+        let read = read_archived(&t, &BTreeMap::new(), later(10));
+        assert_eq!(
+            folders(&read),
+            ["/Users/example/dev/api", "/Users/example/dev/web"]
+        );
+        assert_eq!((read.unreadable, read.unparsed), (0, 1));
+    }
+
+    /// Bytes that arrive in parts: an empty part is an end of what there is to read for now.
+    struct Arriving(std::collections::VecDeque<Cursor<Vec<u8>>>);
+
+    impl Read for Arriving {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(part) = self.0.front_mut() else {
+                return Ok(0);
+            };
+            let n = part.read(buf)?;
+            // An empty part is given once, as an end.
+            if part.position() == part.get_ref().len() as u64 {
+                self.0.pop_front();
+            }
+            Ok(n)
+        }
+    }
+
+    /// What `read_line` makes of the first line of `parts`: whether it ended with its line
+    /// break, whether it was long, and what was held of it.
+    fn first_line(parts: Vec<Vec<u8>>) -> (bool, bool, usize) {
+        let mut reader = BufReader::new(Arriving(parts.into_iter().map(Cursor::new).collect()));
+        let mut line = Vec::new();
+        let read = read_line(&mut reader, &mut line, &mut Cost::default(), |_| {})
+            .unwrap()
+            .unwrap();
+        (read.ends, read.long, line.len())
+    }
+
+    #[test]
+    fn whether_a_line_is_over_the_bound_is_told_by_the_bytes_of_the_line_taken_and_nothing_after_it()
+     {
+        let n = LINE_BYTES as usize;
+        // Its line break included, a line of the bound is within it, and one byte more is not.
+        let at = [vec![b'a'; n - 1], b"\n".to_vec()].concat();
+        assert_eq!(first_line(vec![at]), (true, false, n));
+        let over = [vec![b'a'; n], b"\n".to_vec()].concat();
+        assert_eq!(first_line(vec![over]), (true, true, n));
+        // Ended by the end of what there is, at the bound and past it.
+        assert_eq!(first_line(vec![vec![b'a'; n]]), (false, false, n));
+        assert_eq!(first_line(vec![vec![b'a'; n + 1]]), (false, true, n));
+        // A short line whose line break arrives after the end was met: a last line, read
+        // again next time, never a long one.
+        let short = b"{\"cwd\":\"/invented/w0\"}".to_vec();
+        let parts = vec![short.clone(), Vec::new(), b"\n".to_vec()];
+        assert_eq!(first_line(parts), (false, false, short.len()));
+    }
+
+    #[test]
+    fn a_session_that_names_more_folder_text_than_one_file_may_is_not_read() {
+        // Each folder as long as a row keeps one: as many as the bound holds are read, and one
+        // more is past it.
+        let folder = |i: usize| {
+            let mut f = format!("/invented/{i:03}-");
+            f.push_str(&"p".repeat(HELD_FOLDER_BYTES - f.len()));
+            f
+        };
+        let count = FILE_FOLDER_BYTES / HELD_FOLDER_BYTES;
+        let t = Trial::new("folder-text");
+        let path = t.file("-invented-a/s1.jsonl");
+        let text: String = (0..count).map(|i| turn(&folder(i), i)).collect();
+        std::fs::write(&path, &text).unwrap();
+        let read = t.read(&BTreeMap::new(), later(10));
+        assert_eq!((read.unreadable, read.folders.len()), (0, count));
+
+        append(&path, &turn(&folder(count), count));
+        let read = t.read(&BTreeMap::new(), later(10));
+        assert_eq!(read.unreadable, 1);
+        assert_eq!(read.folders.len(), count);
+
+        // Read on from a kept row, what the row holds counts toward it as well.
+        let text: String = (0..HELD_FOLDERS).map(|i| turn(&folder(i), i)).collect();
+        std::fs::write(&path, &text).unwrap();
+        let first = t.read(&BTreeMap::new(), later(10));
+        assert!(first.held.contains_key(&path));
+        let more: String = (HELD_FOLDERS..=count)
+            .map(|i| turn(&folder(i), i))
+            .collect();
+        append(&path, &more);
+        let next = t.read(&first.held, later(10));
+        assert_eq!((next.cost.from_position, next.unreadable), (1, 1));
+    }
+
+    #[test]
+    fn a_session_file_that_is_a_link_plain_or_compressed_is_told_as_not_read_and_not_followed() {
+        let t = Trial::new("link");
+        let target = t.file("elsewhere.jsonl");
+        std::fs::write(&target, turn("/invented/w0", 1)).unwrap();
+        std::os::unix::fs::symlink(&target, t.file("-invented-a/s1.jsonl")).unwrap();
+        let read = t.read(&BTreeMap::new(), later(10));
+        assert_eq!((read.files, read.unreadable), (1, 1));
+        assert!(read.folders.is_empty());
+        assert!(read.held.is_empty());
+
+        let t = Trial::new("link-zst");
+        std::fs::write(t.file("-invented-a/elsewhere"), ZST).unwrap();
+        std::os::unix::fs::symlink(t.file("-invented-a/elsewhere"), t.file("rollout.jsonl.zst"))
+            .unwrap();
+        let read = read_archived(&t, &BTreeMap::new(), later(10));
+        assert_eq!((read.files, read.unreadable), (1, 1));
+        assert!(read.folders.is_empty());
+    }
+
+    #[test]
+    fn a_named_pipe_in_place_of_a_session_does_not_hold_the_reading() {
+        let t = Trial::new("pipe");
+        let pipe = t.file("-invented-a/s1.jsonl");
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the name is a valid C string that lives for the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        std::fs::write(t.file("-invented-b/s2.jsonl"), turn("/invented/w0", 1)).unwrap();
+        let root = t.root.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let homes = [Path::new("/nonexistent-home")];
+            let read = match sessions(&SOURCES[0], &root, &homes, &BTreeMap::new(), later(10)) {
+                Found::Read(s) => (s.files, s.unreadable, s.folders),
+                _ => panic!("the folder of sessions was not read"),
+            };
+            tx.send(read).unwrap();
+        });
+
+        let read = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reading waited on the pipe");
+
+        assert_eq!(read, (2, 1, BTreeSet::from(["/invented/w0".to_string()])));
+    }
+
     #[test]
     fn what_each_agents_sessions_gave_is_told_together_within_the_bound_over_all_files() {
         // A file or a line one agent's sessions could not give is not lost because another's
@@ -1551,12 +2151,11 @@ mod tests {
                 .collect(),
             unparsed: 0,
         };
-        let one = |agent: &'static str, n: usize, files: std::ops::Range<usize>| Sessions {
+        let one = |n: usize, files: std::ops::Range<usize>| Sessions {
             files: n,
             unreadable: n,
             unlisted: n,
             unparsed: n,
-            compressed: BTreeMap::from([(agent, n)]),
             folders: BTreeSet::from([format!("/invented/{n}")]),
             guarded: BTreeSet::from([PathBuf::from(format!("/invented/g{n}"))]),
             held: files
@@ -1564,8 +2163,8 @@ mod tests {
                 .collect(),
             ..Sessions::default()
         };
-        let mut all = one("Claude Code", 1, 0..40);
-        all.add(one("Codex CLI", 2, 40..80));
+        let mut all = one(1, 0..40);
+        all.add(one(2, 40..80));
 
         assert_eq!(
             said(&all),
@@ -1576,10 +2175,6 @@ mod tests {
                 3,
                 BTreeSet::from(["/invented/1".into(), "/invented/2".into()])
             )
-        );
-        assert_eq!(
-            all.compressed,
-            BTreeMap::from([("Claude Code", 1), ("Codex CLI", 2)])
         );
         assert_eq!(all.guarded.len(), 2);
         assert_eq!(all.held.len(), 64);

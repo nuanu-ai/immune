@@ -1624,12 +1624,6 @@ fn plain_lack(what: &str, name: Option<&str>) -> String {
         crate::agent_folders::OTHER_AGENT => {
             return format!("sessions of {}", name.unwrap_or("other coding agents"));
         }
-        crate::agent_folders::COMPRESSED => {
-            return format!(
-                "compressed sessions of {}",
-                name.unwrap_or("other coding agents")
-            );
-        }
         _ if name.is_some() => return name.unwrap_or_default().to_string(),
         crate::lockfiles::NOT_LOOKED => {
             "folders of very large projects not looked through for lockfiles"
