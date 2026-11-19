@@ -723,7 +723,7 @@ pub const RUN_IN_TURN_NOT_READ: Cause = Cause {
         "Scripts that a file which starts by itself runs in turn are not checked.",
         "Scripts that a file which starts by itself runs in turn are not checked.",
     ],
-    meaning: "A Git hook, a file the terminal runs when it starts and a startup item are read. A script one of them calls or sources is not read in this version, so a change to that script goes unseen.",
+    meaning: "A Git hook, a file the terminal runs when it starts and a startup item are read. A script one of them calls or sources is not read in this version, so a change to that script goes unseen. The scripts Husky keeps for Git's hooks are the exception: they are read.",
     meaning_none: None,
     advice: "Nothing to do. This is a limit of this version.",
 };

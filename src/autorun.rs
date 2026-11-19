@@ -508,11 +508,40 @@ const ALLOWED: Apart = Apart {
     key: "/permissions/allow",
     watched: AGENT_ALLOWED,
 };
+/// Told by the rule of git hooks (`findings::git_hook`).
+pub const GIT_COMMAND: Watched = (
+    "file in a project that git runs code from",
+    "files in projects that git runs code from",
+    "Files in a project that git, or a tool its hooks start, runs code from by itself, such as the scripts a hooks manager keeps.",
+);
 pub const EDITOR_EXTENSION: Watched = (
     "editor extension",
     "editor extensions",
     "Extensions installed in an editor, each by its publisher and name; a new version of one is not news.",
 );
+
+/// The scripts Husky keeps for git's hooks, by the hook names it writes a stub for in
+/// `.husky/_`, the folder it sets `core.hooksPath` to, and `.husky/_/h`, the file every stub
+/// sources: it runs the script of the hook's name one folder up, so a change to it changes
+/// what every hook runs (`index.js` of Husky 9). The stubs are read as git hooks. What a
+/// script runs in turn is not read.
+const HUSKY: &[&str] = &[
+    ".husky/_/h",
+    ".husky/pre-commit",
+    ".husky/pre-merge-commit",
+    ".husky/prepare-commit-msg",
+    ".husky/commit-msg",
+    ".husky/post-commit",
+    ".husky/applypatch-msg",
+    ".husky/pre-applypatch",
+    ".husky/post-applypatch",
+    ".husky/pre-rebase",
+    ".husky/post-rewrite",
+    ".husky/post-checkout",
+    ".husky/post-merge",
+    ".husky/pre-push",
+    ".husky/pre-auto-gc",
+];
 
 /// The keys of the login window's preferences that name a script it runs as root at every
 /// login and logout (Apple, "Customizing Login and Logout"; KnockKnock's `LogInOutHooks`).
@@ -540,7 +569,7 @@ const AUTH_PLUGINS: &str =
 /// added later is read for the first time on a store that already exists: what it holds is
 /// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
-pub static POINTS: [Point; 87] = [
+pub static POINTS: [Point; 88] = [
     place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD),
     place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD),
     place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD),
@@ -621,6 +650,8 @@ pub static POINTS: [Point; 87] = [
     Point { scope: Scope::NamedBy("core.hooksPath"), place: Some(watched::HOOKS), ..row(&[], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".gitmodules", ".git/modules"], Present, GitCommand, "git", Never, (EVENT, "high", "low"), "https://securitylabs.datadoghq.com/articles/git-arbitrary-file-write/"),
     row(&[".pre-commit-config.yaml"], Present, GitCommand, "pre-commit", Never, (EVENT, "medium", "low"), "https://pre-commit.com/"),
+    // As git's own hooks, whose rule tells it: no technique, medium and low.
+    row(HUSKY, Bytes, GitCommand, "Husky", Never, (None, "medium", "low"), "https://typicode.github.io/husky/how-to.html"),
     row(&[".envrc"], Present, EnterInShell, "direnv", OncePerContent, (EVENT, "high", "medium"), "https://direnv.net/"),
     row(&["mise.toml", ".mise.toml"], Present, EnterInShell, "mise", OncePerFolder, (EVENT, "high", "medium"), "https://mise.jdx.dev/cli/trust.html"),
     row(&[".devcontainer/devcontainer.json", ".devcontainer.json"], Select(CommentsAndCommas, DEVCONTAINER), OpenInEditor, "Dev Containers", DependsOnSetting, (EVENT, "high", "low"), "https://containers.dev/implementors/json_reference/"),
@@ -771,6 +802,8 @@ impl Point {
             (Scope::Checkout, OpenInEditor) => Some(EDITOR_OPEN),
             (Scope::Checkout, InstallPackages) => Some(PACKAGE_INSTALL),
             (Scope::Checkout, StartAgent) => Some(AGENT_START),
+            // Of git's own rows only those read here: the hooks are a watched place.
+            (Scope::Checkout, GitCommand) if self.read_here() => Some(GIT_COMMAND),
             (Scope::Home, StartAgent) => Some(AGENT_SETTINGS),
             (Scope::Home, OpenInEditor) => Some(EDITOR_EXTENSION),
             _ => None,
@@ -1794,10 +1827,10 @@ mod tests {
             assert_eq!(is, was);
         }
         assert_eq!(now.lines().count(), before.lines().count());
-        // 37 watched places, 41 ways in a project and 11 in the home folder: one table.
+        // 37 watched places, 42 ways in a project and 11 in the home folder: one table.
         assert_eq!(
             (places().count(), ways().count(), POINTS.len()),
-            (37, 52, 87)
+            (37, 53, 88)
         );
     }
 

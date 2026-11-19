@@ -58,7 +58,7 @@ pub const CANNOT_JUDGE: &[&str] = &[
 /// package managers holds.
 pub const OTHER_MANAGERS: &str = "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found";
 /// What a watched file that starts by itself runs in turn, which this version does not read.
-pub const RUN_IN_TURN_UNREAD: &str = "what a file that starts by itself runs in turn is not read: a script that a Git hook, a file the terminal runs at start or a startup item calls or sources can change with no finding";
+pub const RUN_IN_TURN_UNREAD: &str = "what a file that starts by itself runs in turn is not read: a script that a Git hook, a file the terminal runs at start or a startup item calls or sources can change with no finding, except the scripts Husky keeps, which are read";
 /// The places of persistence this version does not read, by name.
 pub const PERSISTENCE_UNREAD: &str = "these places of persistence are not read: login and logout hooks in root's preferences, in ByHost preferences and in Managed Preferences, a PAM policy a device management profile installs, the authorization database, the sudoers file and its folder, login items and background items, crontabs, launchd jobs with no file on disk, and the applications reopened at login";
 /// The sections of a result that hold numbers, in the order of the result.
