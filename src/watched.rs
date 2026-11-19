@@ -74,6 +74,13 @@ pub const HOOK_FOLDER_WIDE: &str =
     "other files of a hooks folder that is the checkout, its .git folder, the home folder or /";
 /// What has no reader past `HOOK_FOLDER_CAP`.
 pub const HOOK_FOLDER_PAST_CAP: &str = "files of a hooks folder past the number read";
+/// The most entries listed in such a folder. Git's names and a hooks manager's files are a few
+/// dozen; a folder of thousands is a folder of other things, and listing it whole at every
+/// check would cost more than what it could hold of a hooks folder.
+pub const HOOK_FOLDER_LISTED: usize = 4096;
+/// What every reading of those files says: no watcher subscribes to them.
+pub const HOOK_FOLDER_AT_CHECKS: &str =
+    "the other files of the folder are read at each check and are not watched between checks";
 /// The note of a full reading of those files where no folder is configured.
 pub const NO_HOOK_FOLDER: &str = "Git's configuration names no folder for hooks";
 /// Entries of a hooks folder that git itself never runs.
@@ -377,12 +384,22 @@ pub enum Hooks {
 }
 
 /// What was read of the files beside Git's hook names in a configured folder, and what of
-/// them this build does not read: a folder too wide, with why, or files past the cap.
+/// them this build does not read: a folder too wide, with why, or files past the cap, each
+/// such folder one unit not read (`cut`).
 #[derive(Default)]
 pub struct Others {
     pub look: Look,
-    pub lack: Option<&'static str>,
+    pub lacks: Vec<&'static str>,
+    pub cut: usize,
     pub why: Vec<String>,
+}
+
+impl Others {
+    fn lack(&mut self, what: &'static str) {
+        if !self.lacks.contains(&what) {
+            self.lacks.push(what);
+        }
+    }
 }
 
 /// What a configured folder is when it is too wide for its other files to be read: the
@@ -487,7 +504,7 @@ fn other_files(others: &mut Others, path: &Path, names: &[&str], checkout: &Path
         _ => checkout.to_path_buf(),
     };
     if let Some(what) = wide(&folder, &checkout, &at.homes) {
-        others.lack = Some(HOOK_FOLDER_WIDE);
+        others.lack(HOOK_FOLDER_WIDE);
         return others.why.push(format!(
             "the folder core.hooksPath names is {what}: only the files with Git's hook names are read there"
         ));
@@ -497,28 +514,41 @@ fn other_files(others: &mut Others, path: &Path, names: &[&str], checkout: &Path
         look.present += 1;
         return;
     }
-    let listing = std::fs::read_dir(&folder).and_then(|entries| {
-        entries
-            .map(|entry| entry.and_then(|e| Ok((e.file_name(), e.file_type()?))))
-            .collect::<std::io::Result<Vec<_>>>()
-    });
-    let mut found = match listing {
-        Ok(found) => found,
+    // Only a folder that cannot be opened may be absent; what fails after is a failed listing.
+    let entries = match std::fs::read_dir(&folder) {
+        Ok(entries) => entries,
         Err(e) => return failed(look, e),
     };
-    look.present += 1;
+    let shown = crate::checkouts::rel(at.homes[1], &folder);
+    let mut found = Vec::new();
+    for entry in entries {
+        match entry.and_then(|e| Ok((e.file_name(), e.file_type()?))) {
+            Ok(_) if found.len() == HOOK_FOLDER_LISTED => {
+                let why = format!(
+                    "the folder holds more than {HOOK_FOLDER_LISTED} entries: its other files were not read"
+                );
+                others.cut += 1;
+                others.lack(HOOK_FOLDER_PAST_CAP);
+                return others.look.unread(Unit::whole(&shown), why);
+            }
+            Ok(got) => found.push(got),
+            Err(e) => return others.look.not_looked_at(Unit::whole(&shown), reason(&e)),
+        }
+    }
     // A link is examined as a file; only a folder itself is below.
     found.retain(|(name, kind)| !kind.is_dir() && !names.iter().any(|n| name == *n));
     found.sort_by(|a, b| a.0.cmp(&b.0));
-    let shown = crate::checkouts::rel(at.homes[1], &folder);
     let past = found.len().saturating_sub(HOOK_FOLDER_CAP);
     if past == 0 {
-        look.read(Unit::whole(&shown));
+        others.look.read(Unit::whole(&shown));
     } else {
         let why = format!("{past} files past the first {HOOK_FOLDER_CAP} were not read");
-        look.unread(Unit::whole(&shown), why);
-        others.lack = Some(HOOK_FOLDER_PAST_CAP);
+        others.look.unread(Unit::whole(&shown), why);
+        others.cut += 1;
+        others.lack(HOOK_FOLDER_PAST_CAP);
     }
+    let look = &mut others.look;
+    look.present += 1;
     for (name, _) in found.iter().take(HOOK_FOLDER_CAP) {
         let entry = format!("{shown}/{}", name.to_string_lossy());
         let examined = examine(&folder.join(name), look, at, None);

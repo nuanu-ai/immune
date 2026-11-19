@@ -1866,42 +1866,76 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
 }
 
 #[test]
-fn a_file_beside_the_hooks_in_a_configured_folder_is_read_within_seconds_when_it_changes() {
+fn a_file_beside_the_hooks_in_a_configured_folder_is_read_whenever_the_hooks_there_are() {
     let mac = Mac::new("hooks-folder-others");
     mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
     mac.put("dev/app/.git/config", "[core]\n hooksPath = .husky/_\n");
-    mac.put(
-        "dev/app/.husky/_/pre-commit",
-        "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n",
-    );
+    let hook = "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n";
+    mac.put("dev/app/.husky/_/pre-commit", hook);
     mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# dispatch\n");
     mac.run();
     let mut watcher = mac.watch_with(&["--alive-every", "60"]).started();
     mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# changed\n");
-    assert_eq!(watcher.next("read")["opened"], 1);
+    mac.put("dev/app/.husky/_/pre-commit", &format!("{hook}# changed\n"));
+    watcher.until("read", |_| found(&mac).len() == 2);
     assert_eq!(
         found(&mac),
-        [(
-            "watched.git-hook".to_string(),
-            "~/dev/app/.husky/_/h".to_string()
-        )]
+        [
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/app/.husky/_/h".to_string()
+            ),
+            (
+                "watched.git-hook".to_string(),
+                "~/dev/app/.husky/_/pre-commit".to_string()
+            )
+        ]
     );
     assert!(watcher.stop().success());
 }
 
 #[test]
-fn a_hooks_folder_that_is_the_checkout_is_watched_by_its_hook_names_and_not_as_a_folder() {
-    let mac = Mac::new("hooks-folder-wide");
-    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
-    mac.put("dev/shop/.git/config", "[core]\n hooksPath = .\n");
-    std::fs::create_dir_all(mac.home().join("dev/shop/.git/hooks")).unwrap();
-    mac.run();
-    let mut w = mac.watch();
-    // Git's 22 hook names in the checkout and its 8 of a push in `.git`, each by name.
-    assert_eq!(
-        w.next("watching")["places"],
-        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES + 30
+fn a_configured_hooks_folder_is_watched_by_git_hook_names_and_nothing_else() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let mac = Mac::new("hooks-folder-names");
+    mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
+    let shared = mac.home().join("dev/hooks");
+    mac.put(
+        "dev/app/.git/config",
+        &format!("[core]\n hooksPath = {}\n", shared.display()),
     );
+    mac.put(
+        "dev/hooks/pre-commit",
+        "#!/bin/sh\n. \"$(dirname \"$0\")/lib.sh\"\n",
+    );
+    mac.put("dev/hooks/lib.sh", "# a helper\n");
+    // An entry that is a link out is not followed: its target is not subscribed to.
+    symlink("/", shared.join("up")).unwrap();
+    mac.run();
+    let base = TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES;
+    // Git's 22 names of a working tree's hooks and its 8 of a push, each by name, in one
+    // folder: two names are in both.
+    let mut w = mac.watch();
+    assert_eq!(w.next("watching")["places"], base + 28);
+    assert!(w.stop().success());
+    // A folder macOS asks permission for, shut as macOS keeps it: neither it nor its names.
+    let docs = mac.home().join("Documents");
+    mac.put("Documents/lib.sh", "# a helper\n");
+    mac.put(
+        "dev/app/.git/config",
+        &format!("[core]\n hooksPath = {}\n", docs.display()),
+    );
+    struct Open(PathBuf);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let _open = Open(docs.clone());
+    std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut w = mac.watch();
+    assert_eq!(w.next("watching")["places"], base);
+    assert!(w.stop().success());
 }
 
 #[test]

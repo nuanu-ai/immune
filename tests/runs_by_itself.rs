@@ -2564,6 +2564,11 @@ fn a_file_beside_the_named_hooks_in_a_configured_folder_that_changes_between_two
             "file:machine:mac/dev/app/.husky/_/h"
         ]
     );
+    // No watcher subscribes to them, and the reading says so.
+    assert_eq!(
+        other_files_reading(&e),
+        "full||the other files of the folder are read at each check and are not watched between checks"
+    );
     // Read in full, the reading of each checkout is counted on the page, not listed.
     let watched = e.page("watched.html");
     assert!(
@@ -2636,7 +2641,11 @@ fn on_a_store_with_a_baseline_the_first_reading_of_the_files_beside_the_hooks_is
     db.execute_batch(&format!(
         "DELETE FROM assertion WHERE kind = '{OTHER_FILES}' OR scope IN ({ids});
          DELETE FROM coverage WHERE kind = '{OTHER_FILES}' OR scope IN ({ids});
-         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';"
+         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';
+         DELETE FROM unit_unread WHERE kind = '{OTHER_FILES}';
+         DELETE FROM part_read WHERE kind = '{OTHER_FILES}';
+         DELETE FROM part_unread WHERE kind = '{OTHER_FILES}';
+         DELETE FROM watched_unit WHERE kind = '{OTHER_FILES}';"
     ))
     .unwrap();
     drop(db);
@@ -2707,7 +2716,11 @@ fn past_the_cap_every_named_hook_is_still_read_and_the_reading_says_how_many_fil
         "DELETE FROM assertion WHERE kind = '{OTHER_FILES}' OR scope LIKE 'file:machine:mac/.githooks/lib-%';
          DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage WHERE kind = '{OTHER_FILES}');
          DELETE FROM coverage WHERE kind = '{OTHER_FILES}' OR scope LIKE 'file:machine:mac/.githooks/lib-%';
-         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';"
+         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';
+         DELETE FROM unit_unread WHERE kind = '{OTHER_FILES}';
+         DELETE FROM part_read WHERE kind = '{OTHER_FILES}';
+         DELETE FROM part_unread WHERE kind = '{OTHER_FILES}';
+         DELETE FROM watched_unit WHERE kind = '{OTHER_FILES}';"
     ))
     .unwrap();
     drop(db);
@@ -2723,12 +2736,30 @@ fn no_other_file_is_read_where_the_hooks_folder_is_the_checkout_or_the_home_fold
     put(&app.join("pre-commit"), "#!/bin/sh\nmake lint\n");
     put(&app.join("Makefile"), "lint:\n\ttrue\n");
     put(&e.home().join("notes.txt"), "# not a hook\n");
-    // `..` gives the folder above for the working tree's hooks, which is read, and the
-    // checkout itself for those of a push, which is not.
-    for (setting, what, completeness) in [
-        (".".to_string(), "the checkout itself", "none"),
-        (e.home().display().to_string(), "the home folder", "none"),
-        ("..".to_string(), "the checkout itself", "partial"),
+    for i in 0..40 {
+        put(
+            &e.home().join(format!("dev/note-{i:02}.txt")),
+            "# not a hook\n",
+        );
+    }
+    let wide = "other files of a hooks folder that is the checkout, its .git folder, the home folder or /|";
+    let cap = "files of a hooks folder past the number read|";
+    // `..` gives the folder above for the working tree's hooks, which is read up to the cap,
+    // and the checkout itself for those of a push, which is not: neither lack is lost.
+    for (setting, what, completeness, lacks) in [
+        (".".to_string(), "the checkout itself", "none", vec![wide]),
+        (
+            e.home().display().to_string(),
+            "the home folder",
+            "none",
+            vec![wide],
+        ),
+        (
+            "..".to_string(),
+            "the checkout itself",
+            "partial",
+            vec![cap, wide],
+        ),
     ] {
         put(
             &app.join(".git/config"),
@@ -2738,19 +2769,18 @@ fn no_other_file_is_read_where_the_hooks_folder_is_the_checkout_or_the_home_fold
         if setting == "." {
             assert_eq!(live_hooks(&e), ["file:machine:mac/dev/app/pre-commit"]);
         }
-        assert!(live_as(&e, "other file in a git hooks folder").is_empty());
+        if setting != ".." {
+            assert!(live_as(&e, "other file in a git hooks folder").is_empty());
+        }
         let reading = other_files_reading(&e);
         assert!(
             reading.starts_with(&format!("{completeness}|no_reader|"))
                 && reading.contains(&format!("the folder core.hooksPath names is {what}")),
             "{reading}"
         );
-        assert_eq!(
-            e.lacks(OTHER_FILES),
-            [
-                "other files of a hooks folder that is the checkout, its .git folder, the home folder or /|"
-            ]
-        );
+        let mut got = e.lacks(OTHER_FILES);
+        got.sort();
+        assert_eq!(got, lacks);
     }
 }
 
@@ -2795,6 +2825,122 @@ fn a_link_beside_the_hooks_that_leads_into_a_guarded_folder_is_not_followed() {
         let reading = other_files_reading(&e);
         assert!(reading.starts_with("none|not_given|"), "{reading}");
     }
+}
+
+#[test]
+fn a_hooks_folder_reached_through_a_link_that_cannot_be_listed_keeps_all_that_was_read_in_it() {
+    let e = Estate::new("hooks-folder-linked");
+    let app = e.checkout("dev/app");
+    let real = e.home().join("dev/real-hooks");
+    put(
+        &real.join("pre-commit"),
+        "#!/bin/sh\n. \"$(dirname \"$0\")/h\"\n",
+    );
+    put(&real.join("h"), "# dispatch\n");
+    let linked = e.home().join("linked-hooks");
+    link(real.to_str().unwrap(), &linked);
+    put(
+        &app.join(".git/config"),
+        &format!("[core]\n hooksPath = {}\n", linked.display()),
+    );
+    e.full();
+    e.full();
+    let id = "file:machine:mac/dev/real-hooks/h";
+    let content = format!(
+        "SELECT object FROM assertion WHERE predicate = 'has_content' AND subject = '{id}' AND layer = 'live'"
+    );
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), [id]);
+    let digest = e.rows(&content);
+    assert_eq!(digest.len(), 1);
+    mode(&real, 0o000);
+    e.full();
+    mode(&real, 0o755);
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), [id]);
+    assert_eq!(e.rows(&content), digest);
+    assert!(
+        !e.found()
+            .iter()
+            .any(|(_, path)| path == "~/dev/real-hooks/h"),
+        "{:?}",
+        e.found()
+    );
+    let reading = other_files_reading(&e);
+    assert!(!reading.starts_with("full|"), "{reading}");
+}
+
+#[test]
+fn a_hooks_folder_of_thousands_of_entries_is_not_listed_and_its_hooks_are_still_read() {
+    let e = Estate::new("hooks-folder-huge");
+    let app = e.checkout("dev/app");
+    let big = e.home().join("big");
+    put(&big.join("pre-commit"), "#!/bin/sh\nmake lint\n");
+    // 4096 entries are listed, and the first 32 other files read.
+    for i in 0..4095 {
+        put(&big.join(format!("f-{i:04}")), "");
+    }
+    put(
+        &app.join(".git/config"),
+        &format!("[core]\n hooksPath = {}\n", big.display()),
+    );
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder").len(), 32);
+    // One more is not listed: what was read in it is kept, and the hooks are still read.
+    put(&big.join("f-4095"), "");
+    e.full();
+    assert_eq!(live_hooks(&e), ["file:machine:mac/big/pre-commit"]);
+    assert_eq!(live_as(&e, "other file in a git hooks folder").len(), 32);
+    let reading = other_files_reading(&e);
+    assert!(
+        reading.starts_with("none|no_reader|")
+            && reading
+                .contains("the folder holds more than 4096 entries: its other files were not read"),
+        "{reading}"
+    );
+    assert_eq!(
+        e.lacks(OTHER_FILES),
+        ["files of a hooks folder past the number read|"]
+    );
+}
+
+#[test]
+fn the_files_beside_the_hooks_of_a_checkout_whose_git_is_a_file_or_that_moved_behind_a_link_are_not_read_and_are_kept()
+ {
+    let e = Estate::new("hooks-folder-elsewhere");
+    let app = husky(&e, "dev/app");
+    e.full();
+    e.full();
+    let live = live_as(&e, "other file in a git hooks folder");
+    assert_eq!(live.len(), 2, "{live:?}");
+    // A worktree's `.git` is a file: the folder its configuration names is not told.
+    std::fs::rename(app.join(".git"), e.home().join("dev/app-git")).unwrap();
+    put(
+        &app.join(".git"),
+        "gitdir: /invented/repo/.git/worktrees/app\n",
+    );
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), live);
+    let reading = other_files_reading(&e);
+    assert!(
+        reading.starts_with("none|no_reader|.git is a file"),
+        "{reading}"
+    );
+    std::fs::remove_file(app.join(".git")).unwrap();
+    std::fs::rename(e.home().join("dev/app-git"), app.join(".git")).unwrap();
+    e.full();
+    assert!(other_files_reading(&e).starts_with("full|"));
+    // Moved, with a link where its folder was.
+    let moved = e.0.join("moved-app");
+    std::fs::rename(&app, &moved).unwrap();
+    link(moved.to_str().unwrap(), &app);
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), live);
+    let reading = other_files_reading(&e);
+    assert!(reading.starts_with("none|failed|"), "{reading}");
+    assert!(
+        !e.found().iter().any(|(rule, _)| rule == "gone"),
+        "{:?}",
+        e.found()
+    );
 }
 
 #[test]
