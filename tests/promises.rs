@@ -11156,6 +11156,16 @@ fn agent_settings(w: &Watch, more: &str) {
     );
 }
 
+/// A project's local settings for Claude Code, the file it writes itself, with these
+/// permissions.
+fn local_agent_settings(w: &Watch, permissions: &str) {
+    put(
+        w.home(),
+        "dev/shop/.claude/settings.local.json",
+        &format!("{{\"permissions\": {{{permissions}}}}}\n"),
+    );
+}
+
 /// A policy for sudo as OpenPAM reads it (pam.conf(5)), invented.
 const SUDO_POLICY: &str = "# sudo: auth account password session\n\
     auth       include        sudo_local\n\
@@ -11175,7 +11185,7 @@ fn login_window(root: &Path, entries: &str) {
     );
 }
 
-const SAMPLES: [Sample; 21] = [
+const SAMPLES: [Sample; 22] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -11441,6 +11451,29 @@ const SAMPLES: [Sample; 21] = [
         },
         // A setting that runs nothing, changed.
         silent: |w| agent_settings(w, ", \"model\": \"opus\""),
+    },
+    Sample {
+        rule: "autorun.agent-allowed",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            local_agent_settings(w, "\"deny\": [\"Read(./.env)\"]");
+            agent_settings(w, "");
+        },
+        // The agent's own "don't ask again".
+        raise: |w| {
+            local_agent_settings(
+                w,
+                "\"deny\": [\"Read(./.env)\"], \"allow\": [\"Bash(npm test:*)\"]",
+            )
+        },
+        // The same entry in the shared settings, which come with someone else's repository.
+        silent: |w| {
+            put(
+                w.home(),
+                "dev/shop/.claude/settings.json",
+                "{\"permissions\": {\"deny\": [\"Read(./.env)\"], \"allow\": [\"Bash(npm test:*)\"]}}\n",
+            );
+        },
     },
     Sample {
         rule: "autorun.agent-settings",
@@ -13708,7 +13741,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_page
     let this_mac = page_named(&pages, "this-mac.html");
     let rules = catalogue(&w.store());
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 22);
+    assert_eq!(rules.len(), 23);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(this_mac.contains(&title), "{}: {this_mac}", r["id"]);

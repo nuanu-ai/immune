@@ -188,6 +188,7 @@ Each of Immunity Core's own rules is plain code with an id, the ATT&CK technique
 | `integrity.package-files` | a Homebrew keg or global npm package changed, version unchanged | T1554 | high, medium |
 | `integrity.app-code-outside` | code an application keeps under Application Support changed, version unchanged | T1554 | medium, low |
 | `autorun.folder-open`, `autorun.editor-open`, `autorun.package-install`, `autorun.agent-start`, `autorun.agent-settings`, `autorun.editor-extension` | a new or changed way a file makes a tool run code by itself, one rule per trigger | from the table of ways, see [reference.md](reference.md#what-runs-by-itself) | from the table |
+| `autorun.agent-allowed` | a new or changed `permissions.allow` in a project's `.claude/settings.local.json`, while it is a list of strings. A change of where the file leads is `autorun.agent-start`. The list runs nothing by itself, and Claude Code writes it each time its user chooses not to be asked again | | medium, low |
 | `indicator.match` | a file or a connection matches an indicator list | | high, high |
 | `processes.detached-inline-code` | an interpreter given code on its command line, left running without a terminal across samples a minute apart | T1059 | high, medium |
 | `lockfiles.malicious-package` | a dependency a malicious-package record names | T1195.001 | critical, high |

@@ -4209,7 +4209,9 @@ fn read_watched(
                         }
                         None if elsewhere => watched::HOOK_ALREADY_WATCHED.to_string(),
                         None => {
-                            observe("new", p.watched_as, &e.subject);
+                            // As it is watched now: a key apart from its row is of its own kind
+                            // (`autorun::Apart`).
+                            observe("new", e.new.as_deref().unwrap_or_default(), &e.subject);
                             String::new()
                         }
                     };
@@ -4367,8 +4369,24 @@ fn read_watched(
                     .entry((group(&e.unit), e.watched_as))
                     .or_default() += 1;
             }
-            if events.iter().any(|(_, v)| *v == Verdict::Change) && !new.contains(&id) {
-                observe("changed", e.watched_as, &id);
+            // A change of where the file leads is told by its row's own kind, also on an entry
+            // new in this run; a change of what the entry holds, by the entry's
+            // (`autorun::Apart`). One observation for each kind and thing: the entry's own kind
+            // of a new entry was decided at its arrival, told or the same as in a sibling.
+            let changed: BTreeSet<&str> = events
+                .iter()
+                .filter(|(_, v)| *v == Verdict::Change)
+                .map(|(ev, _)| match ev.predicate.as_str() {
+                    "links_to" => p.watched_as,
+                    _ => e.watched_as,
+                })
+                .collect();
+            for &place in &changed {
+                if !(new.contains(&id) && place == e.watched_as) {
+                    observe("changed", place, &id);
+                }
+            }
+            if !changed.is_empty() && !new.contains(&id) {
                 rows.push(vec![
                     "changed".to_string(),
                     e.watched_as.to_string(),

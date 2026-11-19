@@ -148,7 +148,8 @@ Read in a project (15 of 41):
 | `.vscode/settings.json`, `*.code-workspace`, `.devcontainer/devcontainer.json`, `.devcontainer.json` | settings that name an executable or approve tools; a dev container's commands | `autorun.editor-open` |
 | `package.json` | the scripts run on install | `autorun.package-install` |
 | `.pnpmfile.cjs`, `.pnpmfile.mjs` | the checksum of all bytes in each file at a checkout root | `autorun.package-install` |
-| `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`, `.gemini/settings.json` | hooks, MCP servers, tools allowed without asking | `autorun.agent-start` |
+| `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, `.cursor/hooks.json`, `.gemini/settings.json` | hooks, MCP servers, tools allowed without asking, except `permissions.allow` in `.claude/settings.local.json` | `autorun.agent-start` |
+| `.claude/settings.local.json` | `permissions.allow`, which Claude Code writes itself each time its user chooses not to be asked again, while it is a list of strings; any other value there, and a change of where the file leads, is `autorun.agent-start` | `autorun.agent-allowed` |
 | `.git/hooks` and `core.hooksPath` | every entry of `.git/hooks` and the hooks in the folder `core.hooksPath` names, read as watched places | `watched.git-hook` |
 
 Immunity Core checks both pnpm filenames at every known checkout root. It records the file's presence and digest without running its code or resolving which file pnpm would load. Coverage is limited to those two paths per checkout. That leaves out hooks in workspace packages without their own tracked checkout, including packages with separate lockfiles (`sharedWorkspaceLockfile: false`), and other files configured through `pnpmfile`, `globalPnpmfile` or config dependencies. See the [pnpm hook documentation](https://pnpm.io/pnpmfile).
