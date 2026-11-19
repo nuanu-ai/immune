@@ -7413,6 +7413,18 @@ fn the_first_reading_of_programs_on_a_store_with_a_baseline_is_one_item_read_for
 }
 
 #[test]
+fn a_program_no_item_names_any_more_is_never_said_to_be_gone() {
+    let e = Estate::new("target-unnamed");
+    e.shipped("usr/local/bin/runner");
+    let agent = e.agent("a");
+    launch_item(&agent, &["/usr/local/bin/runner"]);
+    e.run();
+    put(&agent, "<plist><dict/></plist>\n");
+    e.run();
+    assert_eq!(e.status()["watched"]["since_last_reading"]["gone"], 0);
+}
+
+#[test]
 fn a_startup_item_that_could_not_be_read_keeps_its_programs_and_is_said_as_not_read() {
     use std::os::unix::fs::PermissionsExt;
     let e = Estate::new("target-kept");
