@@ -3368,8 +3368,8 @@ pub struct Uncovered {
     #[prost(string, optional, tag = "10")]
     pub value_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The things it is about, as the Mac names them: the first three, or every one for
-    /// `package-managers-not-read`. Names alone: what a source said of each is in `examples`.
-    /// Whole.
+    /// `package-managers-not-read`, `project-autorun` and `home-autorun`. Names alone: what a
+    /// source said of each is in `examples`. Whole.
     #[prost(string, repeated, tag = "11")]
     pub examples_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Where it holds: on every Mac, a limit of this version that no reading here raised, or on

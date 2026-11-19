@@ -1185,7 +1185,7 @@ pub fn not_covered(
                 .filter(|r| r.kind == autorun::OTHERS_KIND)
                 .map(|r| r.at)
                 .max(),
-            examples: names.iter().map(|n| Example::named(*n)).collect(),
+            examples: way_examples(&names),
             // None of the ways not read is in a project here: what is left is the version's.
             every_mac: names.is_empty(),
             read_whole: gap.is_none(),
@@ -1242,7 +1242,7 @@ pub fn not_covered(
             .collect();
         out.push(Uncovered {
             since: home_read,
-            examples: names.iter().map(|n| Example::named(*n)).collect(),
+            examples: way_examples(&names),
             every_mac: names.is_empty(),
             ..Uncovered::new(&HOME_AUTORUN, names.len())
         });
@@ -1658,8 +1658,19 @@ fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<Stri
 /// The most examples given with one item.
 pub const EXAMPLES: usize = 3;
 /// The causes whose examples are each given, however many: the package managers not read, which
-/// a person needs by name to know what is left out.
-const EVERY_EXAMPLE: [&str; 1] = [OTHER_MANAGERS.id];
+/// a person needs by name to know what is left out, and the ways and places not read, which
+/// are counted by way and named by each of a way's names, so a first three would leave a way
+/// out unsaid.
+const EVERY_EXAMPLE: [&str; 3] = [OTHER_MANAGERS.id, PROJECT_AUTORUN.id, HOME_AUTORUN.id];
+
+/// The examples of the ways or places not read: each name of each way, a name of its own, never
+/// a way's names joined into one.
+fn way_examples(ways: &BTreeSet<&str>) -> Vec<Example> {
+    ways.iter()
+        .flat_map(|w| autorun::names_of(w))
+        .map(Example::named)
+        .collect()
+}
 
 /// Every cause with its words, as the catalogue of `immunity rules` gives them. `{n}` stands for
 /// the count, `{what}` for what it is, as a list, `{date}` for a time, `{reasons}` for why and
