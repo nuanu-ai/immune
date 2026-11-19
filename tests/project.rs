@@ -781,11 +781,14 @@ fn a_path_relative_to_the_folder_the_command_is_started_in_answers_as_the_absolu
         let mut k = v1::Known::decode(out.stdout.as_slice()).unwrap();
         assert_eq!(k.asked_text, what);
         k.asked_text.clear();
+        // The two answers are asked a moment apart: the time of the answer is not compared.
+        k.answered_at = 0;
         k
     };
     let absolute = |what: &str| {
         let mut k = h.known(what);
         k.asked_text.clear();
+        k.answered_at = 0;
         k
     };
     for (folder, what, same_as) in [
