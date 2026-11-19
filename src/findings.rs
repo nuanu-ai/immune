@@ -222,7 +222,14 @@ fn git_hook() -> Rule {
             meaning: "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
             advice: "If you did not, read the script before your next commit in that project.",
         },
-        fires: |o| changed_in(o, watched::HOOK),
+        // A file beside the hooks in a folder Git runs them from, such as a dispatcher every
+        // hook there runs, is told as a hook is; a script of a project that a hook hands on to,
+        // as a project's other files are, its removal not told.
+        fires: |o| {
+            changed_in(o, watched::HOOK)
+                || changed_in(o, watched::HOOK_FOLDER_FILE)
+                || autorun::fires(&o.place, o.change, autorun::GIT_COMMAND.0)
+        },
     }
 }
 

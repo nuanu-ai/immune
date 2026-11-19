@@ -61,6 +61,21 @@ pub const PROFILE_KIND: &str = "shell profiles of zsh and bash";
 pub const SSH_KIND: &str = "ssh access files";
 pub const AUTH_KIND: &str = "PAM policies and modules, and authorization plugins";
 pub const HOOK_KIND: &str = "hooks in the checkout's .git folder";
+/// A file directly in a folder `core.hooksPath` names, under none of Git's hook names: a
+/// dispatcher every hook there runs, for one.
+pub const HOOK_FOLDER_FILE: &str = "other file in a git hooks folder";
+pub const HOOK_FOLDER_KIND: &str = "other files in the folder core.hooksPath names";
+/// The most of those files read in one folder, in the order of their names. A hooks manager
+/// keeps a dispatcher and a few files of its own there; a folder that holds more is not only a
+/// folder of hooks, and its other files are not hashed at every change.
+pub const HOOK_FOLDER_CAP: usize = 32;
+/// What has no reader where that folder is too wide to read whole (`wide`).
+pub const HOOK_FOLDER_WIDE: &str =
+    "other files of a hooks folder that is the checkout, its .git folder, the home folder or /";
+/// What has no reader past `HOOK_FOLDER_CAP`.
+pub const HOOK_FOLDER_PAST_CAP: &str = "files of a hooks folder past the number read";
+/// The note of a full reading of those files where no folder is configured.
+pub const NO_HOOK_FOLDER: &str = "Git's configuration names no folder for hooks";
 /// Entries of a hooks folder that git itself never runs.
 const SAMPLE: &str = ".sample";
 
@@ -72,15 +87,22 @@ pub const PROFILES: Kind = (PROFILE, PROFILE_KIND);
 pub const SSH_FILES: Kind = (SSH, SSH_KIND);
 pub const AUTHS: Kind = (AUTH, AUTH_KIND);
 pub const HOOKS: Kind = (HOOK, HOOK_KIND);
+pub const HOOK_FOLDER_FILES: Kind = (HOOK_FOLDER_FILE, HOOK_FOLDER_KIND);
+
+/// Whether a kind is read once per checkout and may place one file from several checkouts,
+/// as a folder one setting gives to many does: its hooks and the other files of that folder.
+pub fn of_checkout(kind: &str) -> bool {
+    kind == HOOK_KIND || kind == HOOK_FOLDER_KIND
+}
 
 pub fn hook_departure(kind: &str, event: &crate::store::Event) -> bool {
-    kind == HOOK_KIND && event.kind == "removed" && event.predicate == "watched_as"
+    of_checkout(kind) && event.kind == "removed" && event.predicate == "watched_as"
 }
 
 /// A hook added to a checkout's reading: journaled once it is known whether another
 /// checkout's reading already placed it.
 pub fn hook_arrival(kind: &str, event: &crate::store::Event) -> bool {
-    kind == HOOK_KIND && event.kind == "added" && event.predicate == "watched_as"
+    of_checkout(kind) && event.kind == "added" && event.predicate == "watched_as"
 }
 
 /// The unit a reading of a checkout's hooks reads when it tells the folder Git runs hooks
@@ -347,10 +369,37 @@ pub fn look_machine(roots: &Roots, kind: &str) -> Look {
 
 /// How the hooks of one checkout could be looked at.
 pub enum Hooks {
-    /// What was read, and why the folder Git's configuration names could not be told.
-    Looked(Look, Option<(Cause, String)>),
+    /// What was read, and why the folder Git's configuration names could not be told; and
+    /// what was read of the other files of that folder.
+    Looked(Look, Option<(Cause, String)>, Box<Others>),
     /// `.git` is a file: the hooks are elsewhere.
     GitFile,
+}
+
+/// What was read of the files beside Git's hook names in a configured folder, and what of
+/// them this build does not read: a folder too wide, with why, or files past the cap.
+#[derive(Default)]
+pub struct Others {
+    pub look: Look,
+    pub lack: Option<&'static str>,
+    pub why: Vec<String>,
+}
+
+/// What a configured folder is when it is too wide for its other files to be read: the
+/// checkout, its `.git` folder, the home folder or `/`, each compared as given, by its real
+/// path.
+pub fn wide(folder: &Path, checkout: &Path, homes: &[&Path]) -> Option<&'static str> {
+    if folder == Path::new("/") {
+        Some("/")
+    } else if homes.contains(&folder) {
+        Some("the home folder")
+    } else if folder == checkout {
+        Some("the checkout itself")
+    } else if folder == checkout.join(".git") {
+        Some("the checkout's .git folder")
+    } else {
+        None
+    }
 }
 
 /// How the reason of a checkout's hooks reading says the configured folder was not told.
@@ -392,7 +441,8 @@ pub fn look_checkout(
         look_place(&mut look, p, k, path, &checkout.path, &shown, &at);
     }
     let mut told = untold.is_none();
-    for (path, names) in folder.configured() {
+    let configured = folder.configured();
+    for (path, names) in &configured {
         let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
         configured_hooks(&mut look, path, unit.clone(), names, &at);
         // A folder that could not be looked at is not told yet.
@@ -401,7 +451,79 @@ pub fn look_checkout(
     if told {
         look.read(hooks_told(&checkout.rel));
     }
-    Hooks::Looked(look, untold)
+    // The working tree's folder and the push's are one when the setting is absolute.
+    let mut others = Others::default();
+    for (i, (path, _)) in configured.iter().enumerate() {
+        if configured[..i].iter().any(|(p, _)| p == path) {
+            continue;
+        }
+        let names: Vec<&str> = (configured.iter().filter(|(p, _)| p == path))
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        other_files(&mut others, path, &names, &checkout.path, &at);
+    }
+    Hooks::Looked(look, untold, Box::new(others))
+}
+
+/// Reads by content the regular files directly in a configured folder beside the hooks Git
+/// runs by `names`, at most `HOOK_FOLDER_CAP` of them, and a link among them as `examine`
+/// does. A folder below is not entered. Not done where the folder is too wide (`wide`).
+fn other_files(others: &mut Others, path: &Path, names: &[&str], checkout: &Path, at: &Where) {
+    let look = &mut others.look;
+    let unit = Unit::whole(crate::checkouts::rel(at.homes[0], path));
+    // A folder not there, or what is not a folder, holds nothing: listing a named pipe fails
+    // at once without waiting.
+    let failed = |look: &mut Look, e: std::io::Error| match Absent::on_the_way(&e) {
+        Some(absent) => look.absent(unit.clone(), absent),
+        None => look.not_looked_at(unit.clone(), reason(&e)),
+    };
+    let folder = match guarded::real_in(path, &at.homes, at.given) {
+        Real::At(folder) => folder,
+        Real::Guarded(g) => return look.not_into(unit, g, at.home),
+        Real::Failed(e) => return failed(look, e),
+    };
+    let checkout = match guarded::real_in(checkout, &at.homes, at.given) {
+        Real::At(real) => real,
+        _ => checkout.to_path_buf(),
+    };
+    if let Some(what) = wide(&folder, &checkout, &at.homes) {
+        others.lack = Some(HOOK_FOLDER_WIDE);
+        return others.why.push(format!(
+            "the folder core.hooksPath names is {what}: only the files with Git's hook names are read there"
+        ));
+    }
+    // Every file of `.git/hooks` is read as a hook already.
+    if folder == checkout.join(".git/hooks") {
+        look.present += 1;
+        return;
+    }
+    let listing = std::fs::read_dir(&folder).and_then(|entries| {
+        entries
+            .map(|entry| entry.and_then(|e| Ok((e.file_name(), e.file_type()?))))
+            .collect::<std::io::Result<Vec<_>>>()
+    });
+    let mut found = match listing {
+        Ok(found) => found,
+        Err(e) => return failed(look, e),
+    };
+    look.present += 1;
+    // A link is examined as a file; only a folder itself is below.
+    found.retain(|(name, kind)| !kind.is_dir() && !names.iter().any(|n| name == *n));
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let shown = crate::checkouts::rel(at.homes[1], &folder);
+    let past = found.len().saturating_sub(HOOK_FOLDER_CAP);
+    if past == 0 {
+        look.read(Unit::whole(&shown));
+    } else {
+        let why = format!("{past} files past the first {HOOK_FOLDER_CAP} were not read");
+        look.unread(Unit::whole(&shown), why);
+        others.lack = Some(HOOK_FOLDER_PAST_CAP);
+    }
+    for (name, _) in found.iter().take(HOOK_FOLDER_CAP) {
+        let entry = format!("{shown}/{}", name.to_string_lossy());
+        let examined = examine(&folder.join(name), look, at, None);
+        take(look, HOOK_FOLDER_FILES, None, entry, examined, at);
+    }
 }
 
 /// Reads the hooks Git runs by `names` from a configured folder, `path` as written and
@@ -760,6 +882,22 @@ pub fn field(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hooks_folder_that_is_the_root_the_home_folder_the_checkout_or_its_git_folder_is_too_wide_to_read()
+     {
+        let home = Path::new("/Users/example");
+        let checkout = home.join("dev/app");
+        let wide = |folder: &Path| wide(folder, &checkout, &[home]);
+        assert_eq!(wide(Path::new("/")), Some("/"));
+        assert_eq!(wide(home), Some("the home folder"));
+        assert_eq!(wide(&checkout.join(".")), Some("the checkout itself"));
+        assert_eq!(
+            wide(&checkout.join(".git")),
+            Some("the checkout's .git folder")
+        );
+        assert_eq!(wide(&checkout.join(".husky/_")), None);
+    }
 
     #[test]
     fn a_file_swapped_for_a_named_pipe_after_it_was_looked_at_never_holds_the_run() {

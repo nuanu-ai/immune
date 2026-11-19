@@ -1317,9 +1317,10 @@ const GIT_CONFIG_PLACES: u64 = 4;
 
 /// The places the watcher subscribes to in each checkout with default hooks. This includes
 /// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's
-/// task file and settings, two dev container paths, `package.json`, two pnpm files, and seven
-/// files of coding agents' settings. A workspace file has no fixed name.
-const CHECKOUT_PLACES: u64 = 18;
+/// task file and settings, two dev container paths, `package.json`, two pnpm files, seven
+/// files of coding agents' settings and the 14 scripts Husky keeps for git's hooks. A
+/// workspace file has no fixed name.
+const CHECKOUT_PLACES: u64 = 32;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -1862,6 +1863,45 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
             "{order}"
         );
     }
+}
+
+#[test]
+fn a_file_beside_the_hooks_in_a_configured_folder_is_read_within_seconds_when_it_changes() {
+    let mac = Mac::new("hooks-folder-others");
+    mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/app/.git/config", "[core]\n hooksPath = .husky/_\n");
+    mac.put(
+        "dev/app/.husky/_/pre-commit",
+        "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n",
+    );
+    mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# dispatch\n");
+    mac.run();
+    let mut watcher = mac.watch_with(&["--alive-every", "60"]).started();
+    mac.put("dev/app/.husky/_/h", "#!/usr/bin/env sh\n# changed\n");
+    assert_eq!(watcher.next("read")["opened"], 1);
+    assert_eq!(
+        found(&mac),
+        [(
+            "watched.git-hook".to_string(),
+            "~/dev/app/.husky/_/h".to_string()
+        )]
+    );
+    assert!(watcher.stop().success());
+}
+
+#[test]
+fn a_hooks_folder_that_is_the_checkout_is_watched_by_its_hook_names_and_not_as_a_folder() {
+    let mac = Mac::new("hooks-folder-wide");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/shop/.git/config", "[core]\n hooksPath = .\n");
+    std::fs::create_dir_all(mac.home().join("dev/shop/.git/hooks")).unwrap();
+    mac.run();
+    let mut w = mac.watch();
+    // Git's 22 hook names in the checkout and its 8 of a push in `.git`, each by name.
+    assert_eq!(
+        w.next("watching")["places"],
+        TABLE_PLACES + HOME_PLACES + GIT_CONFIG_PLACES + CHECKOUT_PLACES + 30
+    );
 }
 
 #[test]

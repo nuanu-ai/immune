@@ -24,6 +24,11 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
         (Count::Files(watched::SSH), "SSH files", true),
         (Count::Files(watched::AUTH), LOGIN_MODULES, true),
         (Count::Files(watched::HOOK), "git hooks in projects", true),
+        (
+            Count::Files(watched::HOOK_FOLDER_FILE),
+            "other files in git hooks folders",
+            true,
+        ),
     ];
     out.extend(
         autorun::watched()
@@ -1560,7 +1565,10 @@ pub fn in_projects(count: Count) -> bool {
         Count::Files(as_) => autorun::POINTS.iter().any(|p| {
             (p.read_here() || p.watched_place())
                 && p.finds(as_)
-                && matches!(p.scope, autorun::Scope::Checkout)
+                && matches!(
+                    p.scope,
+                    autorun::Scope::Checkout | autorun::Scope::NamedBy(_)
+                )
         }),
         Count::Dependencies => true,
         Count::Installed(_) => false,

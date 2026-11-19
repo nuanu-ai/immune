@@ -1460,7 +1460,8 @@ fn places(
         let git = git.as_ref().unwrap();
         let scope = format!("checkout:{machine}/{}", c.rel);
         let kind = watched::HOOK_KIND;
-        // `.git/hooks` is watched above; the configuration adds the folder it names.
+        // `.git/hooks` is watched above; the configuration adds the folder it names, its hooks
+        // by name and its other files as a folder, read with them (`read_watched`).
         for config in git.sources() {
             add(config.clone(), false, &scope, kind);
         }
@@ -1471,6 +1472,14 @@ fn places(
         for (path, names) in folder.configured() {
             for name in names {
                 add(path.join(name), false, &scope, kind);
+            }
+            // Compared as the reader compares them, by their real paths.
+            let real = |p: &Path| match crate::guarded::real(p, homes) {
+                crate::guarded::Real::At(real) => real,
+                _ => p.to_path_buf(),
+            };
+            if watched::wide(&real(path), &real(&c.path), homes).is_none() {
+                add(path.to_path_buf(), true, &scope, watched::HOOK_FOLDER_KIND);
             }
         }
         if let Folder::Unknown(Unread::GitFile) = folder {

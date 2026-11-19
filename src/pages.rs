@@ -84,6 +84,9 @@ fn about(what: &str) -> &'static str {
         "git hooks in projects" => {
             "Scripts git runs by itself in your projects, for example before a commit."
         }
+        "other files in git hooks folders" => {
+            "Files beside the hooks in a folder a project's git settings name, such as a script every hook there runs."
+        }
         "applications" => "Applications in the Applications folders, with who signed each.",
         "Homebrew packages" => "What Homebrew installed in /opt/homebrew or /usr/local.",
         "npm packages" => {
