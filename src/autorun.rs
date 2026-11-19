@@ -252,6 +252,18 @@ pub struct Point {
     pub checked_on: Checked,
     pub kept: Option<Kept>,
     pub apart: Option<Apart>,
+    /// For a place whose files name a program that is started: which slot names it.
+    pub runs: Option<Runs>,
+}
+
+/// The slot a file names the program it starts in, as its platform defines the executable. No
+/// other argument is the program (`targets.rs`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Runs {
+    /// A launchd property list: `Program`, else the first string of `ProgramArguments`.
+    Launchd,
+    /// The value at each of these keys of a property list is a path that is run.
+    Values(&'static [&'static str]),
 }
 
 /// The keys of Claude Code's project settings that run something or let it run unasked
@@ -387,6 +399,7 @@ const fn row(
         checked_on: NOT_CHECKED,
         kept: None,
         apart: None,
+        runs: None,
     }
 }
 
@@ -410,6 +423,7 @@ const fn place(
         checked_on: NOT_CHECKED,
         kept: None,
         apart: None,
+        runs: None,
     }
 }
 
@@ -570,12 +584,12 @@ const AUTH_PLUGINS: &str =
 /// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
 pub static POINTS: [Point; 88] = [
-    place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD),
-    place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD),
-    place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD),
+    Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD) },
+    Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD) },
+    Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD) },
     // Root's own preferences, where `sudo defaults write` puts a hook, only root can read.
-    place(watched::LOGIN_HOOKS, Scope::System, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK),
-    place(watched::LOGIN_HOOKS, Scope::Home, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK),
+    Point { runs: Some(Runs::Values(LOGIN_HOOK_KEYS)), ..place(watched::LOGIN_HOOKS, Scope::System, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK) },
+    Point { runs: Some(Runs::Values(LOGIN_HOOK_KEYS)), ..place(watched::LOGIN_HOOKS, Scope::Home, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK) },
     place(watched::PROFILES, Scope::System, &["etc/zshenv"], File, SHELL),
     place(watched::PROFILES, Scope::System, &["etc/zprofile"], File, SHELL),
     place(watched::PROFILES, Scope::System, &["etc/zshrc"], File, SHELL),
@@ -1359,6 +1373,7 @@ fn push(
             unit,
             content,
             link: link.clone(),
+            bytes: None,
         });
     }
 }

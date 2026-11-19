@@ -226,6 +226,7 @@ pub fn kinds_written() -> BTreeSet<String> {
         .collect();
     for kind in [
         watched::CONTENT,
+        crate::targets::KIND,
         autorun::PRESENT_KIND,
         autorun::OTHERS_KIND,
         autorun::HOME_OTHERS_KIND,
@@ -281,6 +282,9 @@ pub fn retire_unread(tx: &Transaction, r: &Reading) -> rusqlite::Result<usize> {
             // A resolved hook can be anywhere. Its checkout scope, not a static
             // filename pattern, is what claims it for the next comparison.
             kind == watched::HOOK_KIND && scope.strip_prefix(&checkout_prefix).is_some_and(checkout)
+                // A program a startup item runs can be anywhere: its kind claims it, and it
+                // goes when no item names it.
+                || kind == crate::targets::KIND
                 || !baseline::candidates(kind, name, checkout).is_empty()
         });
         if claimed {
