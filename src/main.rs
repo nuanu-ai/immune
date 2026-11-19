@@ -2426,7 +2426,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let servers = args.servers_input.clone();
     read_servers(&mut run, servers.as_deref())?;
     let (walked, walk_failure) = read_checkouts(&mut run, args)?;
-    let from_agents = read_agent_folders(&mut run, args)?;
+    let from_agents = read_agent_folders(&mut run, args, agent_folders::LOOK_LIMIT)?;
     let any_checkouts = walked.is_some() || !from_agents.is_empty();
     // One checkout found by both readers is read once.
     let mut found = walked.unwrap_or_default();
@@ -3003,10 +3003,12 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
 
 /// Checkouts in the folders agents worked in. The candidates are the working folders in the
 /// sessions and the checkouts this reader already holds, each checked on disk, so a checkout
-/// stays while it is there however long ago its session was deleted.
+/// stays while it is there however long ago its session was deleted. Below the level of a
+/// source's sessions at most `look_limit` folders are listed.
 fn read_agent_folders(
     run: &mut Run,
     args: &Args,
+    look_limit: usize,
 ) -> Result<Vec<checkouts::Checkout>, Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let reading = Reading {
@@ -3026,7 +3028,7 @@ fn read_agent_folders(
             Some(dir) if source.dir == agent_folders::SESSIONS => dir.clone(),
             _ => args.home.join(source.dir),
         };
-        match agent_folders::sessions(source, &dir, &homes, &held, SystemTime::now()) {
+        match agent_folders::sessions(source, &dir, &homes, &held, SystemTime::now(), look_limit) {
             agent_folders::Found::Absent => {}
             agent_folders::Found::Read(s) => match &mut sessions {
                 None => sessions = Some(s),
@@ -3198,7 +3200,7 @@ fn read_agent_folders(
     // A checkout is dropped only when it is gone from disk, so these alone leave what was
     // found compared in full.
     let unread = agent_folders::unread_here(&args.home, &homes);
-    let lacks: Vec<Lack> = unread
+    let mut lacks: Vec<Lack> = unread
         .iter()
         .map(|agent| Lack::new(agent_folders::OTHER_AGENT, Some(agent)))
         .collect();
@@ -3207,6 +3209,14 @@ fn read_agent_folders(
         no_reader.push(format!(
             "sessions of {} are not read",
             covered::listed(&unread)
+        ));
+    }
+    // A walk below the level of the sessions that reached its budget, as the lockfile
+    // reader's does: what the folders past it hold is not known.
+    if sessions.as_ref().is_some_and(|s| s.stopped) {
+        lacks.push(Lack::new(agent_folders::NOT_LOOKED, None));
+        no_reader.push(format!(
+            "session folders past the first {look_limit} below a project's folder were not listed"
         ));
     }
     if !lacks.is_empty() {
@@ -5675,7 +5685,7 @@ mod tests {
                 notes: Vec::new(),
                 readers: 0,
             };
-            read_agent_folders(&mut run, &args).unwrap();
+            read_agent_folders(&mut run, &args, agent_folders::LOOK_LIMIT).unwrap();
             assert_eq!(count(&tx), 1);
             // Not visible outside the run's transaction before it commits.
             let other = store::open_read_only(&store_path).unwrap();
@@ -5684,6 +5694,68 @@ mod tests {
         }
         assert_eq!(count(&conn), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_walk_of_sessions_that_reached_its_budget_makes_the_reading_partial_with_the_count() {
+        // Folders past the budget were not listed: what sessions they hold is not known, so
+        // the reading never says every project an agent worked in was found.
+        let dir = crate::common::Scratch::new("session-budget");
+        let sessions = dir.join("sessions");
+        for rel in ["-invented-project/s1/subagents", "-invented-project/s2"] {
+            std::fs::create_dir_all(sessions.join(rel)).unwrap();
+        }
+        let args = Args {
+            store: dir.join("store.db"),
+            machine: "mac".to_string(),
+            brew: None,
+            brew_input: None,
+            servers_input: None,
+            home: dir.join("home"),
+            checkouts_root: None,
+            sessions_root: Some(sessions),
+            tailscale: None,
+            threats_input: None,
+            osv_crates_input: None,
+            osv_npm_input: None,
+            curl: None,
+            system_root: dir.join("no-system"),
+            indicators: None,
+            form: answer::Form::Text,
+        };
+        let mut conn = store::open_or_make(&args.store).unwrap();
+        let tx = conn.transaction().unwrap();
+        store::put_entity(&tx, "machine:mac").unwrap();
+        let mut run = Run {
+            tx: &tx,
+            home: &dir,
+            run_id: "run-1",
+            at: 1,
+            machine: "machine:mac",
+            notes: Vec::new(),
+            readers: 0,
+        };
+
+        read_agent_folders(&mut run, &args, 2).unwrap();
+
+        let said: [String; 4] = tx
+            .query_row(
+                "SELECT c.completeness, c.reason, c.cause, l.what
+                 FROM coverage c JOIN coverage_lack l ON l.coverage = c.id
+                 WHERE c.reader = ?1",
+                [agent_folders::READER],
+                |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?]),
+            )
+            .unwrap();
+        assert_eq!(
+            said,
+            [
+                "partial",
+                "session folders past the first 2 below a project's folder were not listed",
+                "no_reader",
+                agent_folders::NOT_LOOKED,
+            ]
+        );
     }
 
     #[test]
@@ -5737,7 +5809,7 @@ mod tests {
                 readers: 0,
             };
             read_checkouts(&mut run, &args).unwrap();
-            read_agent_folders(&mut run, &args).unwrap();
+            read_agent_folders(&mut run, &args, agent_folders::LOOK_LIMIT).unwrap();
         };
         let said = |s: [&str; 3]| s.map(|s| Some(s.to_string()));
         let held = || Vec::from_iter(store::live_subjects(&tx, checkouts::READER).unwrap());
