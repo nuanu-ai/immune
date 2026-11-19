@@ -175,7 +175,15 @@ impl Matched {
     /// the three counts of projects do not cover one whose lockfiles were read in full against
     /// data not current, so their zeros never stand for "no project".
     pub fn said(&self, found: crate::covered::Found, projects: Option<u64>) -> String {
-        if projects == Some(0) {
+        // "No project" only while nothing is held of any: a count that is not zero is said.
+        let counts = [
+            self.known,
+            self.unknown_packages,
+            self.compared,
+            self.not_read,
+            self.no_lockfile,
+        ];
+        if projects == Some(0) && counts.iter().all(|n| *n == 0) {
             return "no projects were found to compare".to_string();
         }
         let mut not = Vec::new();

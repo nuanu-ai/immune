@@ -2814,6 +2814,14 @@ mod tests {
             said.contains("; no projects were found to compare. "),
             "{said}"
         );
+        // A count that is not zero is said even when no project is held, never dropped.
+        let mut left = compared(1, 0, 1, 0);
+        left.estate.as_mut().unwrap().checkouts = 0;
+        let said = osv_line(&left);
+        assert!(
+            !said.contains("no projects were found") && said.contains("1 known vulnerability"),
+            "{said}"
+        );
         // Nothing follows when no count gives a reason and nothing was read.
         let held = osv_line(&compared(0, 0, 0, 0));
         assert!(
