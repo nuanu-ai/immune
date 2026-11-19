@@ -697,24 +697,21 @@ impl Asks {
 }
 
 impl Point {
-    /// The row's name: its paths, from the home folder with `~/`, or where another file names
-    /// it.
+    /// The row's name: its names joined with commas. The store keeps it as the row's identifier;
+    /// a list for a person is made of `names`, so that each name is a name of its own.
     pub fn name(&self) -> String {
+        self.names().join(", ")
+    }
+
+    /// The row's names: its paths, from the home folder with `~/`, or where another file names
+    /// it.
+    pub fn names(&self) -> Vec<String> {
+        let shown = |prefix: &str| self.paths.iter().map(|p| format!("{prefix}{p}")).collect();
         match self.scope {
-            Scope::NamedBy(setting) => format!("the folder {setting} names"),
-            Scope::Checkout => self.paths.join(", "),
-            Scope::Home => self
-                .paths
-                .iter()
-                .map(|p| format!("~/{p}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            Scope::System => self
-                .paths
-                .iter()
-                .map(|p| format!("/{p}"))
-                .collect::<Vec<_>>()
-                .join(", "),
+            Scope::NamedBy(setting) => vec![format!("the folder {setting} names")],
+            Scope::Checkout => shown(""),
+            Scope::Home => shown("~/"),
+            Scope::System => shown("/"),
         }
     }
 
@@ -836,6 +833,14 @@ impl Point {
 /// is, in the order of the page.
 pub fn ways() -> impl Iterator<Item = (&'static Point, Way)> {
     POINTS.iter().filter_map(|p| Some((p, p.way?)))
+}
+
+/// The names of the way the store keeps as `name` (`Point::name`), each a name of its own; a
+/// name this build has no row for is one name, as it was kept.
+pub fn names_of(name: &str) -> Vec<String> {
+    ways()
+        .find(|(p, _)| p.name() == name)
+        .map_or_else(|| vec![name.to_string()], |(p, _)| p.names())
 }
 
 /// The rows the watched places reader reads, each with its kind, in the order of the view and
@@ -1687,6 +1692,14 @@ fn absent(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The promise that a way the store keeps by its joined name is named by each of its files,
+    /// and that a name this build has no row for is still named, as it was kept.
+    #[test]
+    fn a_kept_way_is_named_by_each_of_its_files_and_an_unknown_one_as_kept() {
+        assert_eq!(names_of(".env, .gemini/.env"), [".env", ".gemini/.env"]);
+        assert_eq!(names_of(".retired, .way"), [".retired, .way"]);
+    }
 
     /// Every row's stable names, counts and levels, in the form `tests/autorun-points-main.txt`
     /// was written in by the build on `main` before its two lists became this table.

@@ -111,7 +111,8 @@ pub const COMMANDS: &[Command] = &[
             "[--json | --proto]",
         ]],
         about: "What the store knows of one project: its facts, what was read and what was \
-                not, and its findings. The path is absolute or begins with ~/.",
+                not, and its findings. The path is absolute, begins with ~/ or is relative to \
+                the folder the command is started in, so . is that folder.",
         note: "",
     },
     Command {

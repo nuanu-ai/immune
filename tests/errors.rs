@@ -95,7 +95,8 @@ fn a_refusal_for_a_person_is_one_error_on_stderr_and_never_the_usage() {
         (vec!["owner", "box", "retired"], &none, 2),
         (vec!["matches", "--limit", "0"], &none, 2),
         (vec!["vulnerability"], &none, 2),
-        (vec!["project", "dev/shop"], &none, 2),
+        (vec!["project", "dev/shop", "dev/cli"], &none, 2),
+        (vec!["project", ""], &none, 2),
         (vec!["verdict"], &none, 2),
         (vec!["servers", "--frob"], &none, 2),
         (vec!["view", "--frob"], &none, 2),
@@ -202,9 +203,9 @@ fn a_failure_has_the_documented_json_and_protobuf_fields() {
             r#"{"operation":"findings","ok":false,"errors":[{"code":"usage","message":"the command line is not one Immunity Core understands; the usage is on stderr","example":"immunity findings --json","detail_text":"unexpected argument: --frob","ids_text":[]}]}"#,
         ),
         (
-            &["project", "dev/shop"],
+            &["project", "dev/shop", "dev/cli"],
             &none,
-            r#"{"operation":"project","ok":false,"errors":[{"code":"usage","message":"the command line is not one Immunity Core understands; the usage is on stderr","example":"immunity project ~/<folder> --json","detail_text":"immunity project takes a path on this Mac, absolute or beginning with ~/, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:","ids_text":[]}]}"#,
+            r#"{"operation":"project","ok":false,"errors":[{"code":"usage","message":"the command line is not one Immunity Core understands; the usage is on stderr","example":"immunity project ~/<folder> --json","detail_text":"immunity project takes a path on this Mac, absolute, beginning with ~/ or relative to the folder it is started in, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:. A word is an id when what comes before its first colon is a type of id the store knows; anything else is a path","ids_text":[]}]}"#,
         ),
         (
             &["vulnerability"],

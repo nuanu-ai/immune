@@ -136,6 +136,14 @@ pub fn path_of(asked: &str, home: &Path) -> Option<String> {
     place_asked(asked, None, home)
 }
 
+/// `asked` as a path relative to the folder the command was started in, in the form of
+/// `path_of`: made absolute against that folder, then put into the one form. `None` when the
+/// folder cannot be told or is not named in UTF-8.
+pub fn relative_of(asked: &str, home: &Path) -> Option<String> {
+    let folder = std::env::current_dir().ok()?;
+    path_of(folder.join(asked).to_str()?, home)
+}
+
 /// What a caller gives as a place on this Mac, `this`, in the one form ids name paths in: a path,
 /// absolute or beginning with `~/`, or the id of a file of this Mac, which names its path after
 /// the machine (`immunity project` gives a checkout's id as a file's). `..`, `.`, doubled and
@@ -530,6 +538,20 @@ pub fn by_rule_for(
 pub fn type_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row("SELECT type FROM entity WHERE id = ?1", [id], |r| r.get(0))
         .optional()
+}
+
+/// Whether `asked` is an id as the store names it: the part before its first colon is a type of
+/// entity in the store's vocabulary, as `store::put_entity` takes an id's type. Anything else is
+/// not an id, such as a relative path that holds a colon.
+pub fn is_id(conn: &Connection, asked: &str) -> rusqlite::Result<bool> {
+    let Some((kind, _)) = asked.split_once(':') else {
+        return Ok(false);
+    };
+    conn.query_row("SELECT 1 FROM entity_type WHERE name = ?1", [kind], |_| {
+        Ok(())
+    })
+    .optional()
+    .map(|found| found.is_some())
 }
 
 /// Whether the path `rel` is the folder `folder` or lies in it, as ids name paths. The root, `/`,
