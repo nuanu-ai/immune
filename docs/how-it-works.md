@@ -181,7 +181,7 @@ Each of Immunity Core's own rules is plain code with an id, the ATT&CK technique
 | `watched.shell-profile` | a zsh or bash startup file added, changed or removed | T1546.004 | medium, low |
 | `watched.ssh-access` | `~/.ssh/config`, `authorized_keys`, `rc` or the system's SSH configuration added, changed or removed | | high, low |
 | `watched.authentication` | a PAM policy or module, or an authorization plugin, added, changed or removed | T1556 | high, low |
-| `watched.git-hook` | a git hook in a checkout added, changed or removed | | medium, low |
+| `watched.git-hook` | a git hook in a checkout added, changed or removed; Husky's dispatcher or a script it keeps for a hook added or changed | | medium, low |
 | `watched.first-read` | places read for the first time after the store's first check, one finding per check that names each place | | informational, low |
 | `integrity.app-seal` | an application's seal no longer verifies, version unchanged | T1554 | high, medium |
 | `integrity.app-signer` | an application signed by someone else, version unchanged | T1554 | high, low |

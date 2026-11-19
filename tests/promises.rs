@@ -8873,6 +8873,7 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             ".cursor/mcp.json of each checkout, the part that runs by itself",
             ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
             ".gemini/settings.json of each checkout, the part that runs by itself",
+            ".husky/_/h, .husky/pre-commit, .husky/pre-merge-commit, .husky/prepare-commit-msg, .husky/commit-msg, .husky/post-commit, .husky/applypatch-msg, .husky/pre-applypatch, .husky/post-applypatch, .husky/pre-rebase, .husky/post-rewrite, .husky/post-checkout, .husky/post-merge, .husky/pre-push, .husky/pre-auto-gc of each checkout, the part that runs by itself",
             ".mcp.json of each checkout, the part that runs by itself",
             ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself",
             ".vscode/mcp.json of each checkout, the part that runs by itself",
