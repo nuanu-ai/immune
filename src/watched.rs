@@ -77,6 +77,28 @@ pub fn hook_departure(kind: &str, event: &crate::store::Event) -> bool {
     kind == HOOK_KIND && event.kind == "removed" && event.predicate == "watched_as"
 }
 
+/// Journals the digest a file that is gone had as the removal of its content, so that the
+/// finding that it is gone rests on it (`findings::raise`). The file took its content reading
+/// with it and journaled nothing (`lifecycle::retract_inside`). An entry watched only for
+/// presence, or whose content was never read, had no digest and journals nothing.
+pub fn content_gone(
+    tx: &rusqlite::Transaction,
+    r: &crate::store::Reading,
+    id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, predicate,
+                              old_value)
+         SELECT ?1, ?2, 'removed', reader, scope, kind, subject, predicate, object
+         FROM assertion
+         WHERE retracted_by = ?2 AND reader = ?3 AND scope = ?4 AND kind = ?5
+           AND predicate = 'has_content'
+           AND (object GLOB 'sha256:*' OR object GLOB 'value sha256:*')",
+        rusqlite::params![r.at, r.run_id, READER, id, CONTENT],
+    )?;
+    Ok(())
+}
+
 /// A hook added to a checkout's reading: journaled once it is known whether another
 /// checkout's reading already placed it.
 pub fn hook_arrival(kind: &str, event: &crate::store::Event) -> bool {

@@ -6862,17 +6862,18 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
     // What a step does is told by that step, once: a change with its finding, what is gone with
     // what held it as removed, what cannot be read as not read and never as gone, and what
     // comes back, a project cloned again at the same path among them, as new. The table is what
-    // the build before the one table of autorun points told, step for step.
+    // the build before the one table of autorun points told, step for step, but for the digest a
+    // thing had, which its removal journals as its arrival did.
     let same = |rule: &str| -> Vec<String> {
         vec![
             format!("added 3; {rule} new"),
             format!("changed 1; {rule} changed"),
-            format!("removed 2; {rule} gone"),
+            format!("removed 3; {rule} gone"),
             format!("added 3; {rule} new"),
             format!("not_read 1; {rule} not read"),
             "; ".to_string(),
             format!("not_read 1; {rule} not read"),
-            format!("removed 2; {rule} gone"),
+            format!("removed 3; {rule} gone"),
             format!("added 3; {rule} new"),
         ]
     };
@@ -6886,12 +6887,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "added 3; autorun.agent-start new",
                 "changed 1; autorun.agent-start changed",
                 // A server an agent is no longer told to start is no finding.
-                "removed 2; ",
+                "removed 3; ",
                 "added 3; autorun.agent-start new",
                 "not_read 1; autorun.agent-start not read",
                 "; ",
                 "not_read 1; autorun.agent-start not read",
-                "removed 2; ",
+                "removed 3; ",
                 "added 3; autorun.agent-start new",
             ]),
         ),
@@ -6905,7 +6906,7 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 both,
                 "changed 2; autorun.agent-start changed, watched.git-hook changed",
                 // Its hook and its server go with the project, told as removed.
-                "removed 4; ",
+                "removed 5; ",
                 // Cloned again at the same path: new.
                 both,
                 // A project that cannot be listed is not found, and what was read in it is kept,
@@ -6913,7 +6914,7 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "; ",
                 "; ",
                 "; ",
-                "removed 4; ",
+                "removed 5; ",
                 both,
             ]),
         ),
@@ -6923,12 +6924,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "added 8, place_first_read 1; watched.first-read first read",
                 "changed 1; watched.git-hook changed",
                 // No longer a checkout: its hook and its server go with its `.git`.
-                "removed 4; ",
+                "removed 5; ",
                 both,
                 "changed 1, not_read 1; watched.git-hook not read",
                 "changed 1; ",
                 "changed 1, not_read 1; watched.git-hook not read",
-                "removed 4; ",
+                "removed 5; ",
                 both,
             ]),
         ),
@@ -6937,12 +6938,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
             lines([
                 settings,
                 "changed 1; autorun.agent-settings changed",
-                "removed 5; ",
+                "removed 7; ",
                 settings,
                 "changed 1, not_read 1; autorun.agent-settings not read",
                 "changed 1; ",
                 "changed 1, not_read 1; autorun.agent-settings not read",
-                "removed 5; ",
+                "removed 7; ",
                 settings,
             ]),
         ),

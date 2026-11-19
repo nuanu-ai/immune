@@ -1700,6 +1700,9 @@ struct Survey {
     machines: Vec<Vec<String>>,
 }
 
+/// What `immunity servers` says when there is no store at the path to read statements from.
+const NO_WORD: &str = "No store was found, so no statement about a server was applied.";
+
 /// The owner's statements that stand, from the store if there is one.
 fn owner_word(store: &Path) -> Result<Vec<owner::Standing>, Box<dyn Error>> {
     if !store.is_file() {
@@ -2078,7 +2081,12 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
             s.theirs.len(),
             s.rows.iter().filter(|r| !r.read).count()
         ),
-        owner_word: word_line(&s.standing),
+        // With no store at the path, a wrong `--store` would leave the statements out in silence.
+        owner_word: if args.store.is_file() {
+            word_line(&s.standing)
+        } else {
+            Some(NO_WORD.to_string())
+        },
         spare: s.machines.iter().map(|m| m.len() as u64 - 1).sum(),
         never_read: s.rows.iter().filter(|r| !r.read).count() as u64,
         folder: known::whole(&s.dir.display().to_string()),
@@ -4243,6 +4251,7 @@ fn read_watched(
                         hook_departures.push((p.scope.as_str(), e));
                         continue;
                     }
+                    watched::content_gone(run.tx, &reading, &e.subject)?;
                     let place = e.old.unwrap_or_default();
                     observe("gone", &place, &e.subject);
                     rows.push(vec![
@@ -4456,6 +4465,7 @@ fn read_watched(
         let note = (!left).then_some(watched::HOOK_STILL_ACTIVE);
         store::journal_event(run.tx, &reading, &event, note)?;
         if left && gone.insert(event.subject.clone()) {
+            watched::content_gone(run.tx, &reading, &event.subject)?;
             observe("gone", watched::HOOK, &event.subject);
             rows.push(vec![
                 "gone".to_string(),

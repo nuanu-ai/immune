@@ -2795,7 +2795,7 @@ mod tests {
         // No false calm: with none compared, a count of zero would read as "checked and fine".
         let said = osv_line(&compared(0, 0, 4, 12));
         assert!(
-            said.contains("; no project's packages could be compared in full: the lockfiles of 4 projects were not all read, and 12 projects have no lockfile this version reads"),
+            said.contains("; no project's packages could be compared in full: the lockfiles of 4 projects were not all read, so whether a known vulnerability affects them cannot be told, and 12 projects have no lockfile this version reads"),
             "{said}"
         );
         assert!(!said.contains("0 known vulnerabilit"), "{said}");
@@ -2835,13 +2835,13 @@ mod tests {
         let s = compared(0, 3, 4, 12);
         let said = osv_line(&s);
         assert!(
-            said.contains(", 3 compared in full: 0 known vulnerabilities in the packages read; not compared: the lockfiles of 4 projects were not all read, and 12 projects have no lockfile this version reads"),
+            said.contains(", 3 compared in full: 0 known vulnerabilities in the packages read; not compared: the lockfiles of 4 projects were not all read, so whether a known vulnerability affects them cannot be told, and 12 projects have no lockfile this version reads"),
             "{said}"
         );
         // Either count alone is enough to leave projects not compared, and only it is said.
         let not_read = osv_line(&compared(0, 3, 4, 0));
         assert!(
-            not_read.contains("; not compared: the lockfiles of 4 projects were not all read. "),
+            not_read.contains("; not compared: the lockfiles of 4 projects were not all read, so whether a known vulnerability affects them cannot be told. "),
             "{not_read}"
         );
         let no_lockfile = osv_line(&compared(0, 3, 0, 12));
