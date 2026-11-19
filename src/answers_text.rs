@@ -897,10 +897,7 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
     // What is said of the projects as a whole speaks only for those found while not all were.
     let (found, scope) = Found::of(t.projects_found.as_ref());
     // Calm only when a project was compared and nothing at all could not be told.
-    let calm = t.projects_compared > 0
-        && t.projects_not_read == 0
-        && t.projects_without_lockfile == 0
-        && t.unknown_packages == 0;
+    let calm = crate::text::Matched::of(t).all_compared();
     let (said, style) = if t.affected_records > 0 {
         let mut said = format!(
             "✗ {} {} {}",
@@ -947,7 +944,11 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
                 BOLD,
             ),
         }
-    } else if t.projects_compared == 0 {
+    // Lockfiles or data are the reason, or nothing is: where only packages cannot be told, the
+    // answers that are known stand, and the rest is said as not told.
+    } else if t.projects_compared == 0
+        && (t.projects_not_read > 0 || t.projects_without_lockfile > 0 || t.unknown_packages == 0)
+    {
         (
             "No project's lockfiles were compared in full with current vulnerability data, so none is known to be affected or not".to_string(),
             YELLOW.bold(),
@@ -2539,6 +2540,24 @@ mod tests {
             (
                 v1::VulnerabilityTotals::default(),
                 "No project's lockfiles were compared",
+            ),
+            // None compared because a lockfile was not read: the lockfiles are the reason.
+            (
+                v1::VulnerabilityTotals {
+                    projects_not_read: 1,
+                    unknown_packages: 2,
+                    ..Default::default()
+                },
+                "No project's lockfiles were compared",
+            ),
+            // None compared only because packages cannot be told: the lockfiles were read, so
+            // the answers that are known stand and the rest is said as not told.
+            (
+                v1::VulnerabilityTotals {
+                    unknown_packages: 2,
+                    ..Default::default()
+                },
+                "None of the known vulnerabilities affects what could be compared",
             ),
             (
                 v1::VulnerabilityTotals {

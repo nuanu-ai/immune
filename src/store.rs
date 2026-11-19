@@ -1298,13 +1298,22 @@ pub struct Totals {
     pub not_repeated: i64,
 }
 
+/// How many projects the store holds.
+pub fn checkouts(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(DISTINCT subject) FROM assertion
+         WHERE layer = 'live' AND predicate = 'located_on' AND subject LIKE 'checkout:%'",
+        [],
+        |row| row.get(0),
+    )
+}
+
 pub fn totals(tx: &Connection, run_id: &str) -> rusqlite::Result<Totals> {
     let all = |sql: &str| tx.query_row(sql, [], |row| row.get::<_, i64>(0));
     let one = |sql: &str| tx.query_row(sql, [run_id], |row| row.get::<_, i64>(0));
     Ok(Totals {
         machines: machine_groups(tx)?.len() as i64,
-        checkouts: all("SELECT COUNT(DISTINCT subject) FROM assertion
-             WHERE layer = 'live' AND predicate = 'located_on' AND subject LIKE 'checkout:%'")?,
+        checkouts: checkouts(tx)?,
         components: all("SELECT COUNT(DISTINCT subject) FROM assertion
              WHERE layer = 'live' AND predicate = 'part_of'")?,
         // A partial reading that never made an assertion has nothing that could be removed.

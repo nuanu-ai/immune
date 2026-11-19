@@ -1315,7 +1315,9 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         .map(|((c, e, p), r)| (c, e, p, REASONS.get(r).copied().unwrap_or_default()))
         .collect();
     // A project counts as compared where a place of it was read in full against data current
-    // at the check and now, and it has no place not wholly read.
+    // at the check and now, it has no place not wholly read, and none of its packages is
+    // "don't know", whatever the reason: one such package and it was not compared in full.
+    let untold_package: HashSet<&str> = t.unknown_packages.iter().map(|u| u.0.as_str()).collect();
     let mut compared: BTreeMap<String, bool> = BTreeMap::new();
     for (c, e, lockfiles, feed) in conn
         .prepare("SELECT checkout, ecosystem, lockfiles, feed FROM vulnerability_place")?
@@ -1334,7 +1336,7 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
     }
     t.projects_compared = compared
         .into_iter()
-        .filter(|(c, whole)| *whole && !untold.contains(c))
+        .filter(|(c, whole)| *whole && !untold.contains(c) && !untold_package.contains(c.as_str()))
         .count();
     t.unread_places = unread;
     t.informational = conn.query_row(

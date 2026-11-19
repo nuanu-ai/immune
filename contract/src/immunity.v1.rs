@@ -2503,8 +2503,10 @@ pub struct VulnerabilityTotals {
     #[prost(uint64, tag = "18")]
     pub projects_without_lockfile: u64,
     /// Projects with a place read in full and compared with data current at the check and now,
-    /// and no place not wholly read. With none, nothing was compared, and the text never says that
-    /// no known vulnerability affects the projects. Since 1.18.0.
+    /// no place not wholly read, and no package for which it cannot be told (`unknown`). With
+    /// none, nothing was compared, and the text never says that no known vulnerability affects
+    /// the projects. Since 1.18.0; a project with a package in `unknown` is not counted since
+    /// 1.21.4.
     #[prost(uint64, tag = "19")]
     pub projects_compared: u64,
     /// Whether every place this version looks for projects in was looked into: while not, every
