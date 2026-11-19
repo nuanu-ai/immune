@@ -2403,6 +2403,55 @@ fn a_hook_in_a_folder_git_now_runs_hooks_from_is_new_where_an_earlier_run_told_t
     );
 }
 
+/// A pnpm file in a checkout made in the launch agents' folder, so it is watched in two places:
+/// as a launch agent and as the project's. The project stops being a checkout as the file
+/// changes, in one run: its place in the project is gone, and the launch agents' reading still
+/// reads its content, which changed.
+fn gone_from_one_place_changed_in_another(tag: &str) -> Estate {
+    let e = Estate::new(tag);
+    let agents = e.checkout("Library/LaunchAgents");
+    let file = agents.join(".pnpmfile.cjs");
+    put(&file, "module.exports = {};\n");
+    e.run_in(&agents);
+    e.run_in(&agents);
+    std::fs::remove_dir_all(agents.join(".git")).unwrap();
+    put(&file, "module.exports = { hooks: {} };\n");
+    e.run_in(&agents);
+    e
+}
+
+#[test]
+fn a_file_gone_from_one_place_and_changed_in_another_in_one_run_is_counted_as_gone_and_as_changed()
+{
+    let e = gone_from_one_place_changed_in_another("gone-and-changed");
+    let path = "Library/LaunchAgents/.pnpmfile.cjs";
+    let listed: Vec<String> = e.status()["watched"]["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["path_text"] == path)
+        .map(|c| c["change"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        listed.contains(&"gone".to_string()) && listed.contains(&"changed".to_string()),
+        "{listed:?}"
+    );
+    // The checkout's `.git` was an entry of the launch agents' folder too.
+    let since = &e.status()["watched"]["since_last_reading"];
+    assert_eq!((&since["gone"], &since["changed"]), (&2.into(), &1.into()));
+}
+
+#[test]
+fn a_file_gone_from_one_place_whose_content_another_still_reads_journals_no_removed_digest() {
+    let e = gone_from_one_place_changed_in_another("gone-still-read");
+    assert_eq!(
+        e.rows(
+            "SELECT old_value FROM journal WHERE entry = 'removed' AND predicate = 'has_content'"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn a_hook_another_checkout_watched_as_a_hook_before_this_run_is_not_new_where_a_second_starts_using_it()
  {
@@ -6862,17 +6911,18 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
     // What a step does is told by that step, once: a change with its finding, what is gone with
     // what held it as removed, what cannot be read as not read and never as gone, and what
     // comes back, a project cloned again at the same path among them, as new. The table is what
-    // the build before the one table of autorun points told, step for step.
+    // the build before the one table of autorun points told, step for step, but for the digest a
+    // thing had, which its removal journals as its arrival did.
     let same = |rule: &str| -> Vec<String> {
         vec![
             format!("added 3; {rule} new"),
             format!("changed 1; {rule} changed"),
-            format!("removed 2; {rule} gone"),
+            format!("removed 3; {rule} gone"),
             format!("added 3; {rule} new"),
             format!("not_read 1; {rule} not read"),
             "; ".to_string(),
             format!("not_read 1; {rule} not read"),
-            format!("removed 2; {rule} gone"),
+            format!("removed 3; {rule} gone"),
             format!("added 3; {rule} new"),
         ]
     };
@@ -6886,12 +6936,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "added 3; autorun.agent-start new",
                 "changed 1; autorun.agent-start changed",
                 // A server an agent is no longer told to start is no finding.
-                "removed 2; ",
+                "removed 3; ",
                 "added 3; autorun.agent-start new",
                 "not_read 1; autorun.agent-start not read",
                 "; ",
                 "not_read 1; autorun.agent-start not read",
-                "removed 2; ",
+                "removed 3; ",
                 "added 3; autorun.agent-start new",
             ]),
         ),
@@ -6905,7 +6955,7 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 both,
                 "changed 2; autorun.agent-start changed, watched.git-hook changed",
                 // Its hook and its server go with the project, told as removed.
-                "removed 4; ",
+                "removed 5; ",
                 // Cloned again at the same path: new.
                 both,
                 // A project that cannot be listed is not found, and what was read in it is kept,
@@ -6913,7 +6963,7 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "; ",
                 "; ",
                 "; ",
-                "removed 4; ",
+                "removed 5; ",
                 both,
             ]),
         ),
@@ -6923,12 +6973,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
                 "added 8, place_first_read 1; watched.first-read first read",
                 "changed 1; watched.git-hook changed",
                 // No longer a checkout: its hook and its server go with its `.git`.
-                "removed 4; ",
+                "removed 5; ",
                 both,
                 "changed 1, not_read 1; watched.git-hook not read",
                 "changed 1; ",
                 "changed 1, not_read 1; watched.git-hook not read",
-                "removed 4; ",
+                "removed 5; ",
                 both,
             ]),
         ),
@@ -6937,12 +6987,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
             lines([
                 settings,
                 "changed 1; autorun.agent-settings changed",
-                "removed 5; ",
+                "removed 7; ",
                 settings,
                 "changed 1, not_read 1; autorun.agent-settings not read",
                 "changed 1; ",
                 "changed 1, not_read 1; autorun.agent-settings not read",
-                "removed 5; ",
+                "removed 7; ",
                 settings,
             ]),
         ),
