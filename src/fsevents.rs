@@ -213,7 +213,7 @@ impl Where {
 
 /// What a stream hands its batches to. Immutable once the stream exists.
 struct Sink {
-    deliver: Box<dyn Fn(Batch) + Send + Sync>,
+    deliver: Deliver,
 }
 
 /// A running stream on a set of paths. Dropping it stops it, and no callback runs after.
@@ -223,28 +223,76 @@ pub struct Stream {
     sink: *mut Sink,
 }
 
+/// What a stream hands its batches to, from FSEvents' queue.
+pub type Deliver = Box<dyn Fn(Batch) + Send + Sync>;
+
 /// Which paths a stream could not be given, by their index, and why.
 pub type Refused = Vec<(usize, &'static str)>;
 
 /// Why a path cannot be handed to FSEvents.
 const NOT_UTF8: &str = "the path is not UTF-8, which FSEvents takes paths in";
+/// Why a path is too long for FSEvents.
+const TOO_LONG: &str = "the path is longer than FSEvents takes";
+/// The longest path a stream is created with, in bytes. `FSEventStreamCreate` returns NULL for
+/// the whole stream when one of its paths is longer: `PATH_MAX` is 1024 with the NUL
+/// (`sys/syslimits.h`), and a path of 1023 bytes was taken and one of 1024 was not, alone or
+/// among 4095 short ones (measured on macOS 26, 19 November 2026).
+const LONGEST: usize = 1023;
+
+/// The most paths one stream is started on. `FSEventStreamStart` returns false for a stream of
+/// more: it took 4096 paths and refused 4097, whatever their length, and 40 streams of 4096
+/// ran side by side (measured on macOS 26, 19 November 2026). The header states no limit.
+const STREAM_PATHS: usize = 4096;
 
 impl Stream {
+    /// Starts streams on `paths`, as many as it takes: one stream holds at most
+    /// `STREAM_PATHS`. Each stream delivers through its own `deliver()`. A path FSEvents
+    /// cannot take is refused by its index and the rest are watched. `Err` when no path can
+    /// be taken or a stream cannot be created or started: then none runs, so that the watcher
+    /// never watches a part of its places and reads as watching them all.
+    pub fn start_all(
+        paths: &[&Path],
+        latency: f64,
+        deliver: &dyn Fn() -> Deliver,
+    ) -> Result<(Vec<Stream>, Refused), String> {
+        Stream::start_in_pieces(paths, latency, deliver, STREAM_PATHS)
+    }
+
+    /// `start_all` with streams of at most `most` paths.
+    fn start_in_pieces(
+        paths: &[&Path],
+        latency: f64,
+        deliver: &dyn Fn() -> Deliver,
+        most: usize,
+    ) -> Result<(Vec<Stream>, Refused), String> {
+        let mut refused = Refused::new();
+        let mut taken: Vec<&str> = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
+            match path.to_str() {
+                None => refused.push((i, NOT_UTF8)),
+                Some(text) if text.len() > LONGEST => refused.push((i, TOO_LONG)),
+                Some(text) => taken.push(text),
+            }
+        }
+        if taken.is_empty() {
+            return Err("no path could be handed to FSEvents".to_string());
+        }
+        let mut streams = Vec::new();
+        for piece in taken.chunks(most) {
+            streams.push(Stream::start(piece, latency, deliver())?);
+        }
+        Ok((streams, refused))
+    }
+
     /// Starts a stream on `paths`, which need not exist yet, delivering batches to `deliver`
     /// from FSEvents' queue, of the changes made from now (`SinceNow`). When it returns, the
     /// stream is registered with FSEvents to receive events (`FSEventStreamStart`,
     /// `FSEvents.h:1266-1268`), so a change made after it brings an event. `latency` is how long FSEvents gathers events
-    /// into one batch, in seconds. A path FSEvents cannot take is refused and the rest are
-    /// watched; `Err` when none can be, or the stream cannot be created or started.
-    pub fn start(
-        paths: &[&Path],
-        latency: f64,
-        deliver: Box<dyn Fn(Batch) + Send + Sync>,
-    ) -> Result<(Stream, Refused), String> {
-        let mut refused = Refused::new();
+    /// into one batch, in seconds. `Err` when the stream cannot be created or started.
+    fn start(paths: &[&str], latency: f64, deliver: Deliver) -> Result<Stream, String> {
         let mut strings: Vec<CFRef> = Vec::new();
-        for (i, path) in paths.iter().enumerate() {
-            let bytes = path.as_os_str().as_bytes();
+        for path in paths {
+            let bytes = path.as_bytes();
             // SAFETY: `bytes` is valid for its length; the result is owned here (Create
             // rule) and released below, once the array holds its own reference.
             let s = unsafe {
@@ -257,13 +305,13 @@ impl Stream {
                 )
             };
             if s.is_null() {
-                refused.push((i, NOT_UTF8));
-            } else {
-                strings.push(s);
+                for s in &strings {
+                    // SAFETY: each string was created above and is released once, here.
+                    unsafe { CFRelease(*s) };
+                }
+                return Err("CoreFoundation could not make a path".to_string());
             }
-        }
-        if strings.is_empty() {
-            return Err("no path could be handed to FSEvents".to_string());
+            strings.push(s);
         }
         // SAFETY: `strings` holds valid CFStrings; with the CF type callbacks the array
         // retains each, so this file's own reference to each is released right after.
@@ -343,14 +391,11 @@ impl Stream {
             }
             return Err("FSEvents could not start the stream".to_string());
         }
-        Ok((
-            Stream {
-                stream,
-                queue,
-                sink,
-            },
-            refused,
-        ))
+        Ok(Stream {
+            stream,
+            queue,
+            sink,
+        })
     }
 }
 
@@ -453,14 +498,40 @@ mod tests {
         crate::common::Scratch(std::fs::canonicalize(&dir).unwrap())
     }
 
-    fn start(paths: &[&Path]) -> (Stream, Refused, mpsc::Receiver<Batch>) {
+    /// A `deliver` for `start_all` that sends every batch of every stream to one receiver.
+    fn sending() -> (impl Fn() -> Deliver, mpsc::Receiver<Batch>) {
         let (tx, rx) = mpsc::channel();
         let tx = std::sync::Mutex::new(tx);
-        let deliver = Box::new(move |b: Batch| {
-            let _ = tx.lock().unwrap().send(b);
-        });
-        let (stream, refused) = Stream::start(paths, 0.1, deliver).unwrap();
-        (stream, refused, rx)
+        let deliver = move || -> Deliver {
+            let tx = std::sync::Mutex::new(tx.lock().unwrap().clone());
+            Box::new(move |b: Batch| {
+                let _ = tx.lock().unwrap().send(b);
+            })
+        };
+        (deliver, rx)
+    }
+
+    fn start(paths: &[&Path]) -> (Vec<Stream>, Refused, mpsc::Receiver<Batch>) {
+        let (deliver, rx) = sending();
+        let (streams, refused) = Stream::start_all(paths, 0.1, &deliver).unwrap();
+        (streams, refused, rx)
+    }
+
+    /// Waits for a batch that names a path under `folder`, writing a file in it until then.
+    fn seen_under(rx: &mpsc::Receiver<Batch>, folder: &Path) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < DEADLINE {
+            let b = event_after(rx, || {
+                std::fs::create_dir_all(folder).unwrap();
+                std::fs::write(folder.join("pre-commit"), "x").unwrap();
+            });
+            match b.map(|b| b.at) {
+                Some(Where::Paths(at)) if at.iter().any(|p| p.starts_with(folder)) => return true,
+                Some(_) => {}
+                None => return false,
+            }
+        }
+        false
     }
 
     /// How long a test waits on fseventsd. It delivers late when the Mac is busy: measured
@@ -505,16 +576,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn folders(dir: &Path, count: usize) -> Vec<std::path::PathBuf> {
+        (0..count)
+            .map(|i| dir.join(format!("project-{i}/hooks")))
+            .collect()
+    }
+
+    fn quiet() -> Deliver {
+        Box::new(|_| {})
+    }
+
     #[test]
-    fn a_path_that_is_not_utf8_is_refused_by_index_and_the_others_are_still_watched() {
+    fn a_change_under_any_of_more_paths_than_one_stream_takes_is_delivered() {
+        // A Mac with many projects has more places than one stream takes, and the watcher
+        // must still start and see a change in the first and the last of them.
+        let dir = temp("many");
+        let folders = folders(&dir, STREAM_PATHS + 1);
+        let paths: Vec<&Path> = folders.iter().map(|p| p.as_path()).collect();
+        let (streams, refused, rx) = start(&paths);
+        assert_eq!((streams.len(), refused), (2, Refused::new()));
+        for folder in [folders.first().unwrap(), folders.last().unwrap()] {
+            assert!(
+                seen_under(&rx, folder),
+                "an event under {}",
+                folder.display()
+            );
+        }
+        drop(streams);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn when_a_stream_cannot_start_none_runs_and_the_reason_is_told() {
+        // A watcher that watched a part of its places would read as watching them all. One
+        // stream does not take this many paths, so the whole start fails with its reason.
+        let dir = temp("refused");
+        let most = STREAM_PATHS + 1;
+        let folders = folders(&dir, most + 1);
+        let paths: Vec<&Path> = folders.iter().map(|p| p.as_path()).collect();
+        let started = Stream::start_in_pieces(&paths, 0.1, &quiet, most);
+        assert_eq!(
+            started.err().as_deref(),
+            Some("FSEvents could not start the stream")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_fsevents_cannot_take_is_refused_alone_by_its_index_and_the_rest_are_watched() {
         use std::os::unix::ffi::OsStrExt;
-        let dir = temp("utf8");
+        let dir = temp("refused-alone");
         let bad = dir.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        let fits = dir.join("f".repeat(LONGEST - dir.as_os_str().len() - 1));
+        let long = dir.join("l".repeat(LONGEST - dir.as_os_str().len()));
+        assert_eq!(
+            (fits.as_os_str().len(), long.as_os_str().len()),
+            (LONGEST, LONGEST + 1)
+        );
         let good = dir.join("good");
-        let (stream, refused, rx) = start(&[&bad, &good]);
-        assert_eq!(refused, vec![(0, NOT_UTF8)]);
-        assert!(event_after(&rx, || std::fs::write(&good, "x").unwrap()).is_some());
-        drop(stream);
+        let (streams, refused, rx) = start(&[&long, &good, &bad, &fits]);
+        assert_eq!(streams.len(), 1);
+        assert_eq!(refused, vec![(0, TOO_LONG), (2, NOT_UTF8)]);
+        assert!(seen_under(&rx, &good));
+        assert!(Stream::start_all(&[&bad, &long], 0.1, &quiet).is_err());
+        drop(streams);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
