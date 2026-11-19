@@ -65,6 +65,10 @@ The table also gives windows for the 15 checks whose effects were unconfirmed. `
 
 The replay covers only saved program starts and file creations and renames. Its loss counts cover gaps within those slices. It cannot measure live collection or state readers, recover events the collector missed, or establish which findings a live run would raise.
 
+### Parent arguments in the saved log
+
+Elastic's SUID/SGID Bit Set rule excludes events by the parent's executable and its arguments, and it remains unevaluated: [the collector's page](event-level.md#parent-arguments) says what an exact join needs. In the VM archive of that day, the final runs for `T1548.001` tests 1, 3 and 5 each contain one candidate between their begin and end byte offsets. All three meet the rule's positive conditions for the started program through a symbolic mode argument. For each, the only earlier `exec` in the saved log with the candidate's `ppid` is within that window. Its target executable path matches the candidate's image before `exec`. The four snapshots are cumulative, and the last holds 5,003 `exec` records. None has inline parent arguments, a parent audit token or a pid version for the target. The PID and path guesses leave all three joins unverified.
+
 ### Replaying the lab archive
 
 1. For each check with a saved window, use the final `stage` in the archived `vm-results.tsv`. In `vm-inbox/<stage>/analysis.json`, find the matching `test` under `results` and take the `begin` and `end` entries in `markers`. The two offsets are byte positions in that stage's `log/exec-20261112T17.jsonl`. Check that both offsets fall on line boundaries, then copy the bytes strictly between the marker lines. The slice starts after the newline of `begin` and ends at the byte offset of `end`.
