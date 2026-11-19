@@ -1692,6 +1692,19 @@ pub struct ListedFinding {
     pub package_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, repeated, tag = "14")]
     pub releases_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The group the finding is one of: findings of one rule, on one machine, with one kind of
+    /// change, about files of one folder, which one command answers together, each named
+    /// (`immunity finding <id> seen --with <id> --with <id>`). An opaque key, `g` and 32
+    /// hexadecimal digits: equal for the findings of one group, and different for two groups but
+    /// by a chance of one in 2^128. Absent for a finding of no group: only `watched.git-hook` has
+    /// groups, a hooks folder being written as a whole by one tool; a `verdict.suspicious` finding
+    /// has none and keeps its pair; nor has a finding whose file's path holds `#`. Since 1.22.0.
+    #[prost(string, optional, tag = "15")]
+    pub group: ::core::option::Option<::prost::alloc::string::String>,
+    /// The folder of the group, as `where_text` gives a place, `~` for the home folder itself.
+    /// Absent when `group` is. Since 1.22.0.
+    #[prost(string, optional, tag = "16")]
+    pub folder_text: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// The answer to `immunity finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1753,7 +1766,7 @@ pub struct Finding {
     pub kind_title: ::prost::alloc::string::String,
     /// The other finding of the pair that an answer given with `--with` answered beside this one,
     /// as that answer left it: its `state` is the one it has now. Absent when the command named no
-    /// other finding, and when it only read. Since 1.9.0.
+    /// other finding, when the findings named were a group, and when it only read. Since 1.9.0.
     #[prost(message, optional, tag = "20")]
     pub answered_with: ::core::option::Option<FindingRef>,
     /// The journal's latest sequence number in the state of the store this answer was read from:
@@ -1773,6 +1786,17 @@ pub struct Finding {
     /// As in `ListedFinding`. Since 1.16.0.
     #[prost(string, tag = "22")]
     pub short_title: ::prost::alloc::string::String,
+    /// As in `ListedFinding`. Since 1.22.0.
+    #[prost(string, optional, tag = "23")]
+    pub group: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "24")]
+    pub folder_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Every other finding an answer given with `--with` named, in the order given, each as that
+    /// answer left it: its `state` is the one it has now. The other of a pair is here and in
+    /// `answered_with`; the others of a group are only here. Empty when the command named no other
+    /// finding, and when it only read. Since 1.22.0.
+    #[prost(message, repeated, tag = "25")]
+    pub answered_together: ::prost::alloc::vec::Vec<FindingRef>,
 }
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
