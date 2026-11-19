@@ -5471,6 +5471,24 @@ fn a_retired_machine_is_not_counted_as_known_and_never_read_and_is_listed_with_i
 }
 
 #[test]
+fn with_no_store_the_servers_say_that_no_statement_was_applied_and_with_one_they_do_not() {
+    // A wrong `--store` must not leave the person's statements out in silence: the servers are
+    // still listed from local files, with a line that no statement about a server was applied.
+    let h = Home::new("word-no-store", Some(TWO_SERVERS), None);
+    let line = "No store was found, so no statement about a server was applied.";
+    let printed = h.servers();
+    assert!(!h.store().exists());
+    assert!(printed.contains(&format!("\n  {line}\n")), "{printed}");
+    assert!(
+        printed.contains("Offered for the sweep: 2 servers"),
+        "{printed}"
+    );
+    h.run(&h.absent(), &h.none());
+    let printed = h.servers();
+    assert!(!printed.contains(line), "{printed}");
+}
+
+#[test]
 fn facts_about_a_retired_machine_are_not_retracted_and_its_readings_go_on() {
     // The owner's word is next to the facts, never an edit of them. What was read on the
     // machine stays, and readers keep reading what is there.
