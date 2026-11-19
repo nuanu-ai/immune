@@ -244,6 +244,16 @@ const LONGEST: usize = 1023;
 /// ran side by side (measured on macOS 26, 19 November 2026). The header states no limit.
 const STREAM_PATHS: usize = 4096;
 
+/// Why FSEvents does not take `path`, or `None` when it does: a function of the path alone, so
+/// a caller can tell what a stream would refuse without starting one.
+pub fn refuses(path: &Path) -> Option<&'static str> {
+    match path.to_str() {
+        None => Some(NOT_UTF8),
+        Some(text) if text.len() > LONGEST => Some(TOO_LONG),
+        Some(_) => None,
+    }
+}
+
 impl Stream {
     /// Starts streams on `paths`, as many as it takes: one stream holds at most
     /// `STREAM_PATHS`. Each stream delivers through its own `deliver()`. A path FSEvents
@@ -268,10 +278,10 @@ impl Stream {
         let mut refused = Refused::new();
         let mut taken: Vec<&str> = Vec::new();
         for (i, path) in paths.iter().enumerate() {
-            match path.to_str() {
-                None => refused.push((i, NOT_UTF8)),
-                Some(text) if text.len() > LONGEST => refused.push((i, TOO_LONG)),
-                Some(text) => taken.push(text),
+            match (refuses(path), path.to_str()) {
+                (None, Some(text)) => taken.push(text),
+                // `refuses` names every path that is not UTF-8.
+                (why, _) => refused.push((i, why.unwrap_or(NOT_UTF8))),
             }
         }
         if taken.is_empty() {

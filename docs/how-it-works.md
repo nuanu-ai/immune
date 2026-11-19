@@ -240,7 +240,7 @@ Verdicts are not signed, as answers are not. Anyone who can run `immunity verdic
 - known vulnerabilities in the projects' packages (`vulnerabilities`), which are never counted in what needs a look;
 - the collector's state (`event_level`).
 
-A watcher whose latest reading or sample failed does not count as watching live until the next success, and the failure is served with what failed, when and what it said.
+A watcher whose latest reading or sample failed does not count as watching live until the next success, and the failure is served with what failed, when and what it said. The same holds while its latest look at what to watch left a watched place unsubscribed. The watcher's lock file says so while it lasts, and the failure `places` in the store names how many places and the first three with why each was refused. It ends after a look that leaves none, once the watcher has cleared it from the store. A place whose folder cannot be there now, such as one with a file or a link that leads nowhere on the way, is not a failure: it is noticed at the watcher's next look and at the full check, not within seconds.
 
 ## The app
 
