@@ -1,5 +1,5 @@
-//! `immune findings` and `immune finding <id>` as commands of the contract: the core's own
-//! findings as the messages `Findings` and `Finding` (`contract/immune/v1/findings.proto`). The
+//! `immunity findings` and `immunity finding <id>` as commands of the contract: the core's own
+//! findings as the messages `Findings` and `Finding` (`contract/immunity/v1/findings.proto`). The
 //! response layer reads a finding whole to give a verdict about it.
 //!
 //! It reads the store and nothing else, through the same `findings::all` and `findings::item`
@@ -60,7 +60,7 @@ pub fn one(
     Ok(one.ok_or(Refused {
         code: "unknown_finding",
         message: "the store has no finding with this id",
-        example: "immune findings --all lists every finding with its id; with --json, every one in every state",
+        example: "immunity findings --all lists every finding with its id; with --json, every one in every state",
         ids: Vec::new(),
     }))
 }
@@ -285,7 +285,7 @@ fn rule_count(conn: &Connection, finding: &str) -> rusqlite::Result<Option<u64>>
     Ok(n.map(|n| n as u64))
 }
 
-/// The events a published rule's finding keeps, newest first, as `immune matches` gives an
+/// The events a published rule's finding keeps, newest first, as `immunity matches` gives an
 /// event: the rows are made back into what the collector's reading made them from.
 fn rule_events(
     conn: &Connection,

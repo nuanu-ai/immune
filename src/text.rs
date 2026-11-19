@@ -18,14 +18,14 @@ pub fn quoted(s: &str) -> String {
     format!("\"{}\"", view::shown(&s.replace('"', "\\\"")))
 }
 
-/// One word of a command Immune prints for pasting, written for a POSIX shell so that the shell
+/// One word of a command Immunity Core prints for pasting, written for a POSIX shell so that the shell
 /// reads back exactly `word`: as it is when it is made only of `A-Z a-z 0-9 _ @ % + = : , . / -`
 /// (not `~`, which the shell would expand), else in single quotes, with a quote in it written
 /// `'\''`. `None` when the word cannot be shown exactly, so that a command holding it would name
 /// another value: a control character, a line break, anything the screen writes as an escape
 /// (`view::shown`), a backslash among them, or what reads as a secret (`secrets::said`). The
 /// caller puts the word's placeholder in its place. Every command printed with a word that is
-/// not Immune's own goes through this.
+/// not Immunity Core's own goes through this.
 pub fn shell_word(word: &str) -> Option<String> {
     if view::shown(word) != word || crate::secrets::said(word) != word {
         return None;
@@ -66,7 +66,7 @@ fn grouped(n: u64) -> String {
 }
 
 /// What the rules do here now, after where they come from: the sentence the status's page and
-/// `immune rules` share.
+/// `immunity rules` share.
 pub fn rules_said(head: &str, r: &v1::RulesNow) -> String {
     let (Some(true), Some(watching_rules)) = (r.watching, r.watching_rules) else {
         // Before any reading of the event level, whether it is on is not known.
@@ -156,7 +156,7 @@ pub fn refusal(f: &v1::Failure, next: &crate::usage::Pasted, screen: &Screen) ->
 }
 
 /// One error of a failure in the one form of an error (`Screen::error`), rendered from the
-/// error alone: its cause in Immune's words, what to do, and what it quotes under a label. The
+/// error alone: its cause in Immunity Core's words, what to do, and what it quotes under a label. The
 /// two conditions of a store that every command meets, none at the path and one of another
 /// format, are worded once (`store::NO_STORE`, `store::OTHER_FORMAT`), whichever command met
 /// them; their exit codes and the message itself are as each command gives them.
@@ -168,7 +168,7 @@ pub fn error(e: &v1::Error, screen: &Screen) -> String {
 fn told(e: &v1::Error, next: Option<&crate::usage::Pasted>, screen: &Screen) -> String {
     let detail = e.detail_text.as_deref().unwrap_or_default();
     let condition = match e.code.as_str() {
-        // `immune owner` names the path alone, under a code of its own.
+        // `immunity owner` names the path alone, under a code of its own.
         "no_store" => store::Condition::Absent(detail),
         "store_unreadable" | "command_failed" => store::condition(detail),
         _ => store::Condition::Other,
@@ -194,7 +194,7 @@ fn told(e: &v1::Error, next: Option<&crate::usage::Pasted>, screen: &Screen) -> 
         return screen.error(
             "another check is running on this store",
             &[Step::Words(
-                "Nothing was done. Try again when it ends, or see it with: `immune status`"
+                "Nothing was done. Try again when it ends, or see it with: `immunity status`"
                     .to_string(),
             )],
             &[],
@@ -243,7 +243,7 @@ fn example_for_a_person(example: &str) -> Option<String> {
     let says_more = plain.split(' ').any(|w| {
         w.len() >= 3
             && w.bytes().all(|b| b.is_ascii_lowercase())
-            && w != "immune"
+            && w != "immunity"
             && !crate::usage::is_command(w)
     });
     says_more.then_some(plain)
@@ -265,12 +265,12 @@ mod tests {
             }],
         };
         let next = crate::usage::Pasted {
-            command: "immune finding f0 reopen --store <path>".to_string(),
+            command: "immunity finding f0 reopen --store <path>".to_string(),
             left_out: Some("What was typed for the value of --store cannot be shown".to_string()),
         };
         let said = refusal(&f, &next, &Screen::pipe());
         assert!(
-            said.contains("\n  immune finding f0 reopen --store <path>\n  What was typed for the value of --store"),
+            said.contains("\n  immunity finding f0 reopen --store <path>\n  What was typed for the value of --store"),
             "{said}"
         );
     }
@@ -334,7 +334,7 @@ mod tests {
             let e = crate::answer::error(
                 code,
                 "a cause in the core's words; nothing was changed",
-                "ask for one of them by its id, as in: immune project <id> --json",
+                "ask for one of them by its id, as in: immunity project <id> --json",
                 "a detail",
             );
             for screen in [Screen::pipe(), Screen::terminal(80, false)] {
@@ -365,19 +365,19 @@ mod tests {
         assert_eq!(
             said(
                 "not_a_project",
-                "immune program asks about a program --json"
+                "immunity program asks about a program --json"
             ),
-            "error: a cause\n  Nothing was recorded.\n  immune program asks about a program\n  \
+            "error: a cause\n  Nothing was recorded.\n  immunity program asks about a program\n  \
              Given   what\n"
         );
         // A command again, or another command, is no help.
         assert_eq!(
-            said("not_a_project", "immune status --json --store <file>"),
+            said("not_a_project", "immunity status --json --store <file>"),
             "error: a cause\n  Nothing was recorded.\n  Given   what\n"
         );
         // Nor anything for what could not be read or done, whatever its example says.
         assert_eq!(
-            said("run_failed", "immune finding <id> seen"),
+            said("run_failed", "immunity finding <id> seen"),
             "error: a cause\n  Nothing was recorded.\n  Reason   what\n"
         );
     }
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn hostile_text_in_a_failure_s_detail_cannot_forge_a_line_or_a_style() {
         let hostile = format!(
-            "x\u{1b}[31mred\u{9b}31m\u{202e}evil\u{200b}\nerror: forged\n→ immune on{}error: forged too",
+            "x\u{1b}[31mred\u{9b}31m\u{202e}evil\u{200b}\nerror: forged\n→ immunity on{}error: forged too",
             " ".repeat(90)
         );
         for code in ["store_unreadable", "run_failed", "unknown_finding", "usage"] {
@@ -433,12 +433,12 @@ mod tests {
             ),
             (
                 "no_store",
-                "there is no store at the path given; `immune run` makes it",
+                "there is no store at the path given; `immunity run` makes it",
                 "/x/store.db".to_string(),
             ),
             (
                 "command_failed",
-                "immune view could not finish",
+                "immunity view could not finish",
                 format!("the store cannot be read: {none}"),
             ),
         ];
@@ -449,7 +449,7 @@ mod tests {
             );
             assert_eq!(
                 said,
-                "error: there is no store here yet\n  immune run makes one, or immune on, \
+                "error: there is no store here yet\n  immunity run makes one, or immunity on, \
                  which also keeps it checked.\n  Store   /x/store.db\n",
                 "{code}"
             );
@@ -466,7 +466,7 @@ mod tests {
                 &Screen::pipe(),
             );
             assert!(
-                said.starts_with("error: this store was made by another build of Immune\n  It was left unchanged."),
+                said.starts_with("error: this store was made by another build of Immunity Core\n  It was left unchanged."),
                 "{said}"
             );
             assert!(said.ends_with("  Store   /x/store.db\n"), "{said}");

@@ -1113,7 +1113,7 @@ pub const SIGNER_CHANGED: &str = "application signed by someone else";
 pub const FILES_CHANGED: &str = "installed package changed in place";
 pub const CODE_OUTSIDE_CHANGED: &str = "application code changed outside its bundle";
 
-/// What the last run learned of what is installed, for the report line and `immune status`.
+/// What the last run learned of what is installed, for the report line and `immunity status`.
 pub struct Summary {
     /// No reading of this reader was made before this run: this one is the baseline.
     pub first: bool,

@@ -1,6 +1,6 @@
 check	atomic_guid	status	stage	window	program_starts	file_events	unreadable_lines	unreadable_file_events	lost	unknown_losses	file_events_lost	window_matches
-Immune-editor-autostart		executed	primary	read	18	75	0	0	0	0	0	none
-Immune-app-integrity		executed	primary	read	12	38	0	0	0	0	0	none
+immunity-editor-autostart		executed	primary	read	18	75	0	0	0	0	0	none
+immunity-app-integrity		executed	primary	read	12	38	0	0	0	0	0	none
 T1569.001#1	6fb61988-724e-4755-a595-07743749d4e2	executed	primary	read	15	27	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1
 T1543.001#1	a5983dee-bf6c-4eaf-951c-dbc1a7b90900	executed	primary	read	15	28	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1
 T1543.001#3	66774fa8-c562-4bae-a58d-5264a0dd9dd7	executed	primary	read	16	23	0	0	0	0	0	sigma:88c0f9d8-30a8-4120-bb6b-ebb54abcf2a0/medium/1 sigma:ae9d710f-dcd1-4f75-a0a5-93a73b5dda0e/medium/1 sigma:ddf36b67-e872-4507-ab2e-46bda21b842c/low/1

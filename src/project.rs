@@ -1,4 +1,4 @@
-//! `immune project <what>`: what the store knows of one project, a checkout, printed as the
+//! `immunity project <what>`: what the store knows of one project, a checkout, printed as the
 //! contract's `Known` message. The answer is built by `known::known_of`; what is particular to a
 //! project is only how the question names it and which readings find projects (`FOUND_BY`).
 //!
@@ -43,10 +43,10 @@ const INSIDE: &str = "a single path inside a project is not judged on its own: t
 /// Why a folder macOS asks permission for, reached through a link, is not looked into.
 const GUARDED: &str = "the path leads through a link into a folder macOS asks permission for, which is not looked into";
 
-/// What `immune project` takes as a project.
-const WHAT: &str = "immune project takes a path on this Mac, absolute or beginning with ~/, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:";
+/// What `immunity project` takes as a project.
+const WHAT: &str = "immunity project takes a path on this Mac, absolute or beginning with ~/, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:";
 
-/// `immune project <what>`.
+/// `immunity project <what>`.
 pub struct ProjectArgs {
     pub store: PathBuf,
     pub form: crate::answer::Form,
@@ -90,7 +90,7 @@ pub fn parse(
     })
 }
 
-/// Answers `immune project`.
+/// Answers `immunity project`.
 pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
     known::command(
         "project",
@@ -321,7 +321,7 @@ fn not_a_project(id: &str) -> Refused {
     Refused {
         code: "not_a_project",
         message: "the store holds this id, and it is not a project or a file of this Mac",
-        example: "immune program asks about a program, immune machine about a machine",
+        example: "immunity program asks about a program, immunity machine about a machine",
         ids: vec![id.to_string()],
     }
 }
@@ -330,7 +330,7 @@ fn not_an_id(id: &str) -> Refused {
     Refused {
         code: "usage",
         message: WHAT,
-        example: "immune project ~/<folder> --json",
+        example: "immunity project ~/<folder> --json",
         ids: vec![id.to_string()],
     }
 }

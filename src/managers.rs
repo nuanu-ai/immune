@@ -13,7 +13,7 @@
 //!
 //! The table names a few managers and is not complete: what it cannot see, any other manager
 //! and one installed at a place of its own choosing, is a standing limit of this version
-//! (`covered::MANAGERS_ELSEWHERE`), and `immune program` carries it whenever it does not know
+//! (`covered::MANAGERS_ELSEWHERE`), and `immunity program` carries it whenever it does not know
 //! a program.
 
 use std::path::{Path, PathBuf};
@@ -129,7 +129,7 @@ mod tests {
         // A run the app starts must not make macOS ask the owner for his Documents because a
         // manager's place is a link there. The folder is named as not looked into.
         let root = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-managers-guarded-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-managers-guarded-{}", std::process::id())),
         );
         let home = root.join("Users/invented");
         std::fs::create_dir_all(home.join("Documents/macports/bin")).unwrap();

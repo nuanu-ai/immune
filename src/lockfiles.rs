@@ -1810,7 +1810,7 @@ snapshots:
     impl Dir {
         fn new(tag: &str, files: &[(&str, &str)]) -> Dir {
             let dir =
-                std::env::temp_dir().join(format!("immune-lock-{tag}-{}", std::process::id()));
+                std::env::temp_dir().join(format!("immunity-lock-{tag}-{}", std::process::id()));
             crate::common::remove(&dir);
             for (name, text) in files {
                 let path = dir.join(name);

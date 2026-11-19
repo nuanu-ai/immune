@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The store's format. A store of any other format is refused and left as it is: this build
-/// reads only what a build of format 8 wrote, with every table and column this build reads and
+/// reads only what a build of format 9 wrote, with every table and column this build reads and
 /// text from a source kept cut, in the store's form (see `secrets`).
-pub const FORMAT_VERSION: &str = "8";
+pub const FORMAT_VERSION: &str = "9";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -145,7 +145,7 @@ const JOURNAL_ENTRIES: [&str; 26] = [
     "retired",
     // A verdict of the response layer about a match or a finding, see `verdict.rs`.
     "verdict",
-    // `immune on` loaded the login job, and `immune off` stopped it or removed its property
+    // `immunity on` loaded the login job, and `immunity off` stopped it or removed its property
     // list: the time alone, see `service.rs`.
     "turned_on",
     "turned_off",
@@ -283,7 +283,7 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
 INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permission for');
 ";
 
-/// Indexes what `immune status` and the view read by. Without them the status of a store of tens of thousands of
+/// Indexes what `immunity status` and the view read by. Without them the status of a store of tens of thousands of
 /// things took seconds: each finding looked up its subject and its basis by a full scan, and
 /// each latest reading looked for its last full one the same way.
 ///
@@ -297,8 +297,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// The status and the view ask for the latest reading of each reader, scope and kind, when
 /// each was last read in full, and what one run read. `LATEST` finds the first through
 /// `coverage_reading`, `coverage_full` answers the second in one look-up and `coverage_run`
-/// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `immune status` took 8 ms after ten watcher readings and 325 ms after
-/// ten thousand, and `immune view` 9 ms and 589 ms.
+/// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `immunity status` took 8 ms after ten watcher readings and 325 ms after
+/// ten thousand, and `immunity view` 9 ms and 589 ms.
 const INDEXES: &str = "
 CREATE INDEX coverage_reading ON coverage (reader, scope, kind);
 CREATE INDEX coverage_latest_of_kind ON coverage (reader, kind);
@@ -313,7 +313,7 @@ CREATE INDEX finding_basis_finding ON finding_basis (finding);
 /// or the catalogue changed. Every run, watcher reading and sample adds to the journal and
 /// nothing is ever removed from it, so without this each of those questions went through
 /// the whole journal: the page of threats asked it once for each of the catalogue's 1,450
-/// entries, 2.5 s of a full `immune view` on a journal of 40,000 entries.
+/// entries, 2.5 s of a full `immunity view` on a journal of 40,000 entries.
 const JOURNAL_INDEXES: &str = "
 CREATE INDEX journal_run ON journal (run_id, entry);
 ";
@@ -473,8 +473,8 @@ fn schema() -> String {
     .join("\n")
 }
 
-/// Opens the store, making it first where no file is: what `immune run`, `immune sample` and
-/// the start of `immune watch` do. Every other command, and a watcher already running, only
+/// Opens the store, making it first where no file is: what `immunity run`, `immunity sample` and
+/// the start of `immunity watch` do. Every other command, and a watcher already running, only
 /// opens (`open`).
 pub fn open_or_make(path: &Path) -> Res<Connection> {
     make_if_absent(path)?;
@@ -545,7 +545,7 @@ fn make(path: &Path) -> Res<()> {
 /// this format and its id, is refused before anything is written and is left as it is. Old
 /// stores are not converted and a damaged one is not repaired.
 ///
-/// A run writes in one transaction that lasts the whole run. Readers such as `immune status`
+/// A run writes in one transaction that lasts the whole run. Readers such as `immunity status`
 /// must be able to read the last committed state all that time, so the run never takes the
 /// exclusive lock before it commits: a cache that grew past its size would otherwise be
 /// spilled to the file, which takes the exclusive lock in the middle of the transaction and
@@ -673,20 +673,20 @@ pub fn absent(path: &Path) -> String {
 }
 
 const ABSENT_BEFORE: &str = "there is no store at ";
-const ABSENT_AFTER: &str = "; `immune run` makes it";
+const ABSENT_AFTER: &str = "; `immunity run` makes it";
 
 /// Why a part of an answer was not computed when there is no store (`not_computed`), as every
 /// message of the contract gives it.
-pub const NO_STORE_REASON: &str = "there is no store yet; `immune run` makes it";
+pub const NO_STORE_REASON: &str = "there is no store yet; `immunity run` makes it";
 
 /// What every command tells a person when there is no store at the path, in one wording: the
 /// headline or the cause, and what makes one. A span in backticks is a command.
 pub const NO_STORE: &str = "there is no store here yet";
 pub const NO_STORE_FIX: &str =
-    "`immune run` makes one, or `immune on`, which also keeps it checked.";
+    "`immunity run` makes one, or `immunity on`, which also keeps it checked.";
 
 /// What every command tells a person about a store another build made, in one wording.
-pub const OTHER_FORMAT: &str = "this store was made by another build of Immune";
+pub const OTHER_FORMAT: &str = "this store was made by another build of Immunity Core";
 pub const OTHER_FORMAT_FIX: &str = "It was left unchanged. Move it aside or pass another --store; \
                                     the next check starts one from the beginning.";
 
@@ -817,7 +817,7 @@ fn check(conn: &Connection, path: &Path) -> Res<()> {
         Some(found) if found > ours => {
             return Err(format!(
                 "{STORE_AT}{at}{NEWER}{found}) than this version knows \
-                 ({ours}). Nothing was changed. Use the version of Immune that made it, or pass \
+                 ({ours}). Nothing was changed. Use the version of Immunity Core that made it, or pass \
                  another --store."
             )
             .into());
@@ -828,7 +828,7 @@ fn check(conn: &Connection, path: &Path) -> Res<()> {
         return Err(damaged(path, &why).into());
     }
     if !one("store_id")?.is_some_and(|id| is_id(&id)) {
-        return Err(damaged(path, "it has no id of the form Immune gives one").into());
+        return Err(damaged(path, "it has no id of the form Immunity Core gives one").into());
     }
     Ok(())
 }
@@ -841,7 +841,7 @@ fn is_id(id: &str) -> bool {
 fn damaged(path: &Path, why: &str) -> String {
     format!(
         "the store at {} is damaged: {why}. A store of format {FORMAT_VERSION} holds exactly the \
-         schema this version makes, so something other than Immune changed it. {START_OVER}",
+         schema this version makes, so something other than Immunity Core changed it. {START_OVER}",
         path.display()
     )
 }
@@ -912,7 +912,7 @@ fn differs(want: &Shape, got: &Shape) -> Option<String> {
 }
 
 /// How long a run waits for the run lock before it says another run is in progress. A
-/// `immune status` holds the lock shared for a moment only; another run holds it for minutes.
+/// `immunity status` holds the lock shared for a moment only; another run holds it for minutes.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// Takes the run lock on the store's folder, for as long as the handle returned stays open,
@@ -958,7 +958,7 @@ pub fn held(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-// --- The watcher's lock, for `immune watch` (src/watch.rs). ---
+// --- The watcher's lock, for `immunity watch` (src/watch.rs). ---
 
 /// The file in the store's folder that the watcher holds locked while it runs. The run lock is
 /// on the folder itself, so the watcher's needs a file of its own.
@@ -1144,7 +1144,7 @@ pub fn listed_runs(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
 
 /// Where the history of readings the fold thins ends: the first row of the runs any page or
 /// answer asks about by their id, the listed runs (`listed_runs`) and the latest finished run,
-/// which `immune status` reports on. Every row from there on is kept. Rows are written with ids
+/// which `immunity status` reports on. Every row from there on is kept. Rows are written with ids
 /// that grow, and runs never overlap, so a row with a smaller id was written before every one
 /// of those runs. A reader that keeps one row per reading, the event level and the samples,
 /// takes its row out and writes it again: a reading of one row, which no fold touches. `None`
@@ -1897,7 +1897,7 @@ mod tests {
     impl Kept {
         fn new(tag: &str) -> Kept {
             let dir = std::env::temp_dir().join(format!(
-                "immune-fold-{tag}-{}-{}",
+                "immunity-fold-{tag}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2434,7 +2434,7 @@ mod tests {
 
     #[test]
     fn the_runs_kept_whole_and_the_latest_finished_keep_every_reading_they_made() {
-        // The changes page and `immune status` ask what each of these runs read: a run in the
+        // The changes page and `immunity status` ask what each of these runs read: a run in the
         // middle of unchanged readings still read them, and is never shown as having read
         // nothing or everything.
         let mut k = Kept::new("window");
@@ -2585,7 +2585,7 @@ mod tests {
     #[test]
     fn only_the_refusal_of_a_hot_journal_opens_the_store_to_write() {
         // Beside a writer that is alive SQLite answers busy, and a store of another format is
-        // refused by Immune: neither is a journal to roll back.
+        // refused by Immunity Core: neither is a journal to roll back.
         let refused = |code| -> Box<dyn std::error::Error> {
             rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None).into()
         };

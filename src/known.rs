@@ -1,6 +1,6 @@
 //! What the store knows of one thing, as the contract's `Known` message
-//! (`contract/immune/v1/known.proto`): the answer that `immune project`, `immune program` and
-//! `immune machine` share.
+//! (`contract/immunity/v1/known.proto`): the answer that `immunity project`, `immunity program` and
+//! `immunity machine` share.
 //!
 //! It reads the store and nothing else. No reader runs and no path is looked at: a thing may be
 //! in a folder macOS asks permission for, and looking would raise the dialog.
@@ -73,7 +73,7 @@ pub struct Question<'a> {
 }
 
 /// The reader of the reading made by rule for a path no reading looks at: the core itself.
-pub const RULE_READER: &str = "immune";
+pub const RULE_READER: &str = "immunity";
 
 /// A question the store cannot answer with one thing of the kind asked for: a misuse, told with
 /// the ids of what it found, so that the caller can ask again for one.
@@ -138,7 +138,7 @@ pub fn path_of(asked: &str, home: &Path) -> Option<String> {
 
 /// What a caller gives as a place on this Mac, `this`, in the one form ids name paths in: a path,
 /// absolute or beginning with `~/`, or the id of a file of this Mac, which names its path after
-/// the machine (`immune project` gives a checkout's id as a file's). `..`, `.`, doubled and
+/// the machine (`immunity project` gives a checkout's id as a file's). `..`, `.`, doubled and
 /// trailing slashes are resolved by the words alone, in an id as in a path: nothing on the disk
 /// is looked at and no link is followed. Every command that takes a path or such an id puts it
 /// through here, so two spellings of one place are one question. Case and Unicode form are kept:
@@ -209,7 +209,7 @@ pub fn command_told<M: Message + serde::Serialize>(
         Ok(Ok(m)) => answer::print(op, form, &m, text),
         Ok(Err(r)) => answer::fail_as(op, form, r.error(), crate::EXIT_USAGE, refused),
         Err(e) => {
-            let (error, exit) = answer::stopped(&e, "immune status --json --store <file>");
+            let (error, exit) = answer::stopped(&e, "immunity status --json --store <file>");
             answer::fail(op, form, error, exit)
         }
     }

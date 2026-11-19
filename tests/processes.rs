@@ -1,4 +1,4 @@
-//! Promises of `immune sample` and its rule. Each test feeds the real binary readings made of
+//! Promises of `immunity sample` and its rule. Each test feeds the real binary readings made of
 //! invented processes, through the same path a reading of the system takes once it is read;
 //! the reading of the system itself is tested in `src/processes.rs` on the test process and a
 //! child it starts. No test reads the real processes of this Mac.
@@ -18,8 +18,10 @@ impl Dir {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("immune-proc-{tag}-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "immunity-proc-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Dir(path)
     }
@@ -35,8 +37,8 @@ impl Drop for Dir {
     }
 }
 
-fn immune(dir: &Dir, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_immune"))
+fn immunity(dir: &Dir, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_immunity"))
         .env("HOME", &dir.0)
         .current_dir(&dir.0)
         .args(args)
@@ -46,7 +48,7 @@ fn immune(dir: &Dir, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// Feeds one reading at time `at` and returns what `immune sample --json` answered.
+/// Feeds one reading at time `at` and returns what `immunity sample --json` answered.
 fn sample(dir: &Dir, at: i64, processes: &[Value]) -> Value {
     let connection = json!({ "pid": 4242, "start": 7, "transport": "tcp",
                               "address": "::ffff:192.0.2.9", "port": 80 });
@@ -60,7 +62,7 @@ fn sample_with(dir: &Dir, at: i64, processes: &[Value], connections: &[Value]) -
                           "other_users": [1, 80, 81, 82, 83, 84, 85], "unreadable": 2, "ended": 3,
                           "sockets_unreadable": 1 });
     std::fs::write(&input, reading.to_string()).unwrap();
-    let out = immune(
+    let out = immunity(
         dir,
         &[
             "sample",
@@ -78,11 +80,11 @@ fn sample_with(dir: &Dir, at: i64, processes: &[Value], connections: &[Value]) -
     v.clone()
 }
 
-/// `immune <args> --json`, which must answer.
+/// `immunity <args> --json`, which must answer.
 fn contract(dir: &Dir, args: &[&str]) -> Value {
     let mut args = args.to_vec();
     args.push("--json");
-    let out = immune(dir, &args);
+    let out = immunity(dir, &args);
     assert!(
         out.status.success(),
         "{}",
@@ -91,7 +93,7 @@ fn contract(dir: &Dir, args: &[&str]) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// Every finding, in every state, each read whole with `immune finding <id> --json`.
+/// Every finding, in every state, each read whole with `immunity finding <id> --json`.
 fn findings(dir: &Dir) -> Vec<Value> {
     contract(dir, &["findings"])["findings"]
         .as_array()
@@ -270,7 +272,7 @@ fn an_interpreter_inside_a_folder_macos_asks_permission_for_is_not_looked_at_and
                    WHERE reader = 'processes' AND kind = 'folders macOS asks permission for'";
     assert_eq!(rows(&dir, guarded), ["none|not looked into: ~/Documents"]);
     // The words say it is programs that were not looked at.
-    let out = immune(&dir, &["status", "--json"]);
+    let out = immunity(&dir, &["status", "--json"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     let titles: Vec<&str> = v["not_covered"]
         .as_array()
@@ -311,7 +313,7 @@ fn after_the_owner_has_seen_it_the_same_process_raises_nothing_and_another_one_d
     // A program under the home folder is shown as the other readers show it.
     assert_eq!(found[0]["where_text"], "~/.local/bin/python3.12");
     let id = found[0]["finding"]["id"].as_str().unwrap().to_string();
-    assert!(immune(&dir, &["finding", &id, "seen"]).status.success());
+    assert!(immunity(&dir, &["finding", &id, "seen"]).status.success());
 
     assert_eq!(sample(&dir, T + 120, &one(10))["findings_opened"], 0);
     assert_eq!(sample(&dir, T + 180, &one(11))["findings_opened"], 0);
@@ -354,12 +356,12 @@ fn a_finding_still_open_names_the_latest_process_of_its_program_a_sample_saw() {
         json!({ "detached_process": { "pid": 11, "start_micros": 7 } })
     );
     let id = found[0]["finding"]["id"].as_str().unwrap();
-    let out = immune(&dir, &["findings"]);
+    let out = immunity(&dir, &["findings"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("No full check has finished."), "{text}");
     assert!(text.contains(id), "{text}");
-    let out = immune(&dir, &["finding", id]);
+    let out = immunity(&dir, &["finding", id]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
@@ -375,7 +377,7 @@ fn a_command_line_is_never_kept_in_the_store_nor_printed() {
     let said = sample(&dir, T + 60, &table(T + 60));
     assert!(!said.to_string().contains(MARKER));
     let input = dir.0.join(format!("reading-{}.json", T + 60));
-    let text = immune(&dir, &["sample", "--sample-input", input.to_str().unwrap()]);
+    let text = immunity(&dir, &["sample", "--sample-input", input.to_str().unwrap()]);
     assert!(text.status.success());
     assert!(!String::from_utf8_lossy(&text.stdout).contains(MARKER));
     assert!(!String::from_utf8_lossy(&text.stderr).contains(MARKER));
@@ -440,7 +442,7 @@ fn every_sample_names_its_level_of_access_and_what_it_cannot_see() {
         assert!(cannot.contains(&gap), "{gap}");
     }
     let input = dir.0.join(format!("reading-{T}.json"));
-    let text = immune(&dir, &["sample", "--sample-input", input.to_str().unwrap()]);
+    let text = immunity(&dir, &["sample", "--sample-input", input.to_str().unwrap()]);
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("7 of other users not read"), "{text}");
     assert!(
@@ -457,7 +459,7 @@ fn a_sample_waits_for_a_run_in_progress_and_then_stops_writing_nothing() {
     let input = dir.0.join("reading.json");
     let reading = json!({ "at": T, "processes": table(T) });
     std::fs::write(&input, reading.to_string()).unwrap();
-    let out = immune(
+    let out = immunity(
         &dir,
         &[
             "sample",
@@ -509,7 +511,7 @@ fn run(dir: &Dir) {
     let absent = dir.0.join("absent");
     std::fs::write(dir.0.join("brew.json"), r#"{"formulae": [], "casks": []}"#).unwrap();
     std::fs::create_dir_all(dir.0.join("home")).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .env("HOME", &dir.0)
         .current_dir(&dir.0)
         .args(["run", "--machine-name", "mac", "--store"])
@@ -566,7 +568,7 @@ fn a_connection_to_a_listed_address_is_a_finding_once_and_a_listed_name_is_never
         0
     );
     let id = f["finding"]["id"].as_str().unwrap().to_string();
-    assert!(immune(&dir, &["finding", &id, "seen"]).status.success());
+    assert!(immunity(&dir, &["finding", &id, "seen"]).status.success());
     assert_eq!(
         sample_with(&dir, T + 60, &[tool(60)], &conns[..1])["findings_opened"],
         0

@@ -1,23 +1,23 @@
-//! A small client of Immune's contract: the loop `contract/README.md` describes, run with the
+//! A small client of Immunity Core's contract: the loop `contract/README.md` describes, run with the
 //! typed messages of this crate and nothing else. Start from it.
 //!
 //! ```sh
-//! cargo run -p immune-contract --example client -- --immune <path to immune> --store <path> \
+//! cargo run -p immunity-contract --example client -- --immunity <path to immunity> --store <path> \
 //!     [--after <place>] [--judge-first] [-- <more arguments for matches and verdict>]
 //! ```
 //!
 //! It reads the rule matches and the findings, and with `--judge-first` it sends one verdict
 //! about the first match. A verdict is written into the store, so run it on a store made to try
-//! it. Arguments after `--` go to `immune matches` and `immune verdict`, the two commands that
-//! read the event log, such as `--system-root <dir>`; `immune findings` takes none of them.
+//! it. Arguments after `--` go to `immunity matches` and `immunity verdict`, the two commands that
+//! read the event log, such as `--system-root <dir>`; `immunity findings` takes none of them.
 
-use immune_contract::prost::Message;
-use immune_contract::v1;
+use immunity_contract::prost::Message;
+use immunity_contract::v1;
 use std::io::{Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 
 struct Args {
-    immune: String,
+    immunity: String,
     store: String,
     after: Option<String>,
     judge_first: bool,
@@ -25,11 +25,11 @@ struct Args {
 }
 
 fn parse() -> Result<Args, String> {
-    let (mut immune, mut store, mut after, mut judge_first) = (None, None, None, false);
+    let (mut immunity, mut store, mut after, mut judge_first) = (None, None, None, false);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--immune" => immune = it.next(),
+            "--immunity" => immunity = it.next(),
             "--store" => store = it.next(),
             "--after" => after = it.next(),
             "--judge-first" => judge_first = true,
@@ -38,12 +38,12 @@ fn parse() -> Result<Args, String> {
         }
     }
     let extra = it.collect();
-    let immune = immune.ok_or("--immune <path to the immune binary> is required")?;
+    let immunity = immunity.ok_or("--immunity <path to the immunity binary> is required")?;
     // Without --store the core would use the person's own store. A client that is being tried
     // must never write a verdict there, so it names the store or does nothing.
     let store = store.ok_or("--store <path> is required: this client never uses the default store, so trying it cannot touch a real one")?;
     Ok(Args {
-        immune,
+        immunity,
         store,
         after,
         judge_first,
@@ -59,7 +59,7 @@ enum Error {
     Broken(String),
 }
 
-/// Runs `immune <args> --store <store> --proto` and decodes its answer as `T`.
+/// Runs `immunity <args> --store <store> --proto` and decodes its answer as `T`.
 ///
 /// The exit code is read first. On 0, stdout holds `T`; on any other, it holds `Failure`.
 /// `Failure`'s fields are numbered from 1000, which every answer reserves, so the bytes of one
@@ -70,7 +70,7 @@ fn call<T: Message + Default>(
     log: bool,
     input: Option<&[u8]>,
 ) -> Result<T, Error> {
-    let mut cmd = Command::new(&a.immune);
+    let mut cmd = Command::new(&a.immunity);
     cmd.args(args).arg("--store").arg(&a.store).arg("--proto");
     if log {
         cmd.args(&a.extra);
@@ -85,7 +85,7 @@ fn call<T: Message + Default>(
         .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
-        .map_err(|e| Error::Broken(format!("cannot run {:?}: {e}", a.immune)))?;
+        .map_err(|e| Error::Broken(format!("cannot run {:?}: {e}", a.immunity)))?;
     if let Some(bytes) = input {
         // One message, written whole; dropping the pipe closes it, so the core reads to its end.
         let mut pipe = child.stdin.take().expect("stdin is piped");

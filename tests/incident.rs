@@ -95,7 +95,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let root =
-            std::env::temp_dir().join(format!("immune-incident-{}-{nanos}", std::process::id()));
+            std::env::temp_dir().join(format!("immunity-incident-{}-{nanos}", std::process::id()));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -120,7 +120,7 @@ impl Estate {
     /// A full run, as the app makes one every hour.
     fn run(&self) {
         let empty = self.0.join("empty");
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -155,7 +155,7 @@ impl Estate {
         let reading = serde_json::json!({ "at": at, "processes": processes,
                                           "connections": connections });
         std::fs::write(&input, reading.to_string()).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.home())
             .args(["sample", "--json", "--store"])
             .arg(self.store())
@@ -170,9 +170,9 @@ impl Estate {
         );
     }
 
-    /// What `immune status --json` answers.
+    /// What `immunity status --json` answers.
     fn status(&self) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -534,7 +534,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     assert_eq!(status["needs_a_look"]["total"], 8);
 
     // The summary page names every one, with where it is.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["view", "--no-open", "--store"])
         .arg(e.store())
         .output()

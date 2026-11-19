@@ -8,7 +8,7 @@ tags: ["attack.t1105", "attack.t1204"]
 logsource: {"product": "macos", "category": "process_creation"}
 detection:
   s1: {"process.name|cased": ["curl"]}
-  s2: {"immune.folded.process.args|re": ["(?s)\\x00http[^\\x00]*/homebrew/install/head/install\\.sh\\x00"]}
+  s2: {"immunity.folded.process.args|re": ["(?s)\\x00http[^\\x00]*/homebrew/install/head/install\\.sh\\x00"]}
   s3: {"process.args|contains": ["\u0000https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh\u0000"]}
   s4: {"process.args|exists": true}
   condition: "(s1 and s2 and (s4 and not s3))"

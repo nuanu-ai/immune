@@ -13,7 +13,7 @@ detection:
   s1: {"process.name|cased": ["sh", "bash", "zsh", "dash", "curl", "wget", "id", "whoami", "uname", "cmd.exe", "cat", "powershell.exe", "java", "rundll32.exe", "wget.exe", "certutil.exe", "nc", "ncat", "netcat", "nc.openbsd", "nc.traditional", "socat", "busybox", "mkfifo", "nohup", "setsid", "xterm"]}
   s2: {"process.name": ["python*"]}
   s3: {"process.args|contains": ["\u0000-c\u0000"]}
-  s4: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*import[^\\x00]*pty[^\\x00]*spawn[^\\x00]*\\x00", "(?s)\\x00[^\\x00]*import[^\\x00]*subprocess[^\\x00]*call[^\\x00]*\\x00"]}
+  s4: {"immunity.folded.process.args|re": ["(?s)\\x00[^\\x00]*import[^\\x00]*pty[^\\x00]*spawn[^\\x00]*\\x00", "(?s)\\x00[^\\x00]*import[^\\x00]*subprocess[^\\x00]*call[^\\x00]*\\x00"]}
   s5: {"process.name": ["perl*"]}
   s6: {"process.args|contains": ["\u0000-e\u0000"]}
   s7: {"process.args|contains": ["socket"]}
@@ -27,10 +27,10 @@ detection:
   s15: {"process.name": ["php*"]}
   s16: {"process.args|contains": ["\u0000-r\u0000"]}
   s17: {"process.args|contains": ["fsockopen"]}
-  s18: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*/bin/[^\\x00]*sh[^\\x00]*\\x00"]}
+  s18: {"immunity.folded.process.args|re": ["(?s)\\x00[^\\x00]*/bin/[^\\x00]*sh[^\\x00]*\\x00"]}
   s19: {"process.name|cased": ["node"]}
   s20: {"process.args|contains|cased": ["\u0000-e\u0000"]}
-  s21: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*spawn[^\\x00]*sh[^\\x00]*\\x00"]}
+  s21: {"immunity.folded.process.args|re": ["(?s)\\x00[^\\x00]*spawn[^\\x00]*sh[^\\x00]*\\x00"]}
   s22: {"process.args|contains": ["connect"]}
   s23: {"process.name": ["awk", "gawk", "mawk", "nawk"]}
   s24: {"process.args|contains": ["/inet/tcp/"]}

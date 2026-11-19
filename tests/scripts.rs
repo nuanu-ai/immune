@@ -18,7 +18,8 @@ struct Tools(PathBuf);
 
 impl Tools {
     fn new(tag: &str) -> Tools {
-        let dir = std::env::temp_dir().join(format!("immune-scripts-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("immunity-scripts-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         Tools(dir.canonicalize().unwrap())
@@ -125,7 +126,7 @@ fn the_core_build_and_checks_use_cargos_external_artifact() {
     t.tool("elsewhere/core with spaces", "exit 99");
     let core = t.0.join("elsewhere/core with spaces");
     let artifact = serde_json::json!({
-        "reason": "compiler-artifact", "target": {"name": "immune", "kind": ["bin"]},
+        "reason": "compiler-artifact", "target": {"name": "immunity", "kind": ["bin"]},
         "executable": core,
     });
     t.tool("bin/cargo", &format!(
@@ -244,10 +245,10 @@ fn the_build_takes_the_binary_from_where_cargo_says_it_built_it() {
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     };
-    assert_eq!(found(&cargo.stdout), env!("CARGO_BIN_EXE_immune"));
+    assert_eq!(found(&cargo.stdout), env!("CARGO_BIN_EXE_immunity"));
 
     // The same messages with the target folder elsewhere.
-    let target = Path::new(env!("CARGO_BIN_EXE_immune"))
+    let target = Path::new(env!("CARGO_BIN_EXE_immunity"))
         .parent()
         .unwrap()
         .parent()
@@ -259,6 +260,6 @@ fn the_build_takes_the_binary_from_where_cargo_says_it_built_it() {
         .replace(&target, "/elsewhere/cargo-target");
     assert_eq!(
         found(moved.as_bytes()),
-        "/elsewhere/cargo-target/debug/immune"
+        "/elsewhere/cargo-target/debug/immunity"
     );
 }

@@ -8,7 +8,7 @@
 //! `NO_COLOR` is set or `TERM` is `dumb`, and never the only carrier of meaning; only the eight
 //! basic colours, bold and dim, so the terminal's own palette decides the shade; columns cut to
 //! the terminal's width and whole in a pipe; relative times on a terminal and exact ones in a
-//! pipe. Nothing here is Immune's own design.
+//! pipe. Nothing here is Immunity Core's own design.
 //!
 //! The one rule a review tries to break: every text this module measures, cuts or styles is
 //! already escaped (`view::shown`, on what `known::whole` made), and a style sequence is written
@@ -804,7 +804,7 @@ impl Screen {
     }
 }
 
-/// One line under an error, indented. `Words` are Immune's own words, where a span in backticks
+/// One line under an error, indented. `Words` are Immunity Core's own words, where a span in backticks
 /// is a command, cyan on a terminal, the backticks dropped; never text from a source or from the
 /// command line. `Command` is a whole command line, which may hold what the person typed, each
 /// such word as the shell reads it back (`text::shell_word`): one line, never broken or cut,
@@ -820,9 +820,9 @@ const CAUSE_AT: usize = 7;
 
 impl Screen {
     /// A refusal or a failure as a person reads it on standard error, the one form every
-    /// command gives one in: `error:` red and bold and the cause in Immune's words; then,
+    /// command gives one in: `error:` red and bold and the cause in Immunity Core's words; then,
     /// indented, what to do (`steps`); then what the failure quotes from a source or from what
-    /// it was given, each under its label, escaped and never inside Immune's words. Nothing
+    /// it was given, each under its label, escaped and never inside Immunity Core's words. Nothing
     /// else: no usage. On a terminal every part is broken into lines that fit, never cut, and a
     /// line that goes on is indented, so nothing but the first line starts at the left edge.
     pub fn error(&self, cause: &str, steps: &[Step], detail: &[(&str, &str)]) -> String {
@@ -858,7 +858,7 @@ impl Screen {
             .collect()
     }
 
-    /// Immune's own words broken into lines of `room`, each span in backticks a command in cyan
+    /// Immunity Core's own words broken into lines of `room`, each span in backticks a command in cyan
     /// with the backticks dropped. A word joined to a command, such as a comma after it, stays
     /// on its line.
     pub fn marked(&self, words: &str, room: Option<usize>) -> Vec<String> {
@@ -1061,37 +1061,37 @@ mod tests {
         let s = Screen::terminal(40, false);
         let value =
             "a watcher runs, but its latest write to the store failed, so it does not watch live";
-        let lines = s.labelled(2, 8, "Watching", value, RED, Some("immune on"), 30);
+        let lines = s.labelled(2, 8, "Watching", value, RED, Some("immunity on"), 30);
         for l in &lines {
             assert!(columns(l) <= 40, "{l}");
         }
         let joined: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
         let joined = joined.join(" ");
         assert!(joined.contains("does not watch live"), "{joined}");
-        assert!(joined.contains("immune on"), "{joined}");
+        assert!(joined.contains("immunity on"), "{joined}");
     }
 
     #[test]
     fn an_error_is_its_cause_then_what_to_do_then_what_it_quotes_and_nothing_else() {
         let steps = [
-            Step::Words("Nothing was done. See it with: `immune status`".to_string()),
-            Step::Command("immune finding f0123456789 expected --reason <text>".to_string()),
+            Step::Words("Nothing was done. See it with: `immunity status`".to_string()),
+            Step::Command("immunity finding f0123456789 expected --reason <text>".to_string()),
         ];
         let said = Screen::pipe().error("a cause", &steps, &[("Store", "/x/store.db")]);
         assert_eq!(
             said,
-            "error: a cause\n  Nothing was done. See it with: immune status\n  \
-             immune finding f0123456789 expected --reason <text>\n  Store   /x/store.db\n"
+            "error: a cause\n  Nothing was done. See it with: immunity status\n  \
+             immunity finding f0123456789 expected --reason <text>\n  Store   /x/store.db\n"
         );
         let painted = Screen::terminal(80, true).error("a cause", &steps, &[]);
         let lines: Vec<&str> = painted.lines().collect();
         assert_eq!(lines[0], "\u{1b}[1;31merror:\u{1b}[0m a cause");
         assert_eq!(
             lines[1],
-            "  Nothing was done. See it with: \u{1b}[36mimmune status\u{1b}[0m"
+            "  Nothing was done. See it with: \u{1b}[36mimmunity status\u{1b}[0m"
         );
         assert!(
-            lines[2].starts_with("  \u{1b}[36mimmune finding"),
+            lines[2].starts_with("  \u{1b}[36mimmunity finding"),
             "{painted}"
         );
     }
@@ -1099,7 +1099,7 @@ mod tests {
     #[test]
     fn an_error_on_a_narrow_terminal_is_broken_into_lines_that_fit_and_never_cut() {
         let cause = "the event log could not be read, so nothing was evaluated at all today";
-        let path = "/Users/example/Library/Application Support/ai.nuanu.immune/a-very-long-folder/store.db";
+        let path = "/Users/example/Library/Application Support/ai.nuanu.immunity.core/a-very-long-folder/store.db";
         let s = Screen::terminal(40, false);
         let said = s.error(
             cause,
@@ -1121,8 +1121,8 @@ mod tests {
 
     #[test]
     fn a_command_under_an_error_is_one_line_at_any_width_never_broken_or_cut() {
-        let command = "immune finding f0123456789 seen --reason checked --via app \
-                       --journal-seq 3 --store /Users/example/.immune/store.db";
+        let command = "immunity finding f0123456789 seen --reason checked --via app \
+                       --journal-seq 3 --store /Users/example/.immunity/store.db";
         for width in [40, 60, 80] {
             let said = Screen::terminal(width, false).error(
                 "a cause",
@@ -1137,11 +1137,11 @@ mod tests {
 
     #[test]
     fn a_word_joined_to_a_command_stays_on_its_line_and_takes_no_colour() {
-        let lines = Screen::terminal(80, true).marked("Run `immune run`, then wait.", None);
-        assert_eq!(lines, ["Run \u{1b}[36mimmune run\u{1b}[0m, then wait."]);
+        let lines = Screen::terminal(80, true).marked("Run `immunity run`, then wait.", None);
+        assert_eq!(lines, ["Run \u{1b}[36mimmunity run\u{1b}[0m, then wait."]);
         assert_eq!(
-            Screen::pipe().marked("Run `immune run`, then wait.", Some(12)),
-            ["Run immune", "run, then", "wait."]
+            Screen::pipe().marked("Run `immunity run`, then wait.", Some(12)),
+            ["Run immunity", "run, then", "wait."]
         );
     }
 

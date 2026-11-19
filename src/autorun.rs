@@ -2109,7 +2109,7 @@ mod tests {
         // named such a place is neither read nor looked for.
         use std::os::unix::fs::PermissionsExt;
         let home = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-autorun-guard-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-autorun-guard-{}", std::process::id())),
         );
         std::fs::create_dir_all(home.join("Documents/tool")).unwrap();
         std::fs::write(home.join("Documents/tool/settings.json"), "{}").unwrap();
@@ -2165,7 +2165,8 @@ mod tests {
     #[test]
     fn every_key_of_every_row_read_by_key_is_an_entry_of_its_triggers_kind() {
         // A row is data: what it lists is what is read, with nothing else to write.
-        let dir = std::env::temp_dir().join(format!("immune-autorun-keys-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("immunity-autorun-keys-{}", std::process::id()));
         let _removed = crate::common::Scratch::at(dir.clone());
         for p in POINTS.iter() {
             let Select(_, keys) = p.part else { continue };
@@ -2202,7 +2203,7 @@ mod tests {
     #[test]
     fn a_path_with_a_star_matches_entries_that_begin_and_end_as_it_does() {
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-autorun-glob-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-autorun-glob-{}", std::process::id())),
         );
         std::fs::create_dir_all(dir.join(".venv/lib/python3.12/site-packages")).unwrap();
         std::fs::write(dir.join(".venv/lib/python3.12/site-packages/a.pth"), "").unwrap();
@@ -2230,7 +2231,7 @@ mod tests {
     fn a_row_of_each_extraction_reads_its_part_and_derives_its_kind_from_the_table() {
         // A hypothetical row of each extraction this version does not use in the table yet.
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-autorun-row-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-autorun-row-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hook.pth"), "# x\nimport a\nimport b\n").unwrap();

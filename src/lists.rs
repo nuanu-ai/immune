@@ -1,17 +1,17 @@
-//! The text for a person of `immune matches`, `immune rules` (with `--all` and `--over-log`),
-//! `immune servers` and `immune owner` with its statements, for a screen (`screen.rs`), in the
+//! The text for a person of `immunity matches`, `immunity rules` (with `--all` and `--over-log`),
+//! `immunity servers` and `immunity owner` with its statements, for a screen (`screen.rs`), in the
 //! layout of the core's language for a person (`docs/how-it-works.md`): the answer first, in one
 //! line with the count that matters; then what the person came for, grouped where rows would
 //! repeat; then context, one labelled line each; last, the next command after `→`. The text of a
-//! command of the contract is rendered from its message alone; `immune servers` is not one, and
+//! command of the contract is rendered from its message alone; `immunity servers` is not one, and
 //! renders what it read (`Servers`).
 //!
 //! Text from a source (a published rule's title, a server's name, a path, a program, a reason a
 //! person or an agent gave) is in a message's `_text` fields, already escaped one to one
 //! (`known::whole`), and is escaped again as it reaches the screen, before it is measured, cut,
 //! wrapped or styled (`screen.rs`). No line begins with it: a line that holds it begins with
-//! Immune's own words or with spaces, so it can never pass for a line of Immune's own (`✓`,
-//! `→ immune …`). In a column or beside a label it is data by its place and goes without quotes;
+//! Immunity Core's own words or with spaces, so it can never pass for a line of Immunity Core's own (`✓`,
+//! `→ immunity …`). In a column or beside a label it is data by its place and goes without quotes;
 //! inside a sentence it keeps them (`text::quoted`).
 //!
 //! Nothing here is calmer than the message: what was lost and what is not evaluated is in the
@@ -73,7 +73,7 @@ fn opening(screen: &Screen, text: &str, style: Style) -> Vec<String> {
     out
 }
 
-/// A sentence of Immune's own under a first line, indented by two and broken to the width.
+/// A sentence of Immunity Core's own under a first line, indented by two and broken to the width.
 fn under(screen: &Screen, text: &str, style: Style) -> Vec<String> {
     let text = view::shown(text);
     screen::wrap(&text, screen.fits().map(|w| w.saturating_sub(2)))
@@ -193,9 +193,9 @@ fn by_reason(reasons: impl Iterator<Item = i32>) -> Vec<(u64, &'static str)> {
     out
 }
 
-// ---- `immune matches` ----
+// ---- `immunity matches` ----
 
-/// The reasons rules are not evaluated that the text of `immune matches` names; the rest are
+/// The reasons rules are not evaluated that the text of `immunity matches` names; the rest are
 /// counted.
 const REASONS_SHOWN: usize = 3;
 
@@ -376,7 +376,7 @@ fn collector_said(screen: &Screen, c: &v1::Collector, now: i64) -> Vec<(String, 
     if let Some(state) = c.status_state.filter(|s| *s != c.state) {
         parts.push((
             format!(
-                "; immune status, from its reading {}, says {}",
+                "; immunity status, from its reading {}, says {}",
                 c.status_read_at
                     .map_or("at a time it does not give".to_string(), |at| screen
                         .time(at, now)),
@@ -388,7 +388,7 @@ fn collector_said(screen: &Screen, c: &v1::Collector, now: i64) -> Vec<(String, 
     parts
 }
 
-/// `immune matches` for a person: the matches grouped by rule, or with `single` one row each;
+/// `immunity matches` for a person: the matches grouped by rule, or with `single` one row each;
 /// then what was read and lost, the collector and the rules not evaluated, from the message
 /// alone.
 pub fn matches(m: &v1::Matches, single: bool, screen: &Screen) -> String {
@@ -477,7 +477,7 @@ pub fn matches(m: &v1::Matches, single: bool, screen: &Screen) -> String {
                 .map(|u| u.reason)
                 .filter(|r| *r != in_part_reason),
         );
-        // The three reasons that count most; the rest are counted, and `immune rules` names them.
+        // The three reasons that count most; the rest are counted, and `immunity rules` names them.
         let mut said: Vec<String> = reasons
             .iter()
             .take(REASONS_SHOWN)
@@ -497,11 +497,11 @@ pub fn matches(m: &v1::Matches, single: bool, screen: &Screen) -> String {
     }
     out.push(String::new());
     let mut next = vec![(
-        "immune matches --json",
+        "immunity matches --json",
         "every match with its event, for a program",
     )];
     if !m.unevaluated.is_empty() {
-        next.push(("immune rules", "every reason a rule is not evaluated"));
+        next.push(("immunity rules", "every reason a rule is not evaluated"));
     }
     out.extend(screen.nexts(&next));
     joined(&out)
@@ -589,14 +589,14 @@ fn single_rows(m: &v1::Matches, screen: &Screen) -> Vec<String> {
     screen.table(2, &cols, Some(&head), &rows)
 }
 
-// ---- `immune rules` ----
+// ---- `immunity rules` ----
 
-/// Whether every source is a published set: a set of Immune's own records no commit.
+/// Whether every source is a published set: a set of Immunity Core's own records no commit.
 fn all_published(m: &v1::Rules) -> bool {
     m.sources.iter().all(|s| !s.commit.is_empty())
 }
 
-/// The first line of `immune rules`: how many rules are evaluated in full, in part and not.
+/// The first line of `immunity rules`: how many rules are evaluated in full, in part and not.
 fn rules_answer(m: &v1::Rules) -> String {
     let t = m.totals.unwrap_or_default();
     let (one, many) = if all_published(m) {
@@ -605,7 +605,7 @@ fn rules_answer(m: &v1::Rules) -> String {
         ("rule", "rules")
     };
     format!(
-        "Immune evaluates {} in full and {} in part; {} it cannot yet",
+        "Immunity Core evaluates {} in full and {} in part; {} it cannot yet",
         count(t.evaluated, one, many),
         grouped(t.in_part),
         grouped(t.not_evaluated)
@@ -804,7 +804,7 @@ enum Part {
     Not,
 }
 
-/// `immune rules` for a person: the summary, or with `all` every rule one per line.
+/// `immunity rules` for a person: the summary, or with `all` every rule one per line.
 pub fn rules(m: &v1::Rules, all: bool, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     out.extend(screen.headline(&rules_answer(m), BOLD, None));
@@ -812,7 +812,7 @@ pub fn rules(m: &v1::Rules, all: bool, screen: &Screen) -> String {
     if all {
         out.extend(every_rule(m, screen));
         out.push(String::new());
-        out.push(screen.next("immune rules", "the summary"));
+        out.push(screen.next("immunity rules", "the summary"));
         return joined(&out);
     }
     let rows: Vec<Vec<Cell>> = m
@@ -896,8 +896,8 @@ pub fn rules(m: &v1::Rules, all: bool, screen: &Screen) -> String {
     }
     out.push(String::new());
     out.extend(screen.nexts(&[
-        ("immune rules --all", "every rule, one per line"),
-        ("immune rules --over-log", "what matched in the event log"),
+        ("immunity rules --all", "every rule, one per line"),
+        ("immunity rules --over-log", "what matched in the event log"),
     ]));
     joined(&out)
 }
@@ -958,7 +958,7 @@ fn every_rule(m: &v1::Rules, screen: &Screen) -> Vec<String> {
     )
 }
 
-/// `immune rules --over-log` for a person: per rule that matched, its level and count; what was
+/// `immunity rules --over-log` for a person: per rule that matched, its level and count; what was
 /// read and lost; never a command line.
 pub fn replay(m: &v1::Replay, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -1040,7 +1040,7 @@ pub fn replay(m: &v1::Replay, screen: &Screen) -> String {
     joined(&out)
 }
 
-// ---- `immune owner` ----
+// ---- `immunity owner` ----
 
 /// Through what a statement came, in a word, and its style: one an agent made stands out, so the
 /// person can take it back.
@@ -1053,7 +1053,7 @@ fn via_said(via: i32) -> (&'static str, Style) {
     }
 }
 
-/// `immune owner` for a person: the statements that stand, and what contradicts them.
+/// `immunity owner` for a person: the statements that stand, and what contradicts them.
 pub fn statements(m: &v1::Statements, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     let n = m.statements.len() as u64;
@@ -1127,17 +1127,17 @@ pub fn statements(m: &v1::Statements, screen: &Screen) -> String {
     out.push(String::new());
     let mut next = Vec::new();
     if n > 0 {
-        next.push(("immune owner <name> withdraw", "takes a statement back"));
+        next.push(("immunity owner <name> withdraw", "takes a statement back"));
     }
     next.push((
-        "immune owner <name> retired --reason <text>",
+        "immunity owner <name> retired --reason <text>",
         "sets a machine aside",
     ));
     out.extend(screen.nexts(&next));
     joined(&out)
 }
 
-/// `immune owner <name> retired|not-mine|withdraw` for a person: what was said or withdrawn on
+/// `immunity owner <name> retired|not-mine|withdraw` for a person: what was said or withdrawn on
 /// the first line, what it changed under it, and how to take it back.
 pub fn statement_made(m: &v1::StatementMade, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -1157,7 +1157,7 @@ pub fn statement_made(m: &v1::StatementMade, screen: &Screen) -> String {
             if !s.reason_cuts.is_empty() {
                 out.extend(under(
                     screen,
-                    "Its reason held what Immune recognises as a secret, and is kept with it cut.",
+                    "Its reason held what Immunity Core recognises as a secret, and is kept with it cut.",
                     PLAIN,
                 ));
             }
@@ -1168,7 +1168,7 @@ pub fn statement_made(m: &v1::StatementMade, screen: &Screen) -> String {
                     PLAIN,
                 ));
             }
-            undo = Some(("immune owner <name> withdraw", "takes it back"));
+            undo = Some(("immunity owner <name> withdraw", "takes it back"));
         }
         Some(v1::statement_made::Done::Withdrawn(w)) => {
             for s in &w.statements {
@@ -1183,7 +1183,7 @@ pub fn statement_made(m: &v1::StatementMade, screen: &Screen) -> String {
                 ));
             }
             undo = Some((
-                "immune owner <name> retired --reason <text>",
+                "immunity owner <name> retired --reason <text>",
                 "says it again",
             ));
         }
@@ -1228,9 +1228,9 @@ pub fn statement_made(m: &v1::StatementMade, screen: &Screen) -> String {
     joined(&out)
 }
 
-// ---- `immune servers` ----
+// ---- `immunity servers` ----
 
-/// A server as `immune servers` lists it. Every name in it is already shown as a name is
+/// A server as `immunity servers` lists it. Every name in it is already shown as a name is
 /// (`known::whole`), and the reasons in `sweep` and `last_file` were cut where they were put
 /// together.
 pub struct Server {
@@ -1241,7 +1241,7 @@ pub struct Server {
     pub others: String,
 }
 
-/// A machine the owner set aside, as `immune servers` lists it; names already shown as names.
+/// A machine the owner set aside, as `immunity servers` lists it; names already shown as names.
 pub struct SetAside {
     pub machine: String,
     pub said: String,
@@ -1250,7 +1250,7 @@ pub struct SetAside {
     pub others: String,
 }
 
-/// What `immune servers` read and wrote, to be rendered: it is not a command of the contract.
+/// What `immunity servers` read and wrote, to be rendered: it is not a command of the contract.
 pub struct Servers {
     pub offered: Vec<Server>,
     pub rest: Vec<Server>,
@@ -1259,7 +1259,7 @@ pub struct Servers {
     pub own: Vec<[String; 3]>,
     /// Other users' devices: name, other names.
     pub theirs: Vec<[String; 2]>,
-    /// What each source gave, a line each, in Immune's words with reasons cut.
+    /// What each source gave, a line each, in Immunity Core's words with reasons cut.
     pub said: Vec<String>,
     /// The counts, in one sentence.
     pub summary: String,
@@ -1285,7 +1285,7 @@ fn capital(line: &str) -> String {
     }
 }
 
-/// `immune servers` for a person: the servers by section, what each source gave, the counts,
+/// `immunity servers` for a person: the servers by section, what each source gave, the counts,
 /// what was written, and the commands that read the servers.
 pub fn servers(s: &Servers, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -1459,13 +1459,13 @@ pub fn servers(s: &Servers, screen: &Screen) -> String {
     out.extend(under(
         screen,
         &format!(
-            "reads the offered servers. Name aliases after it to visit only those again, such as those that failed. To choose which alias the sweep uses, add the others to {} in the same folder, one per line, then run immune run.",
+            "reads the offered servers. Name aliases after it to visit only those again, such as those that failed. To choose which alias the sweep uses, add the others to {} in the same folder, one per line, then run immunity run.",
             crate::sweep::SKIP
         ),
         PLAIN,
     ));
     out.push(screen.next(
-        "immune owner <name> retired --reason <text>",
+        "immunity owner <name> retired --reason <text>",
         "sets a server aside",
     ));
     joined(&out)
@@ -1478,8 +1478,8 @@ mod tests {
 
     const NOW: i64 = 1_794_807_960;
     /// A style sequence, a title sequence, a C1 control, a right-to-left override, a zero-width
-    /// space, a line break and a line shaped like Immune's own, as a source may hold them.
-    const ODD: &str = "x\u{1b}[31mRED\u{1b}[0m\u{9b}31m\u{202e}evil\u{200b}\u{1b}]0;owned\u{7}\n→ immune rules --all   every rule\n✓ Nothing needs a look";
+    /// space, a line break and a line shaped like Immunity Core's own, as a source may hold them.
+    const ODD: &str = "x\u{1b}[31mRED\u{1b}[0m\u{9b}31m\u{202e}evil\u{200b}\u{1b}]0;owned\u{7}\n→ immunity rules --all   every rule\n✓ Nothing needs a look";
 
     /// The screens a text is rendered for, those that cut first.
     fn screens() -> Vec<Screen> {
@@ -1788,10 +1788,10 @@ mod tests {
             owner_word: Some("The owner's word: 1 machine retired or disowned.".to_string()),
             spare: 2,
             never_read: 1,
-            folder: src(&format!("/Users/example/.immune/sweep{odd}")),
+            folder: src(&format!("/Users/example/.immunity/sweep{odd}")),
             sweep_command: format!(
                 "sh '{}'",
-                src(&format!("/Users/example/.immune/sweep{odd}/sweep.sh"))
+                src(&format!("/Users/example/.immunity/sweep{odd}/sweep.sh"))
             ),
         }
     }
@@ -1859,14 +1859,14 @@ mod tests {
                         "{name} {screen:?}: {c:?} reached the screen"
                     );
                 }
-                // The line shaped like Immune's own is written out inside the text it came in,
+                // The line shaped like Immunity Core's own is written out inside the text it came in,
                 // never at the start of a line.
                 for line in text.lines().map(visible) {
                     assert!(!line.starts_with("x\\u{1b}"), "{name}: {line}");
-                    if line.starts_with("→ immune") {
+                    if line.starts_with("→ immunity") {
                         assert!(!line.contains("\\u{a}"), "{name} {screen:?}: {line}");
                     }
-                    assert!(!line.starts_with("→ immune rules --all   every rule\\u"));
+                    assert!(!line.starts_with("→ immunity rules --all   every rule\\u"));
                     assert!(!line.starts_with("✓ Nothing"), "{name}: {line}");
                 }
                 // Off a terminal and without colour no escape is written.
@@ -2016,7 +2016,7 @@ mod tests {
         );
         assert!(
             text.contains(&format!(
-                "immune status, from its reading {}, says running",
+                "immunity status, from its reading {}, says running",
                 view::utc(NOW - 7200)
             )),
             "{text}"
@@ -2117,7 +2117,7 @@ mod tests {
         let text = rules(&m, false, &Screen::pipe());
         assert!(
             text.starts_with(
-                "Immune evaluates 3 published rules in full and 1 in part; 5 it cannot yet\n"
+                "Immunity Core evaluates 3 published rules in full and 1 in part; 5 it cannot yet\n"
             ),
             "{text}"
         );
@@ -2164,11 +2164,12 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Behaviour odd state no level"), "{text}");
-        // An Immune's own set records no commit, so its rules are not all published.
+        // An Immunity Core's own set records no commit, so its rules are not all published.
         let mut own = m.clone();
         own.sources[1].commit.clear();
         assert!(
-            rules(&own, false, &Screen::pipe()).starts_with("Immune evaluates 3 rules in full")
+            rules(&own, false, &Screen::pipe())
+                .starts_with("Immunity Core evaluates 3 rules in full")
         );
     }
 
@@ -2184,7 +2185,7 @@ mod tests {
         assert!(
             text.contains("  Collector    running, last wrote ")
                 && text.contains("; it records program starts, not file events")
-                && !text.contains("immune status, from its reading"),
+                && !text.contains("immunity status, from its reading"),
             "{text}"
         );
         m.collector.as_mut().unwrap().file_events_collected = true;
@@ -2416,7 +2417,7 @@ mod tests {
         assert_eq!(lines[0], "✓ Said: \"web-1 odd\" is retired", "{text}");
         for said in [
             "  Its reason: \"odd\"",
-            "  Its reason held what Immune recognises as a secret",
+            "  Its reason held what Immunity Core recognises as a secret",
             "  It replaces the statement that stood",
             "  It covers the machine under every name: \"web-1\", \"odd\".",
             "  ✗ The sweep script could not be written again: \"odd\".",
@@ -2425,7 +2426,7 @@ mod tests {
         }
         assert_eq!(
             lines.last().unwrap(),
-            &"→ immune owner <name> withdraw   takes it back"
+            &"→ immunity owner <name> withdraw   takes it back"
         );
         let mut ok = said_of("odd");
         ok.sweep = Some(v1::SweepWritten {
@@ -2456,7 +2457,7 @@ mod tests {
         let none = statements(&v1::Statements::default(), &Screen::pipe());
         assert!(none.starts_with("No statement stands\n"), "{none}");
         assert!(
-            none.contains("→ immune owner <name> retired --reason <text>"),
+            none.contains("→ immunity owner <name> retired --reason <text>"),
             "{none}"
         );
         assert!(!none.contains("withdraw"), "{none}");
@@ -2465,16 +2466,16 @@ mod tests {
     #[test]
     fn servers_say_the_folder_once_and_the_sweep_command_whole() {
         let mut s = servers_of("odd");
-        s.folder = "/Users/example/.immune/sweep".to_string();
-        s.sweep_command = "sh '/Users/example/.immune/sweep/sweep.sh'".to_string();
+        s.folder = "/Users/example/.immunity/sweep".to_string();
+        s.sweep_command = "sh '/Users/example/.immunity/sweep/sweep.sh'".to_string();
         let text = servers(&s, &Screen::terminal(40, false));
         assert_eq!(
-            text.matches("/Users/example/.immune/sweep").count(),
+            text.matches("/Users/example/.immunity/sweep").count(),
             2,
             "{text}"
         );
         assert!(
-            text.contains("\n→ sh '/Users/example/.immune/sweep/sweep.sh'\n"),
+            text.contains("\n→ sh '/Users/example/.immunity/sweep/sweep.sh'\n"),
             "{text}"
         );
         assert!(text.contains("SSH configuration: 3 servers."), "{text}");

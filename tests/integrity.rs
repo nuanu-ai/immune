@@ -26,7 +26,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "immune-integrity-{tag}-{}-{nanos}",
+            "immunity-integrity-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home", "system", "empty"] {
@@ -56,10 +56,10 @@ impl Estate {
         self.system().join("opt/homebrew/lib/node_modules/tool")
     }
 
-    /// `immune run` on this estate alone, with PATH as given, returning the report line.
+    /// `immunity run` on this estate alone, with PATH as given, returning the report line.
     fn run_with_path(&self, path: &str) -> String {
         let empty = self.0.join("empty");
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .env("HOME", self.0.join("home"))
             .env("PATH", path)
             .current_dir(&self.0)
@@ -140,9 +140,9 @@ impl Estate {
         self.0.join("home")
     }
 
-    /// `immune <args> --json --store <this store>`, as the contract's message.
+    /// `immunity <args> --json --store <this store>`, as the contract's message.
     fn contract(&self, args: &[&str]) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(args)
             .args(["--json", "--store"])
             .arg(self.store())
@@ -171,9 +171,9 @@ impl Estate {
             .collect()
     }
 
-    /// The `integrity` section of `immune status --json`.
+    /// The `integrity` section of `immunity status --json`.
     fn status(&self) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -382,7 +382,7 @@ fn a_keg_or_package_changed_in_place_is_one_changed_event_and_a_new_version_is_n
         .iter()
         .find(|j| j["entry"] == "changed" && j["predicate"] == "has_digest")
         .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["finding", id, "--store"])
         .arg(e.store())
         .output()
@@ -871,13 +871,13 @@ fn the_folder_that_holds_the_store_is_not_an_applications_code_while_another_nam
     std::fs::create_dir_all(&own).unwrap();
     e.1 = Some(own.join("store.db"));
     let live = own.join("pages/live.js");
-    put(&live, "window.immuneLive = {};\n");
+    put(&live, "window.immunityLive = {};\n");
     put(&own.join("sweep.sh"), "#!/bin/sh\n");
     let js = module(&e, "org.example.other");
     put(&js, "start();\n");
     e.run();
     // The code files there change between the two runs, as they do while the program works.
-    append(&live, "window.immuneLive = {};\n");
+    append(&live, "window.immunityLive = {};\n");
     append(&own.join("sweep.sh"), "exit 0\n");
     append(&js, "steal();\n");
     e.run();
@@ -1046,7 +1046,7 @@ fn a_place_of_apps_or_a_packages_file_linked_into_documents_is_not_looked_into_a
         "none|not_given|not looked into: ~/Documents"
     );
     // The words say what was not looked into.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["status", "--json", "--store"])
         .arg(e.store())
         .output()
@@ -1121,7 +1121,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
     assert!(!ran.exists(), "a package manager found was run");
 
     let not_covered = || -> Vec<serde_json::Value> {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["status", "--json", "--store"])
             .arg(e.store())
             .output()
@@ -1167,7 +1167,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
     );
     // A person reads the names once, each quoted as data on the line under the sentence, under
     // what was not judged on this Mac.
-    let said = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let said = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["status", "--coverage", "--store"])
         .arg(e.store())
         .output()
@@ -1197,7 +1197,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
     );
     // The status itself names them among what is not judged, and its next step is the command
     // that says more.
-    let status = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let status = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["status", "--store"])
         .arg(e.store())
         .output()
@@ -1210,11 +1210,11 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
                 && l.contains("MacPorts, Nix, pkgsrc, conda"))
             && status
                 .lines()
-                .any(|l| l == "→ immune status --coverage   what was read and what was not"),
+                .any(|l| l == "→ immunity status --coverage   what was read and what was not"),
         "{status}"
     );
     // An agent finds each one by name among what this build has no reader for.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["status", "--json", "--store"])
         .arg(e.store())
         .output()

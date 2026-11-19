@@ -4,5 +4,5 @@ The test names and identifiers in the tables of this folder (the columns `check`
 Source: https://github.com/redcanaryco/atomic-red-team
 Licence: MIT, Copyright (c) 2018 Red Canary, Inc.
 
-The four rows named "Control" are Immune's own checks and are not from Atomic Red Team.
-Everything else in the tables is Immune's own record of a run.
+The four rows named "Control" are Immunity Core's own checks and are not from Atomic Red Team.
+Everything else in the tables is Immunity Core's own record of a run.

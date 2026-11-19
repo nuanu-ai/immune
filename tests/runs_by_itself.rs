@@ -4,7 +4,7 @@
 
 mod common;
 
-use immune_contract::v1;
+use immunity_contract::v1;
 use prost::Message;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -67,8 +67,10 @@ impl Estate {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("immune-runs-{tag}-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "immunity-runs-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(path.join(dir)).unwrap();
         }
@@ -110,7 +112,7 @@ impl Estate {
         self.go(Some(root), sessions)
     }
 
-    /// A full run, as `immune run` makes it by default: the walk of the whole home folder.
+    /// A full run, as `immunity run` makes it by default: the walk of the whole home folder.
     fn full(&self) -> String {
         self.go(None, &self.0.join("empty"))
     }
@@ -136,7 +138,7 @@ impl Estate {
     /// The command of a run on a machine named `machine`, not started.
     fn command_as(&self, machine: &str, root: Option<&Path>, sessions: &Path) -> Command {
         let empty = self.0.join("empty");
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immunity"));
         cmd.env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -212,9 +214,9 @@ impl Estate {
             .collect()
     }
 
-    /// `immune <args> --json --store <this store>`, as the contract's message.
+    /// `immunity <args> --json --store <this store>`, as the contract's message.
     fn contract(&self, args: &[&str]) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(args)
             .args(["--json", "--store"])
             .arg(self.store())
@@ -228,9 +230,9 @@ impl Estate {
         self.findings(false).into_iter().map(|f| f.0).collect()
     }
 
-    /// `immune status --json`'s result.
+    /// `immunity status --json`'s result.
     fn status(&self) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -245,9 +247,9 @@ impl Estate {
         self.page("this-mac.html")
     }
 
-    /// One page `immune view` makes, by its file name.
+    /// One page `immunity view` makes, by its file name.
     fn page(&self, name: &str) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["view", "--no-open", "--store"])
             .arg(self.store())
             .output()
@@ -333,7 +335,7 @@ impl Estate {
             .iter()
             .filter(|f| f["finding"]["state"] == "open");
         for f in open {
-            let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
                 .args([
                     "finding",
                     f["finding"]["id"].as_str().unwrap(),
@@ -494,7 +496,7 @@ fn other_ways_a_project_runs_code_by_itself_are_named_where_they_are_present() {
     assert!(e.lacks(OTHERS_KIND).is_empty());
 }
 
-/// What `immune project` answers of a project here: the ways it holds, and the presence reading
+/// What `immunity project` answers of a project here: the ways it holds, and the presence reading
 /// and the reading of ways not read, each as completeness, cause and reason.
 fn ways_held(e: &Estate, rel: &str) -> (Vec<String>, [String; 2]) {
     let known = e.contract(&["project", &format!("checkout:machine:mac/{rel}")]);
@@ -555,7 +557,7 @@ fn a_project_a_run_did_not_look_into_keeps_the_ways_it_holds_and_the_readings_sa
 
 const CHECKOUTS_KIND: &str = "checkouts under the home folder";
 
-/// What `immune project` says of a project here: held, gone or unknown.
+/// What `immunity project` says of a project here: held, gone or unknown.
 fn presence(e: &Estate, rel: &str) -> String {
     let known = e.contract(&["project", &format!("checkout:machine:mac/{rel}")]);
     known["presence"].as_str().unwrap().to_string()
@@ -4185,9 +4187,9 @@ fn a_folder_that_could_not_be_listed_on_the_first_day_is_told_once_when_it_can_b
     assert_eq!(e.told(), ["checkout:machine:mac/archive/old (1)"]);
 }
 
-/// The page of changes, as `immune view` writes it.
+/// The page of changes, as `immunity view` writes it.
 fn changes_page(e: &Estate) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["view", "--no-open", "--store"])
         .arg(e.store())
         .output()
@@ -4433,7 +4435,7 @@ fn a_place_that_could_not_be_read_is_never_told_as_a_change_that_was_seen() {
         "reason_text": "invented: a reason",
         "case_text": "case-1",
     });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["verdict", "--json", "--store"])
         .arg(e.store())
         .arg("--system-root")
@@ -4858,7 +4860,7 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         ),
         "{page}"
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["finding", &first, "--store"])
         .arg(e.store())
         .output()
@@ -4873,7 +4875,7 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
     assert!(text.contains("\n  1 project on mac   "), "{text}");
     // The list's row says it too, beside the short title; what needs a look counts the rule.
     let said = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(args)
             .arg("--store")
             .arg(e.store())
@@ -4894,7 +4896,7 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         status.contains("Places read for the first time"),
         "{status}"
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args([
             "finding",
             &first,
@@ -5364,9 +5366,9 @@ fn rows_naming(pages: &[String], name: &str) -> Vec<String> {
     out
 }
 
-/// Every page `immune view` writes.
+/// Every page `immunity view` writes.
 fn all_pages(e: &Estate) -> Vec<String> {
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
         .args(["view", "--no-open", "--store"])
         .arg(e.store())
         .output()
@@ -5805,7 +5807,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         "{kind}"
     );
     let text = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(args)
             .arg("--store")
             .arg(e.store())
@@ -5817,7 +5819,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
     let presence = |id: &str, expected: bool| {
         let json = e.contract(&["finding", id]);
         assert_eq!(json["evidence"]["place_changed"]["presence_only"], expected);
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(["finding", id, "--proto", "--store"])
             .arg(e.store())
             .output()

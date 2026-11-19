@@ -1289,7 +1289,7 @@ fn refused(r: Refused) -> Box<dyn std::error::Error> {
 
 /// The finding with this id, if it is one every answer shows: every finding the store holds is.
 /// One of a rule this build does not have, or that this build raises no finding with, is shown
-/// in Immune's own words (`kept_item`) rather than left out, so it is counted, listed, read and
+/// in Immunity Core's own words (`kept_item`) rather than left out, so it is counted, listed, read and
 /// answered like any other. The write and the read agree on what "the store has this finding"
 /// means, and no case is left that the store holds and the reads do not show.
 fn shown(f: &Found, id: &str) -> bool {
@@ -1937,11 +1937,11 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
 /// What a finding of a rule this build does not have is about, as the item's `kind`.
 pub const KEPT_KIND: &str = "finding of a rule not in this version";
 
-/// Immune's words for such a finding: nothing a rule would say, since the rule is not here.
+/// Immunity Core's words for such a finding: nothing a rule would say, since the rule is not here.
 const KEPT_WORDS: Words = Words {
-    title: "This finding was raised by a rule that is not in this version of Immune.",
+    title: "This finding was raised by a rule that is not in this version of Immunity Core.",
     short: "Raised by a rule not in this version",
-    meaning: "The rule that raised it is not among those that raise findings in this version, so Immune can say no more about it than what it kept, and the finding stays until you answer it.",
+    meaning: "The rule that raised it is not among those that raise findings in this version, so Immunity Core can say no more about it than what it kept, and the finding stays until you answer it.",
     advice: "Look at where it is and at what it rests on; once you know what it was, mark it seen or expected.",
 };
 
@@ -1986,7 +1986,7 @@ pub fn not_read_words(kind: &'static str) -> Words {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (title, short) = *made.entry(kind).or_insert_with(|| {
         let title = format!(
-            "At the last check Immune could not read a watched {kind}, so it is not known whether it was added, changed or removed."
+            "At the last check Immunity Core could not read a watched {kind}, so it is not known whether it was added, changed or removed."
         );
         // The kind as a person reads it, so that each kind's short title is its own and fits.
         let short = format!("Not read: {}", kind_title(kind));
@@ -2003,8 +2003,8 @@ pub fn not_read_words(kind: &'static str) -> Words {
     }
 }
 
-const NOT_READ_MEANING: &str = "Immune read it at an earlier check and cannot read it now. This can happen when its permissions or owner change, for example in an update of macOS; something that wants to hide a change can also make a file unreadable.";
-const NOT_READ_ADVICE: &str = "The reason is named here. Find out what made the file unreadable, and look at it yourself until Immune can read it again.";
+const NOT_READ_MEANING: &str = "Immunity Core read it at an earlier check and cannot read it now. This can happen when its permissions or owner change, for example in an update of macOS; something that wants to hide a change can also make a file unreadable.";
+const NOT_READ_ADVICE: &str = "The reason is named here. Find out what made the file unreadable, and look at it yourself until Immunity Core can read it again.";
 
 /// A finding as an item, whatever its rule: one this build does not have is a `kept_item`.
 pub fn item(f: &Found) -> Item {
@@ -2088,7 +2088,7 @@ pub fn urgent(severity: &str, confidence: Option<&str>) -> bool {
 }
 
 /// Every rule, and every cause of what is not covered, with its wording, for an agent to learn
-/// what each can say: the catalogue of `immune rules`.
+/// what each can say: the catalogue of `immunity rules`.
 pub fn catalogue() -> crate::contract::v1::Catalogue {
     use crate::contract::{v1, value_of};
     // Only a set whose rules state levels raises findings; a rule of a set that states none is
@@ -2169,7 +2169,7 @@ pub fn catalogue() -> crate::contract::v1::Catalogue {
                 advice: files.advice.to_string(),
             }),
         }),
-        // A suspicious verdict of the response layer raises a finding of Immune's own rule; its
+        // A suspicious verdict of the response layer raises a finding of Immunity Core's own rule; its
         // levels are the verdict's, and what it is about stands beside these words.
         verdict_rule: Some(v1::VerdictWords {
             id: crate::verdict::RULE.to_string(),

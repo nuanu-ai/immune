@@ -9,7 +9,7 @@ logsource: {"product": "macos", "category": "process_creation"}
 detection:
   s1: {"process.name": ["bash", "sh", "zsh", "tclsh*"]}
   s2: {"process.args|contains|cased": ["\u0000-c\u0000"]}
-  s3: {"immune.folded.process.args|re": ["(?s)\\x00/[^\\x00]* \\&\\x00", "(?s)\\x00/[^\\x00]*\\&\\x00"]}
+  s3: {"immunity.folded.process.args|re": ["(?s)\\x00/[^\\x00]* \\&\\x00", "(?s)\\x00/[^\\x00]*\\&\\x00"]}
   s4: {"process.args_count": 3}
   s5: {"process.parent.executable": ["/private/tmp/*", "/var/tmp/*", "/tmp/*", "/var/folders/*", "/Library/Containers/*", "/Library/Graphics/*", "/Users/Shared/*", "/Users/*/Library/Preferences/*", "/var/root/*", "/Library/WebServer/*", "/Library/Preferences/*", "/Library/Services/*", "/Library/Fonts/*", "/usr/local/bin/*"]}
   condition: "(s1 and s2 and s3 and s4 and s5)"

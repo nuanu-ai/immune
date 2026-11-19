@@ -369,7 +369,7 @@ mod tests {
     impl Mac {
         fn new(name: &str) -> Mac {
             let dir =
-                std::env::temp_dir().join(format!("immune-look-{name}-{}", std::process::id()));
+                std::env::temp_dir().join(format!("immunity-look-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(dir.join("home")).unwrap();
             std::fs::create_dir_all(dir.join("sys")).unwrap();
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn what_no_row_reads_any_more_is_retired_and_never_counted_or_told_as_removed() {
-        let dir = std::env::temp_dir().join(format!("immune-look-retire-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immunity-look-retire-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut conn = earlier(&dir);

@@ -1,4 +1,4 @@
-//! The text for a person of `immune status`, `immune status --coverage` and `immune findings`,
+//! The text for a person of `immunity status`, `immunity status --coverage` and `immunity findings`,
 //! rendered from the message alone for a screen (`screen.rs`), in the layout of the core's
 //! language for a person (`docs/how-it-works.md`): the answer first, in one line with the count
 //! that matters; then what needs the person, most urgent first, grouped where rows would repeat;
@@ -23,11 +23,11 @@ use crate::screen::{
 use crate::text::{quoted, word};
 use crate::view;
 
-/// At most this many findings are listed in the text of `immune findings`; the total is always
+/// At most this many findings are listed in the text of `immunity findings`; the total is always
 /// given.
 const FINDINGS_SHOWN: usize = 200;
 
-/// At most this many rules are listed in the text of `immune status`; the rest are counted in
+/// At most this many rules are listed in the text of `immunity status`; the rest are counted in
 /// one line.
 pub(crate) const GROUPS_SHOWN: usize = 6;
 
@@ -271,7 +271,7 @@ pub(crate) fn cause_section(
             out.push(format!(
                 "      {}   {}",
                 screen.paint(PLAIN, &format!("… {} more", grouped(more))),
-                screen.paint(CYAN, "immune status --coverage")
+                screen.paint(CYAN, "immunity status --coverage")
             ));
         }
     }
@@ -339,7 +339,7 @@ pub(crate) fn watching_parts(s: &v1::Status, screen: &Screen) -> Vec<(String, St
     } else if let Some(on) = off_not_by_command(s) {
         (
             format!(
-                "Immune is off, and immune off did not turn it off. It was turned on {}; its job is gone. Turn it on with: immune on",
+                "Immunity Core is off, and immunity off did not turn it off. It was turned on {}; its job is gone. Turn it on with: immunity on",
                 screen.time(on, s.answered_at)
             ),
             RED,
@@ -350,7 +350,7 @@ pub(crate) fn watching_parts(s: &v1::Status, screen: &Screen) -> Vec<(String, St
     {
         (
             format!(
-                "Immune is off: turned off {} with immune off",
+                "Immunity Core is off: turned off {} with immunity off",
                 screen.time(off, s.answered_at)
             ),
             PLAIN,
@@ -436,7 +436,7 @@ pub(crate) fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
     out
 }
 
-/// When Immune was last turned on, if it went off since by something other than `immune off`: no
+/// When Immunity Core was last turned on, if it went off since by something other than `immunity off`: no
 /// watcher holds the store or is restarting, the login job's property list is not there, and the
 /// journal's latest entry of the two, by its order and not by the clock, is `turned_on`.
 pub(crate) fn off_not_by_command(s: &v1::Status) -> Option<i64> {
@@ -449,7 +449,7 @@ pub(crate) fn off_not_by_command(s: &v1::Status) -> Option<i64> {
 
 /// Whether the status holds a failure: a reading or a download that failed, a watcher that
 /// failed, an event level that is neither running nor simply not installed, a machine not
-/// reached, a run that died, or Immune turned off by something other than `immune off`. A status
+/// reached, a run that died, or Immunity Core turned off by something other than `immunity off`. A status
 /// with one is never calm, whatever it found.
 pub(crate) fn failing(s: &v1::Status) -> bool {
     let failed_cause = s.not_covered.iter().any(is_failure);
@@ -763,7 +763,7 @@ pub(crate) fn not_judged_line(
     }
 }
 
-/// `immune status` for a person. With `coverage`, `immune status --coverage`: everything the
+/// `immunity status` for a person. With `coverage`, `immunity status --coverage`: everything the
 /// last check read and did not read, laid out by the same rules.
 pub fn status(s: &v1::Status, screen: &Screen, coverage: bool) -> String {
     let store = s.store.clone().unwrap_or_default();
@@ -773,7 +773,7 @@ pub fn status(s: &v1::Status, screen: &Screen, coverage: bool) -> String {
         out.push(String::new());
         out.extend(screen.labelled(2, 5, "Store", &store.path_text, PLAIN, None, 0));
         out.push(String::new());
-        out.push(screen.next("immune run", "makes it"));
+        out.push(screen.next("immunity run", "makes it"));
         return joined(&out);
     }
     if coverage {
@@ -792,7 +792,7 @@ fn checked(screen: &Screen, s: &v1::Status) -> Option<String> {
         .map(|at| format!("checked {}", screen.time(at, s.answered_at)))
 }
 
-/// The headline of `immune status` and `immune run`, by one rule: calm only when fresh and
+/// The headline of `immunity status` and `immunity run`, by one rule: calm only when fresh and
 /// nothing failed, and never of "the last check" when no full check has finished.
 pub(crate) fn answer(s: &v1::Status) -> (String, Style) {
     let fresh = s.this_mac.as_ref().is_some_and(|m| m.fresh);
@@ -892,9 +892,9 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     out.push(String::new());
     let mut next: Vec<(&str, &str)> = Vec::new();
     match look {
-        None => next.push(("immune run", "checks this Mac now")),
+        None => next.push(("immunity run", "checks this Mac now")),
         Some(n) if n.total > 0 => {
-            next.push(("immune findings", "lists every one, most urgent first"))
+            next.push(("immunity findings", "lists every one, most urgent first"))
         }
         Some(_) => {}
     }
@@ -902,12 +902,15 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     // loaded again by the same command.
     if s.watching.is_none() && s.watcher_restarting_since_at.is_none() {
         next.push(match s.login_job_installed {
-            Some(true) => ("immune on", "loads the login job again"),
-            _ => ("immune on", "keeps watching between checks"),
+            Some(true) => ("immunity on", "loads the login job again"),
+            _ => ("immunity on", "keeps watching between checks"),
         });
     }
     if !whole || next.is_empty() {
-        next.push(("immune status --coverage", "what was read and what was not"));
+        next.push((
+            "immunity status --coverage",
+            "what was read and what was not",
+        ));
     }
     next.truncate(3);
     out.extend(screen.nexts(&next));
@@ -940,7 +943,7 @@ fn not_fresh(s: &v1::Status, screen: &Screen) -> Option<String> {
 }
 
 /// What a screen about the store says after its headline and what needs a look, the same for
-/// `immune status` and `immune run`, so that a run never says less than the status of the same
+/// `immunity status` and `immunity run`, so that a run never says less than the status of the same
 /// store: a run that did not finish, freshness, how this Mac is watched, the event level,
 /// coverage, machines not reached and downloads, one labelled line each, after the lines the
 /// command adds of its own (`own`, first); then every failure, what the person can fix, and what
@@ -1753,7 +1756,7 @@ fn coverage_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
         );
     }
     out.push(String::new());
-    out.push(screen.next("immune status --json", "gives all of it, with every list"));
+    out.push(screen.next("immunity status --json", "gives all of it, with every list"));
 }
 
 /// What tells a finding from its neighbours in a list, as a cell: the package and its releases
@@ -1782,7 +1785,7 @@ fn telling(l: &v1::ListedFinding) -> Cell {
     })
 }
 
-/// `immune findings` for a person: the open findings, or every one with `all`, grouped under
+/// `immunity findings` for a person: the open findings, or every one with `all`, grouped under
 /// their level, most urgent first.
 pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -1976,7 +1979,7 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
         }
     }
     out.push(String::new());
-    out.push(screen.next("immune finding <id>", "shows one and how to answer it"));
+    out.push(screen.next("immunity finding <id>", "shows one and how to answer it"));
     joined(&out)
 }
 
@@ -2060,7 +2063,7 @@ mod tests {
             answered_at: NOW,
             store: Some(v1::StoreFile {
                 path_text: format!(
-                    "/Users/example/Library/Application Support/ai.nuanu.immune/{odd}/store.db"
+                    "/Users/example/Library/Application Support/ai.nuanu.immunity.core/{odd}/store.db"
                 ),
                 exists: true,
                 ..Default::default()
@@ -2880,7 +2883,7 @@ mod tests {
         );
         assert!(
             text.trim_end()
-                .ends_with("→ immune finding <id>   shows one and how to answer it"),
+                .ends_with("→ immunity finding <id>   shows one and how to answer it"),
             "{text}"
         );
         let all = findings(&f, true, &Screen::pipe());
@@ -3120,7 +3123,7 @@ mod tests {
                 "{text}"
             );
             assert!(
-                lines.contains(&"      … 1 more   immune status --coverage"),
+                lines.contains(&"      … 1 more   immunity status --coverage"),
                 "{text}"
             );
             // One name and its reason a line, at most three, a colon in a name written out, a
@@ -3137,7 +3140,7 @@ mod tests {
             assert_eq!(lines[at + 2], "      line\\u{a}feed: refused", "{text}");
             assert_eq!(
                 lines[at + 3],
-                "      … 2 more   immune status --coverage",
+                "      … 2 more   immunity status --coverage",
                 "{text}"
             );
             assert!(!text.contains("\"db-1\"") && !text.contains("\"staging-api\""));
@@ -3157,16 +3160,29 @@ mod tests {
             }],
             ..Default::default()
         });
-        let text = status(&long, &Screen::terminal(60, false), false);
-        let bare: String = text.split_whitespace().collect();
+        let width = 60;
+        let text = status(&long, &Screen::terminal(width, false), false);
+        let (section, _) = text
+            .split_once("\n  You can fix\n")
+            .and_then(|(_, after)| after.split_once("\n\n"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let bare: String = section.split_whitespace().collect();
         assert!(
             bare.contains(&format!("{LONG}(Permissiondenied)")),
             "{text}"
         );
-        let section = &text[text
-            .find("  You can fix")
-            .unwrap_or_else(|| panic!("{text}"))..];
-        assert!(!section.contains('…'), "{text}");
+        assert!(!section.contains('…'), "{section}");
+        assert!(
+            section.lines().all(|line| screen::columns(line) <= width),
+            "{section}"
+        );
+        assert!(
+            section
+                .lines()
+                .skip(2)
+                .all(|line| line.starts_with("        ")),
+            "{section}"
+        );
     }
 
     #[test]
@@ -3230,8 +3246,10 @@ mod tests {
             "{gone}"
         );
         assert!(
-            visible(&text).lines().any(|l| l.starts_with("→ immune on ")
-                && l.ends_with("   keeps watching between checks")),
+            visible(&text)
+                .lines()
+                .any(|l| l.starts_with("→ immunity on ")
+                    && l.ends_with("   keeps watching between checks")),
             "{text}"
         );
         // Watched in full with no watcher: the watcher clause alone.
@@ -3262,7 +3280,7 @@ mod tests {
         );
         assert!(
             text.lines()
-                .any(|l| l.starts_with("→ immune on ")
+                .any(|l| l.starts_with("→ immunity on ")
                     && l.ends_with("   loads the login job again")),
             "{text}"
         );
@@ -3277,7 +3295,7 @@ mod tests {
             restarting,
             "  Watching      the watcher is restarting on a new core"
         );
-        assert!(!text.contains("immune on "), "{text}");
+        assert!(!text.contains("immunity on "), "{text}");
         // A live watcher on a Mac watched in full: one word, no command.
         s.watching = Some(v1::Watcher::default());
         if let Some(m) = s.this_mac.as_mut() {
@@ -3289,7 +3307,7 @@ mod tests {
             visible(&line(&text, "Watching")).trim_end(),
             "  Watching      live"
         );
-        assert!(!text.contains("immune on "), "{text}");
+        assert!(!text.contains("immunity on "), "{text}");
         // The event level: its state, then what is wrong in yellow.
         let event = line(&text, "Event level");
         assert!(
@@ -3374,9 +3392,9 @@ mod tests {
                 })
                 .collect()
         };
-        let findings_step = "→ immune findings   lists every one, most urgent first";
-        let install_step = "→ immune on   keeps watching between checks";
-        let coverage_step = "→ immune status --coverage   what was read and what was not";
+        let findings_step = "→ immunity findings   lists every one, most urgent first";
+        let install_step = "→ immunity on   keeps watching between checks";
+        let coverage_step = "→ immunity status --coverage   what was read and what was not";
         // Something needs a look, no watcher runs, and coverage is not whole: all three, in order.
         let mut s = status_of("x");
         s.watching = None;
@@ -3411,7 +3429,7 @@ mod tests {
                 .iter()
                 .any(|label| l.trim_start().starts_with(label))
             }) {
-                assert!(!l.contains("immune "), "{l}\n{text}");
+                assert!(!l.contains("immunity "), "{l}\n{text}");
             }
         }
         // Wholly calm, with a watcher: the one line it had.
@@ -3482,11 +3500,11 @@ mod tests {
         s
     }
 
-    /// A job gone while the journal's latest word is `immune on` is said as off and not by
-    /// `immune off`, under no calm headline, in the status and in the run; gone with `immune off`
+    /// A job gone while the journal's latest word is `immunity on` is said as off and not by
+    /// `immunity off`, under no calm headline, in the status and in the run; gone with `immunity off`
     /// the latest word, or in the same second, it is said as turned off with its time.
     #[test]
-    fn a_job_gone_after_immune_on_is_off_not_by_immune_off_and_never_calm() {
+    fn a_job_gone_after_immunity_on_is_off_not_by_immunity_off_and_never_calm() {
         let screen = Screen::pipe();
         let green = "✓ Nothing needs a look";
         // The latest of the two is the journal's word, `turned_on_latest`, never the clock's.
@@ -3506,7 +3524,7 @@ mod tests {
             calm.starts_with(green) && calm_run.starts_with(green),
             "{calm_run}"
         );
-        let gone = "Immune is off, and immune off did not turn it off. It was turned on 2027-01-15 08:00 UTC; its job is gone. Turn it on with: immune on";
+        let gone = "Immunity Core is off, and immunity off did not turn it off. It was turned on 2027-01-15 08:00 UTC; its job is gone. Turn it on with: immunity on";
         // Turned on last, though the clock gives the turning off a later time.
         for (status, run) in [
             said(Some(on_at), None, Some(true), Some(false)),
@@ -3527,7 +3545,9 @@ mod tests {
             );
             let when = view::utc(turned_off);
             assert!(
-                status.contains(&format!("Immune is off: turned off {when} with immune off")),
+                status.contains(&format!(
+                    "Immunity Core is off: turned off {when} with immunity off"
+                )),
                 "{status}"
             );
         }
@@ -3535,7 +3555,7 @@ mod tests {
         for installed in [Some(true), None] {
             let (status, _) = said(Some(on_at), Some(earlier), Some(true), installed);
             assert!(
-                status.starts_with(green) && !status.contains("Immune is off"),
+                status.starts_with(green) && !status.contains("Immunity Core is off"),
                 "{status}"
             );
         }
@@ -3683,7 +3703,7 @@ mod tests {
             c.no_reader = 0;
             c.not_given = 0;
         }
-        let step = "→ immune status --coverage   what was read and what was not";
+        let step = "→ immunity status --coverage   what was read and what was not";
         assert!(!status(&s, &Screen::pipe(), false).contains(step));
         s.threats.as_mut().unwrap().outcome = v1::FeedOutcome::Failed as i32;
         assert!(status(&s, &Screen::pipe(), false).contains(step));

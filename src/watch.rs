@@ -1,17 +1,17 @@
-//! `immune watch`: learns within seconds that a watched place changed and records it, so that a
+//! `immunity watch`: learns within seconds that a watched place changed and records it, so that a
 //! change does not wait for the next full run. It runs until it is told to stop, as a child of
 //! its caller, or independently with `--standalone`, and installs nothing.
 //!
 //! The mechanism is FSEvents (`fsevents.rs`). An event is not trusted: it only says that
 //! something under the watched paths changed, and where. After a quiet period the watcher runs
-//! the watched-places reading of `immune run` and its rules, through the same code
+//! the watched-places reading of `immunity run` and its rules, through the same code
 //! (`watch_places`), as a small run of that reader alone, under the same run lock, in one
 //! transaction. The lifecycle makes the events and the rules the findings, as in a full run;
 //! the reading opens nothing that is not a regular file and keeps no content. A small run
-//! writes no `run_started` or `run_finished`: those mark full runs, which `immune status`
+//! writes no `run_started` or `run_finished`: those mark full runs, which `immunity status`
 //! reports on.
 //!
-//! What is read again. Each watched place belongs to one reading of `immune run`, a scope and a
+//! What is read again. Each watched place belongs to one reading of `immunity run`, a scope and a
 //! kind, which writes its own coverage. A reading after events reads again only the readings
 //! whose places the events' paths are in (`touched`), each whole, so no row of coverage says
 //! a place was read when it was not, and every other reading keeps its own time. Every place
@@ -61,7 +61,7 @@
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
 //! the store can hold it; the next success of the same kind clears it. A failure the store did
 //! not take is said in the watcher's lock file instead, and reads as a failure of the kind
-//! `store`. While one stands, `immune status` does not say this Mac is watched live. A look at
+//! `store`. While one stands, `immunity status` does not say this Mac is watched live. A look at
 //! what to watch that succeeds
 //! after one that failed prints `watching` again and reads the watched places at once.
 //!
@@ -69,7 +69,7 @@
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
 //! It writes no page of the view, only that small file: a change can come every few seconds and the pages cost
 //! seconds of processor time, mostly for pages nobody has open. A page is brought up to date
-//! when it is asked for, by `immune view --if-stale`, which writes only when something the pages
+//! when it is asked for, by `immunity view --if-stale`, which writes only when something the pages
 //! rest on moved since they were made (`view::basis`). The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone. `--standalone` keeps it
 //! running after its parent exits and permits launchd to supervise it directly.
@@ -209,7 +209,7 @@ pub struct WatchArgs {
     pub background: bool,
 }
 
-/// Parses what follows `immune watch`.
+/// Parses what follows `immunity watch`.
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> {
     let (mut store, mut system_root) = (None, None);
     let (mut sample_input, mut sample_every, mut alive_every) = (None, SAMPLE, ALIVE);
@@ -264,7 +264,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Runs the watcher until it is stopped. Exit 0 on SIGTERM or SIGINT; the error envelope of
-/// `immune status --json` and a non-zero exit when it cannot watch at all.
+/// `immunity status --json` and a non-zero exit when it cannot watch at all.
 pub fn watch(args: &WatchArgs) -> ExitCode {
     // The parent is taken before anything else: taken later, a parent that died meanwhile
     // would leave launchd recorded as the parent, and a parent-bound watcher would never stop.
@@ -288,7 +288,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
             Some("watch"),
             "store_unreadable",
             "the store cannot be read; nothing was changed",
-            "immune status --json --store <file>",
+            "immunity status --json --store <file>",
             &e.to_string(),
         ));
         ExitCode::from(crate::EXIT_STORE)
@@ -308,7 +308,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
                 Some("watch"),
                 "watch_in_progress",
                 "another watcher is running on this store; nothing was done",
-                "immune status --json",
+                "immunity status --json",
                 "",
             ));
             return ExitCode::from(EXIT_WATCHING);
@@ -389,7 +389,7 @@ fn failed(detail: &str) -> ExitCode {
         Some("watch"),
         "watch_failed",
         "the watcher could not subscribe to file-system events; nothing is watched",
-        "immune watch",
+        "immunity watch",
         detail,
     ));
     ExitCode::FAILURE
@@ -1076,11 +1076,11 @@ impl Watcher<'_> {
         }
         self.left = true;
         eprintln!(
-            "immune watch: the core this watcher was started from was replaced: {}; it leaves, and launchd starts it again from the new file",
+            "immunity watch: the core this watcher was started from was replaced: {}; it leaves, and launchd starts it again from the new file",
             core.path.display()
         );
         if let Err(e) = self.heartbeat.left_for_new_core(crate::now_secs()) {
-            eprintln!("immune watch: its lock file could not say so: {e}");
+            eprintln!("immunity watch: its lock file could not say so: {e}");
         }
         true
     }
@@ -1197,9 +1197,9 @@ fn read_held(
         notes: Vec::new(),
         readers: 0,
     };
-    // The reading and the rules of `immune run`: a change seen here is a finding at once.
+    // The reading and the rules of `immunity run`: a change seen here is a finding at once.
     let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found, only, None)?;
-    // What needs a look after it, counted by the code `immune status --json` counts it with.
+    // What needs a look after it, counted by the code `immunity status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
     // The row says when every place was last read: only a reading of every place moves it.
     if only.is_none() {
@@ -1209,7 +1209,7 @@ fn read_held(
             [at],
         )?;
     }
-    // The job's watcher is what knows Immune is on: its reading says so in the journal, once for
+    // The job's watcher is what knows Immunity Core is on: its reading says so in the journal, once for
     // each turning on (`service::note_on`). Not being able to say it fails nothing.
     if args.background {
         let _ = crate::service::note_on(&tx, at);
@@ -1317,7 +1317,7 @@ fn held_checkouts(
         .collect())
 }
 
-/// A reading of the watched places as `immune run` writes its coverage: its scope and kind.
+/// A reading of the watched places as `immunity run` writes its coverage: its scope and kind.
 pub type Reading = (String, String);
 
 /// The paths to watch, each path with the reading its place belongs to, and the problem lines.
@@ -1820,11 +1820,11 @@ mod tests {
     #[test]
     fn a_watcher_s_file_is_replaced_only_when_its_path_holds_another_file() {
         let dir = crate::common::Scratch::new("watch-core-replaced");
-        let core = dir.join("immune");
+        let core = dir.join("immunity");
         std::fs::write(&core, "invented core").unwrap();
         let started = identity(&std::fs::metadata(&core).unwrap());
         assert!(!replaced(started, std::fs::metadata(&core)));
-        let new = dir.join("immune.new");
+        let new = dir.join("immunity.new");
         std::fs::write(&new, "invented new core").unwrap();
         std::fs::rename(&new, &core).unwrap();
         assert!(replaced(started, std::fs::metadata(&core)));
@@ -1867,7 +1867,7 @@ mod tests {
         }
     }
 
-    /// Install takes what `seen` says for whether Immune is watching: live only for a watcher
+    /// Install takes what `seen` says for whether Immunity Core is watching: live only for a watcher
     /// that is ready on a store with nothing failed but program starts or a full check, and
     /// unknown, never no, when the store cannot be read.
     #[test]
@@ -2322,7 +2322,7 @@ mod tests {
 
     #[test]
     fn a_place_is_named_by_the_real_path_of_its_folder_even_before_it_exists() {
-        let dir = std::env::temp_dir().join(format!("immune-watch-real-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immunity-watch-real-{}", std::process::id()));
         let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(dir.join("real")).unwrap();
         let _ = std::fs::remove_file(dir.join("link"));

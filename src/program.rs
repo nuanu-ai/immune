@@ -1,4 +1,4 @@
-//! `immune program <what>`: what the store knows of one program installed on this Mac, printed
+//! `immunity program <what>`: what the store knows of one program installed on this Mac, printed
 //! as the contract's `Known` message. The answer is built by `known::known_of`; what is
 //! particular to a program is how the question names it and which readings find programs.
 //!
@@ -62,10 +62,10 @@ const FOUND_BY: [(&str, &str); 5] = [
     (integrity::READER, crate::managers::KIND),
 ];
 
-/// What `immune program` takes as a program.
-const WHAT: &str = "immune program takes a path on this Mac, absolute or beginning with ~/, the name the store gives a program (a bundle identifier, a Homebrew formula's or cask's name, a global npm package's name), or its id, beginning with component: or file:";
+/// What `immunity program` takes as a program.
+const WHAT: &str = "immunity program takes a path on this Mac, absolute or beginning with ~/, the name the store gives a program (a bundle identifier, a Homebrew formula's or cask's name, a global npm package's name), or its id, beginning with component: or file:";
 
-/// `immune program <what>`.
+/// `immunity program <what>`.
 pub struct ProgramArgs {
     pub store: PathBuf,
     pub form: crate::answer::Form,
@@ -96,7 +96,7 @@ const NOT_OPENED: &str = "no reading opened this place for this answer: no progr
 /// Why a path strictly inside a program is answered for the program.
 const INSIDE: &str = "a single path inside a program is not judged on its own: the answer is about the program that holds it, which the readings compare as a whole without keeping which paths inside they compared";
 
-/// Answers `immune program`.
+/// Answers `immunity program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
     known::command(
         "program",
@@ -536,7 +536,7 @@ fn several(ids: Vec<String>) -> Refused {
     Refused {
         code: "several_programs",
         message: "the question fits more than one program the store knows; nothing was answered",
-        example: "ask for one of them by its id, as in: immune program <id> --json",
+        example: "ask for one of them by its id, as in: immunity program <id> --json",
         ids,
     }
 }
@@ -545,7 +545,7 @@ fn not_a_program(id: &str) -> Refused {
     Refused {
         code: "not_a_program",
         message: "the store holds this id, and no reading of the programs installed on this Mac wrote about it",
-        example: "immune project asks about a project, immune machine about a machine",
+        example: "immunity project asks about a project, immunity machine about a machine",
         ids: vec![id.to_string()],
     }
 }

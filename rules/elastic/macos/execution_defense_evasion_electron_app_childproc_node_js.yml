@@ -11,7 +11,7 @@ tags: ["attack.t1059.007", "attack.t1548"]
 logsource: {"product": "macos", "category": "process_creation"}
 detection:
   s1: {"process.args|contains|cased": ["\u0000-e\u0000"]}
-  s2: {"immune.folded.process.args|re": ["(?s)\\x00const[^\\x00]*require[^\\x00]*child_process[^\\x00]*\\x00"]}
+  s2: {"immunity.folded.process.args|re": ["(?s)\\x00const[^\\x00]*require[^\\x00]*child_process[^\\x00]*\\x00"]}
   condition: "(s1 and s2)"
 level: "medium"
 elastic: {"rule_id": "35330ba2-c859-4c98-8b7f-c19159ea0e58", "severity": "medium", "risk_score": 47, "query_sha256": "681fc89d30046355d24ea1c9a1a219c920a39fb0e73e92f94e41f17cc5a391bb", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": ["process.args"]}

@@ -1,22 +1,22 @@
-// The core as a login job of this user. The answer to `immune on` and `immune off`.
+// The core as a login job of this user. The answer to `immunity on` and `immunity off`.
 // Version 1 of the contract between the core and a program that runs it. How a message is
 // printed and read, and the conventions for text, references, times and changes, are in
 // `common.proto`.
 //
-// `immune on` registers the core with launchd as a login job. A core only root can replace,
+// `immunity on` registers the core with launchd as a login job. A core only root can replace,
 // such as one a signed package put in a folder owned by root, is run where it is and nothing is
 // copied; any other, such as a build in a checkout, is copied to a place of its own and the job
-// runs the copy. `immune off` stops the job and removes it, with the copy when there is one;
+// runs the copy. `immunity off` stops the job and removes it, with the copy when there is one;
 // it never removes a core run where it is and takes no path from the job's property list.
-// `immune off` records that it turned Immune off in the journal of the job's store, the default
-// one, when a store of this build's format is there, with the time alone. `immune on` writes
-// nothing: the job's watcher records that Immune is on, at its first reading. Neither makes a
+// `immunity off` records that it turned Immunity Core off in the journal of the job's store, the default
+// one, when a store of this build's format is there, with the time alone. `immunity on` writes
+// nothing: the job's watcher records that Immunity Core is on, at its first reading. Neither makes a
 // store, fails for want of one or changes anything else in it, so this answer carries no
 // `store_id`.
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
 // What the command left.
 message Service {
@@ -25,52 +25,52 @@ message Service {
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
   int64 answered_at = 2;
-  // The job's label in launchd: `ai.nuanu.immune.watch`.
+  // The job's label in launchd: `ai.nuanu.immunity.core.watch`.
   string label = 3;
-  // The core the job runs, and the job's property list. Whole. After `immune off`, the copy that
+  // The core the job runs, and the job's property list. Whole. After `immunity off`, the copy that
   // was removed, or the core running the command when it is run where it is, which is still
   // there (`in_place`).
   string program_path_text = 4;
   string plist_path_text = 5;
   // Whether the job, its property list and the core it runs are in place: true after
-  // `immune on`, false after `immune off`.
+  // `immunity on`, false after `immunity off`.
   bool installed = 6;
   // Whether launchd has the job loaded, as `launchctl print` said after it was registered.
-  // Never true unless that last question succeeded; always false after `immune off`.
+  // Never true unless that last question succeeded; always false after `immunity off`.
   bool loaded = 7;
   // Whether a job, its property list or an installed core was there before the command: an
-  // update, or a removal that removed something. False the first time Immune is turned on and
-  // when `immune off` found nothing to turn off.
+  // update, or a removal that removed something. False the first time Immunity Core is turned on and
+  // when `immunity off` found nothing to turn off.
   bool replaced = 8;
   // Whether the job runs the core where it is, true, or a copy in the store's folder,
-  // `bin/immune`, false. True only when the core and every folder above it are owned by root and
-  // nobody else may write them: it is not copied, and `immune off` leaves it where it is. After
-  // `immune off`, judged of the core running the command, never of what the property list names;
+  // `bin/immunity`, false. True only when the core and every folder above it are owned by root and
+  // nobody else may write them: it is not copied, and `immunity off` leaves it where it is. After
+  // `immunity off`, judged of the core running the command, never of what the property list names;
   // absent when that cannot be told. Since 1.19.0.
   optional bool in_place = 9;
-  // Whether a watcher watches the job's store live, as `immune status` judges it
+  // Whether a watcher watches the job's store live, as `immunity status` judges it
   // (`ThisMac.live`), within a few seconds after launchd loaded the job. False when none did by
   // then, usually because the watcher's first check is still running (`started` true), and
   // `watcher_note` says what the status says of it. Absent
-  // when it could not be told, and after `immune off`. Since 1.19.0.
+  // when it could not be told, and after `immunity off`. Since 1.19.0.
   optional bool watching = 10;
   // While `watching` is false, what the status says of the store's watcher, in the core's words,
   // such as that a watcher runs and has not completed its first reading. Absent otherwise.
   // Since 1.19.0.
   optional string watcher_note = 11;
   // Whether the job's process started and works, within the same few seconds: a watcher holds
-  // the job's store and its heartbeat is fresh, as `immune status` takes a watcher to be there.
+  // the job's store and its heartbeat is fresh, as `immunity status` takes a watcher to be there.
   // It comes before `watching`, which waits for the watcher's first check. False when launchd
   // loaded the job and no watcher took the store; `watcher_note` then says what the status says
-  // of it. Absent when it could not be told, and after `immune off`. Since 1.19.0.
+  // of it. Absent when it could not be told, and after `immunity off`. Since 1.19.0.
   optional bool started = 12;
-  // When `immune off` turned Immune off and the store's journal does not say so, why. Absent
-  // when it was recorded, when `immune off` found no job and no property list to turn off, and
-  // always after `immune on`. The command succeeded all the same. Since 1.20.0.
+  // When `immunity off` turned Immunity Core off and the store's journal does not say so, why. Absent
+  // when it was recorded, when `immunity off` found no job and no property list to turn off, and
+  // always after `immunity on`. The command succeeded all the same. Since 1.20.0.
   optional NotRecorded not_recorded = 13;
 }
 
-// Why turning Immune off was not recorded in the store's journal. A value a reader does not
+// Why turning Immunity Core off was not recorded in the store's journal. A value a reader does not
 // know, and `unspecified`, is read as not recorded for a reason not named.
 enum NotRecorded {
   NOT_RECORDED_UNSPECIFIED = 0;

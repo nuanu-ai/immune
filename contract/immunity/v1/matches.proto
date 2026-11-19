@@ -1,4 +1,4 @@
-// The rule matches the core hands over: the answer to `immune matches`. Version 1 of the contract
+// The rule matches the core hands over: the answer to `immunity matches`. Version 1 of the contract
 // between the core and a program that runs it. How a message is printed and read, and the
 // conventions for text, references, times and changes, are in `common.proto`; the rules and the
 // events are in `event.proto`.
@@ -45,13 +45,13 @@
 
 syntax = "proto3";
 
-package immune.v1;
+package immunity.v1;
 
-import "immune/v1/common.proto";
-import "immune/v1/event.proto";
-import "immune/v1/verdict.proto";
+import "immunity/v1/common.proto";
+import "immunity/v1/event.proto";
+import "immunity/v1/verdict.proto";
 
-// The answer to `immune matches`.
+// The answer to `immunity matches`.
 message Matches {
   // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
   reserved 1000 to 1099;
@@ -95,7 +95,7 @@ message RuleMatch {
   // The findings the match was added to, each with its state, when `raised` is `finding`. One
   // today. A finding's state says whether the person has already answered it: a match added to a
   // finding marked `expected`, or to one marked `seen` since, raises nothing the person sees.
-  // `immune finding <id>` shows one. After them, the `verdict.suspicious` finding of the latest
+  // `immunity finding <id>` shows one. After them, the `verdict.suspicious` finding of the latest
   // `suspicious` verdict about the match, whatever `raised` is.
   repeated FindingRef findings = 5;
   // The response layer's verdicts about this match. The `verdict.suspicious` finding a
@@ -181,7 +181,7 @@ message Collector {
   // When it is not, or it is not installed, the rules for file events are listed in
   // `unevaluated` with `not_collected`.
   bool file_events_collected = 5;
-  // Its state as `immune status` serves it now, from the core's own latest reading, and when
+  // Its state as `immunity status` serves it now, from the core's own latest reading, and when
   // that reading was made. It speaks for the core's findings and for `raised`, not for the
   // stretch. Absent when the store holds no reading of it.
   optional CollectorState status_state = 6;
@@ -235,7 +235,7 @@ message Arriving {
   int64 since = 2;
 }
 
-// The collector's states, as `immune status` names them.
+// The collector's states, as `immunity status` names them.
 enum CollectorState {
   COLLECTOR_STATE_UNSPECIFIED = 0;
   // Its launch daemon is not installed. A limit the user can lift, not a failure.

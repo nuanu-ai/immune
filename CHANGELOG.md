@@ -1,14 +1,17 @@
 # Changelog
 
-What changed in Immune that a person who runs it, their agent or a program built on its commands would notice. Everything else is in the Git history.
+What changed in Immunity Core that a person who runs it, their agent or a program built on its commands would notice. Everything else is in the Git history.
 
-Immune has no numbered release yet. Entries go by the day a change reached `main`, newest first, and each day names the commit `main` ended on, so a program that pins the core by commit can find its place. Two numbers move on their own: the version of the contract, which is the version of the crate `immune-contract`, and the format of the store. A build refuses a store of another format and says how to start over.
+Immunity Core has no numbered release yet. Entries go by the day a change reached `main`, newest first, and each day names the commit `main` ended on, so a program that pins the core by commit can find its place. Two numbers move on their own: the version of the contract, which is the version of the crate `immunity-contract`, and the format of the store. A build refuses a store of another format and says how to start over.
 
 ## Unreleased
 
 ### Changed
 
-- The pages `immune view` writes list what Immune reads. What this version has no reader for is no longer on them: folders macOS protects, files that run code by themselves and are only known by name, lockfiles of other kinds, published rules it cannot check. It stays in [docs/reference.md](docs/reference.md), in `immune status --json` and in `immune rules --all`.
+- The project is now Immunity Core. Build package `immunity-core` to run `immunity`. The contract crate is `immunity-contract` 1.21.1 and the protobuf package is `immunity.v1`. Message format and field numbers stay at their previous values. The core’s own rule set is named `immunity` and its redaction kinds begin with `immunity:`.
+- The service and collector use the `ai.nuanu.immunity.core` namespace. This build starts a fresh format 9 store. See [updating and removing](docs/reference.md#updating-and-removing) before updating a running installation.
+
+- The pages `immunity view` writes list what Immunity Core reads. What this version has no reader for is no longer on them: folders macOS protects, files that run code by themselves and are only known by name, lockfiles of other kinds, published rules it cannot check. It stays in [docs/reference.md](docs/reference.md), in `immunity status --json` and in `immunity rules --all`.
 - A reading that failed on this Mac is still on the pages. The section "Not judged on this Mac" is now "Could not be read on this Mac". It holds the readings and downloads that failed and is there only while one did. The summary's line and the section page `limits` lead to it.
 - What is said of projects speaks of the projects found, and the page says where projects are looked for.
 - The rules page lists the rules that are checked, in full or in part. What a rule checked in part goes without is in that rule's details.
@@ -40,7 +43,7 @@ Immune has no numbered release yet. Entries go by the day a change reached `main
 
 ### Fixed
 
-- `immune on` stages nothing in a place Immune watches (#59).
+- `on` stages nothing in a place the core watches (#59).
 - A full check is said to be running from its start, its downloads included, and a check that was killed never reads as running while the next one starts (#60, #61).
 - A past gap in the collector's log holds this Mac at "watched in part" until the next full check, where it used to hold it for a day (#64).
 
@@ -50,7 +53,7 @@ Immune has no numbered release yet. Entries go by the day a change reached `main
 
 ### Added
 
-- `immune on` and `immune off` turn the background checks on and off, and turning them off leaves a trace (#56, #58).
+- `on` and `off` turn the background checks on and off, and turning them off leaves a trace (#56, #58).
 - Every command has a text form made for a terminal (#49, #54).
 - A verdict carries an id, and a late `suspicious` one is kept (#50).
 - The contract's crate has an example client that runs the core (#51).
@@ -77,7 +80,7 @@ Immune has no numbered release yet. Entries go by the day a change reached `main
 - One answer covers a finding and the response layer's finding about it (#34).
 - A finding's row carries its own words: names and the title of its kind (#33).
 - The places where code runs by itself are one table, each row with its published source and the macOS it was checked on. The status says which were not checked on the macOS of this Mac (#36, #39).
-- A folder for Immune's own Sigma rules, `rules/immune/` (#39).
+- A folder for the core's own Sigma rules (#39).
 - An event carries the responsible process, the process group, the real user and group ids, and who signed the process that acted (#41, #43).
 
 ### Fixed
@@ -91,8 +94,8 @@ Immune has no numbered release yet. Entries go by the day a change reached `main
 
 ### Added
 
-- `immune verdict` takes the response layer's verdict, which completes version 1 of the contract (#17).
-- The contract's types are a crate, `immune-contract` (#11).
+- `verdict` takes the response layer's verdict, which completes version 1 of the contract (#17).
+- The contract's types are available as a crate (#11).
 - 57 of Elastic's behaviour rules for macOS are evaluated. They state no level (#13).
 - Login hooks, PAM policies and modules, and authorization plugins are watched (#19).
 - The collector keeps who each process is, and the cap of its log is set at install (#18).
@@ -117,7 +120,7 @@ Immune has no numbered release yet. Entries go by the day a change reached `main
 - Program starts, and files created and renamed, are collected with Apple's `eslogger` and read with their losses counted.
 - SigmaHQ's rules for macOS are shipped unchanged and checked against every event. A match of a rule marked high is a finding.
 - 66 of Elastic's detection rules for macOS are evaluated, translated into Sigma (#8).
-- The contract's first messages: `immune project`, `immune program`, `immune machine`, `immune matches`, `immune findings` and `immune finding <id>` (#1, #3, #4, #7).
+- The contract's first messages: `project`, `program`, `machine`, `matches`, `findings` and `finding <id>` (#1, #3, #4, #7).
 - The packages of a `pnpm-lock.yaml` are read and matched as npm's are.
 
 ### Fixed

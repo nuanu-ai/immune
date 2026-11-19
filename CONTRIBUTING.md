@@ -1,6 +1,6 @@
-# Contributing to Immune
+# Contributing to Immunity Core
 
-Immune is built and tested only on Apple Silicon with macOS 15 or later. You need Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later.
+Immunity Core is built and tested only on Apple Silicon with macOS 15 or later. You need Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later.
 
 The rules a change has to keep (dependencies, where our own code ends, nothing tailored to one machine or one stack, the one seam, agent first, tests) are in [AGENTS.md](AGENTS.md). Read it before you change code; your coding agent reads it too. How the program is built is in [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -13,7 +13,7 @@ core=$(./build)     # build the release core and print its absolute path
 
 `./check` runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` (the core, and the contract's crate with its example) and `cargo test`. Every commit has to pass it. A part can be run by name: `./check lint`, `./check tests`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint` and the two halves side by side.
 
-To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immune` with `--store <path>`, so that it does not touch the installed core's store. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
+To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immunity` with `--store <path>`, so that it does not touch the installed core's store. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
 
 ## Rules and data
 

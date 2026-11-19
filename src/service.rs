@@ -1,13 +1,13 @@
-//! `immune on` and `immune off`: the core as a login job of this user.
+//! `immunity on` and `immunity off`: the core as a login job of this user.
 //!
-//! `on` registers the core with launchd as the job `ai.nuanu.immune.watch`, which runs
+//! `on` registers the core with launchd as the job `ai.nuanu.immunity.core.watch`, which runs
 //! `watch --background`. Which file the job runs depends on who can replace the core `on` was
 //! run from (`root_only`):
 //! - only root, as for a core a signed package put in a folder owned by root: the job runs it
 //!   where it is and nothing is copied. A copy in the home folder would undo that protection, since
 //!   any program of the account could replace it, and an update of the package would never reach
 //!   the job. A copy an earlier `on` left is removed once the old job is stopped;
-//! - anyone else as well, as for a build in a checkout: `on` copies the core to `bin/immune` in
+//! - anyone else as well, as for a build in a checkout: `on` copies the core to `bin/immunity` in
 //!   the store's folder and the job runs the copy, so a rebuild, another branch or a removed
 //!   checkout does not touch the running core, and no other account chooses what the job runs.
 //!
@@ -22,14 +22,14 @@
 //! belongs to `gui/<uid>`, and launchd loads that user's `LaunchAgents` at login, so files found
 //! through another home would not be the job's.
 //!
-//! The journal of the job's store says when Immune was turned on and off, with the time alone.
-//! `turned_on` is written by the job's own watcher, which is what knows Immune is on (`note_on`,
+//! The journal of the job's store says when Immunity Core was turned on and off, with the time alone.
+//! `turned_on` is written by the job's own watcher, which is what knows Immunity Core is on (`note_on`,
 //! from `watch.rs`): `on` writes nothing, so a first run with no store, an `on` killed during its
 //! wait and a load that failed leave the words true. `off` writes `turned_off` once the job is
 //! stopped and its property list gone, only into a store of this build's format that is there,
 //! under the run lock, and never fails for it: the answer says why it was not recorded
-//! (`not_recorded`). What turned Immune off otherwise, a program of the account that ran
-//! `launchctl` or removed the property list, leaves no entry, and `immune status` says so.
+//! (`not_recorded`). What turned Immunity Core off otherwise, a program of the account that ran
+//! `launchctl` or removed the property list, leaves no entry, and `immunity status` says so.
 //!
 //! These commands act, so their order is the point. `on`:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
@@ -72,24 +72,22 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The job's label in launchd.
-pub const LABEL: &str = "ai.nuanu.immune.watch";
+pub const LABEL: &str = "ai.nuanu.immunity.core.watch";
 /// launchd's tool, where every Mac has it.
 const LAUNCHCTL: &str = "/bin/launchctl";
 /// The folder of the installed core inside the store's folder.
 const BIN: &str = "bin";
 /// The installed core's name in `BIN`.
-const PROGRAM: &str = "immune";
+const PROGRAM: &str = "immunity";
 /// Every failure of these commands exits with this code; the failure's `code` says which.
 const EXIT_FAILED: u8 = 1;
 /// What a failure after the stop adds, so a person and an agent know how to recover.
-const RECOVER: &str = "; the core job may be stopped. The store was kept. The core and its property list are in place. Run immune on again to recover";
+const RECOVER: &str = "; the core job may be stopped. The store was kept. The core and its property list are in place. Run immunity on again to recover";
 /// At most this many characters of another job's label are quoted in a failure.
 const LABEL_QUOTED: usize = 200;
-/// The menu-bar app's bundle identifier, the `CFBundleIdentifier` of its `Info.plist`, which is
-/// kept with the app and not read from here: a change there must be made here too. The job names
-/// in `AssociatedBundleIdentifiers` the app the core is shipped in, so that Login Items shows the
-/// job under that app (`app_bundle_id`), and this app when the core is in no app's bundle.
-pub const APP_BUNDLE_ID: &str = "ai.nuanu.immune";
+/// The core's identifier for `AssociatedBundleIdentifiers` when the executable is standalone
+/// or its enclosing app supplies no usable bundle identifier.
+const FALLBACK_BUNDLE_ID: &str = "ai.nuanu.immunity.core";
 /// How long install waits after launchd loaded the job for a watcher to watch the store live, and
 /// how often it looks meanwhile. launchd starts a loaded job at once, and a watcher's first reading
 /// of the watched places takes a second or two on a Mac of ordinary size; past that the answer
@@ -120,7 +118,7 @@ impl Verb {
     }
 }
 
-/// `immune on` or `immune off`.
+/// `immunity on` or `immunity off`.
 pub struct ServiceArgs {
     pub verb: Verb,
     /// The launchctl to run instead of the system's.
@@ -146,7 +144,7 @@ pub fn parse(
     })?;
     if options.store_named() {
         return Err(format!(
-            "immune {} takes no --store: the job runs with the store in its usual place",
+            "immunity {} takes no --store: the job runs with the store in its usual place",
             verb.op()
         ));
     }
@@ -199,7 +197,7 @@ struct Places {
     store: PathBuf,
 }
 
-/// Answers `immune on` or `immune off` with `Service`, or fails with `Failure`.
+/// Answers `immunity on` or `immunity off` with `Service`, or fails with `Failure`.
 pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
     let op = args.verb.op();
     let home = args.home.as_deref();
@@ -212,7 +210,7 @@ pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
             crate::after_run::service(m, &crate::screen::Screen::of_stdout())
         }),
         Err(f) => {
-            let example = format!("immune {op} --json");
+            let example = format!("immunity {op} --json");
             answer::fail(
                 op,
                 args.form,
@@ -259,7 +257,7 @@ fn account_home(uid: libc::uid_t) -> Option<PathBuf> {
 
 /// The refusals both commands share, in order, before anything is changed: root, the home
 /// folder, another of the two commands running, the login session, and what stands at the
-/// property list's place and at `bin` and `bin/immune`. Returns the places, with the lock that
+/// property list's place and at `bin` and `bin/immunity`. Returns the places, with the lock that
 /// lets one command run at a time, and whether the property list is there.
 fn refusals(launchctl: &Path, home: Option<&Path>) -> Result<(Places, bool), Failed> {
     // SAFETY: geteuid has no preconditions and cannot fail.
@@ -287,7 +285,7 @@ fn refusals(launchctl: &Path, home: Option<&Path>) -> Result<(Places, bool), Fai
         Err(TryLockError::WouldBlock) => {
             return Err(failed(
                 "busy",
-                "another immune on or off is running; nothing was changed",
+                "another immunity on or off is running; nothing was changed",
                 "",
             ));
         }
@@ -516,12 +514,10 @@ fn stage_folder(dir: &Path) -> io::Result<PathBuf> {
     }
 }
 
-/// The bundle identifier of the app the core at `exe` is shipped in: the outermost folder on the
-/// path whose name ends in `.app` after at least one character and that the path goes on into
-/// through `Contents`, the app a person sees in Applications. Its `Info.plist` was written by someone else, so its
-/// `CFBundleIdentifier` is taken only when it is 1 to 155 bytes of ASCII letters, digits, `.` and
-/// `-`, and then reaches plutil only as the one argument after `-string`. Any other case is
-/// `APP_BUNDLE_ID`, never a failure.
+/// Reads the `CFBundleIdentifier` of the outermost app whose `Contents` encloses `exe`.
+/// An identifier can contain 1 to 155 bytes of ASCII letters, digits, `.` and `-`.
+/// It reaches plutil as one argument after `-string`. A missing or invalid identifier uses
+/// `FALLBACK_BUNDLE_ID`.
 fn app_bundle_id(exe: &Path) -> String {
     let app = exe
         .ancestors()
@@ -540,7 +536,7 @@ fn app_bundle_id(exe: &Path) -> String {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
         })
-        .unwrap_or_else(|| APP_BUNDLE_ID.to_string())
+        .unwrap_or_else(|| FALLBACK_BUNDLE_ID.to_string())
 }
 
 /// Writes the job's property list at `path` with plutil, key by key, and lints it. `app` is the
@@ -626,7 +622,7 @@ fn source(program: &Path) -> Result<(PathBuf, bool), Failed> {
     if !m.is_file() {
         return Err(not_file(exe.display().to_string()));
     }
-    // `refusals` has made sure that `bin/immune`, when it is there, is a regular file and no link.
+    // `refusals` has made sure that `bin/immunity`, when it is there, is a regular file and no link.
     let same = fs::symlink_metadata(program).is_ok_and(|p| identity(&p) == identity(&m));
     Ok((exe, same))
 }
@@ -690,7 +686,7 @@ fn answered_at() -> i64 {
 /// one look-up of the journal's index by run (`status`).
 pub const JOURNAL_RUN: &str = "service";
 
-/// The job's watcher's word that Immune is on, in the transaction of its reading: `turned_on`,
+/// The job's watcher's word that Immunity Core is on, in the transaction of its reading: `turned_on`,
 /// unless it is already the latest of the two in the journal's order. So it is written once for
 /// each turning on, whatever reading or restart of the watcher comes first.
 pub fn note_on(tx: &rusqlite::Transaction, at: i64) -> rusqlite::Result<usize> {
@@ -799,7 +795,7 @@ fn remove_copy(places: &Places) -> Result<(), (&Path, io::Error)> {
     }
 }
 
-/// `immune on`. `root_only` judges the core it was run from (`root_only` above, for the
+/// `immunity on`. `root_only` judges the core it was run from (`root_only` above, for the
 /// command), so that a test can give the judgement.
 fn on(
     launchctl: &Path,
@@ -873,7 +869,7 @@ fn on(
         failed(
             "not_installed",
             format!(
-                "could not put the core job's property list in place; {core} the property list and the job launchd has were not touched. Run immune on again"
+                "could not put the core job's property list in place; {core} the property list and the job launchd has were not touched. Run immunity on again"
             ),
             format!("{}: {e}", places.plist.display()),
         )
@@ -884,7 +880,7 @@ fn on(
     if loaded_before && let Err(said) = stop(launchctl, &places.job) {
         return Err(failed(
             "stop_failed",
-            "could not see the core job stop in time: the core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune on again",
+            "could not see the core job stop in time: the core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immunity on again",
             said,
         ));
     }
@@ -900,7 +896,7 @@ fn on(
         remove_copy(&places).map_err(|(path, e)| {
             after(
                 "not_removed",
-                "remove the copy of the core an earlier immune on left",
+                "remove the copy of the core an earlier immunity on left",
                 format!("{}: {e}", path.display()),
             )
         })?;
@@ -927,7 +923,7 @@ fn on(
     ))
 }
 
-/// `immune off`. `root_only` judges the core running the command, as `immune on` judges it; the
+/// `immunity off`. `root_only` judges the core running the command, as `immunity on` judges it; the
 /// property list, which any program of the account can write, is never read for a path.
 fn off(
     launchctl: &Path,
@@ -949,7 +945,7 @@ fn off(
     let removed = |what: &Path, e: io::Error| {
         failed(
             "not_removed",
-            "the core job is stopped, and its property list or the installed core could not be removed and is still there; the store was kept. Run immune off again",
+            "the core job is stopped, and its property list or the installed core could not be removed and is still there; the store was kept. Run immunity off again",
             format!("{}: {e}", what.display()),
         )
     };
@@ -1141,7 +1137,7 @@ esac
         Part { uid, mode }
     }
 
-    /// `/usr/local/bin/immune` as a package would leave it, owned by root all the way, with the
+    /// `/usr/local/bin/immunity` as a package would leave it, owned by root all the way, with the
     /// folder that holds the file and the file given.
     fn package(bin: Part, file: Part) -> Vec<Part> {
         vec![

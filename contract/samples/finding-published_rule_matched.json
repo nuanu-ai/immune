@@ -14,12 +14,12 @@
               "if=/dev/zero",
               "bs=1",
               "count=1",
-              "--password=\\cut{immune:flag-value 18}"
+              "--password=\\cut{immunity:flag-value 18}"
             ],
             "cuts": [
               {
                 "argument": 4,
-                "kind": "immune:flag-value",
+                "kind": "immunity:flag-value",
                 "length": 18
               }
             ],

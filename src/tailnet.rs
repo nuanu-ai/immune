@@ -486,7 +486,7 @@ mod tests {
     /// A folder of its own for one test.
     fn folder(tag: &str) -> crate::common::Scratch {
         let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-tailnet-{tag}-{}", std::process::id())),
+            std::env::temp_dir().join(format!("immunity-tailnet-{tag}-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -1,6 +1,6 @@
 //! The state the store holds after the last finished run, read back from the store alone.
 //!
-//! The run's report line, `immune status` and the machine-readable form of both are built from
+//! The run's report line, `immunity status` and the machine-readable form of both are built from
 //! one `Summary`, so they cannot count differently. What a run learns while it runs is read
 //! back from what it wrote: its events from the journal, its readings from coverage, the
 //! catalogue from its reading. The one number of the report line the store does not hold is
@@ -250,7 +250,7 @@ fn no_reader_for(conn: &Connection) -> rusqlite::Result<Vec<NoReader>> {
 }
 
 /// Reads what `run` left. `home` is the store's folder, where the sweep's skip list is.
-/// The run calls this inside its transaction before it finishes; `immune status` calls it on
+/// The run calls this inside its transaction before it finishes; `immunity status` calls it on
 /// the latest finished run.
 pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
     let base = baselines(conn)?;
@@ -444,7 +444,7 @@ pub struct RunEvent {
     pub first: bool,
 }
 
-/// What one run journaled, counted as the report and `immune status` count it, and how many
+/// What one run journaled, counted as the report and `immunity status` count it, and how many
 /// things it read for the first time and took as their baseline.
 pub fn run_changes(
     conn: &Connection,
@@ -671,7 +671,7 @@ pub fn unknown(t: &Totals) -> Vec<&'static str> {
     out
 }
 
-/// Everything `immune status` shows, read in one transaction.
+/// Everything `immunity status` shows, read in one transaction.
 pub struct State {
     /// The latest run that started.
     pub last: Option<RunMark>,
@@ -793,7 +793,7 @@ fn looked(conn: &Connection, now: i64) -> Res<(Vec<Latest>, Problems, findings::
     Ok((coverage, problems, needs))
 }
 
-/// What needs a look at `now`, as `immune status --json` counts it; `immune watch` gives its total
+/// What needs a look at `now`, as `immunity status --json` counts it; `immunity watch` gives its total
 /// after each reading.
 pub fn needs(conn: &Connection, now: i64) -> Res<findings::Needs> {
     Ok(findings::needs(conn, now)?)
@@ -881,7 +881,7 @@ fn login_job_installed(store: &Path) -> Option<bool> {
     }
 }
 
-/// The contract's `Status`: what `immune status` answers, and `immune run` once its check
+/// The contract's `Status`: what `immunity status` answers, and `immunity run` once its check
 /// finished. `found` is every finding at `now`, read in the same transaction as `state`; `conn`
 /// is that transaction. Without a store, `conn` and `state` are `None`. A section that cannot be
 /// computed is absent and named in `not_computed` with the reason; nothing unknown is given as

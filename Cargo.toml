@@ -1,5 +1,5 @@
 [package]
-name = "immune"
+name = "immunity-core"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
@@ -11,10 +11,14 @@ publish = false
 [workspace]
 members = ["contract"]
 
+[[bin]]
+name = "immunity"
+path = "src/main.rs"
+
 [dependencies]
 # The contract's types, generated from the schema, are a crate of this workspace: the core prints
 # its messages with them and the response layer reads them with the same crate.
-immune-contract = { path = "contract" }
+immunity-contract = { path = "contract" }
 # The ssh configuration reader expands `Include` with the system's glob(3) and matches
 # `Host` patterns with fnmatch(3), as OpenSSH does, instead of our own matcher. libc is
 # maintained by the Rust project, has no dependencies of its own and declares the
@@ -57,14 +61,14 @@ regex = "1.13.1"
 # The contract with a program that runs the core is a protobuf schema (`contract/`), and a
 # command of the contract prints binary protobuf. Protobuf's wire format is someone else's, so
 # it is not written by hand. prost is the protobuf runtime in general use in Rust (tokio-rs);
-# the types it derives for are generated from the schema and committed in `immune-contract`,
+# the types it derives for are generated from the schema and committed in `immunity-contract`,
 # which needs it too; the core names it to encode a message.
 # It links `bytes` into the program and runs `prost-derive` at build time, which brings
 # `anyhow`, `itertools` and `either`. Its default features are `derive` and `std`. The version is
 # the latest that had been published for at least two weeks.
 prost = "0.14.4"
 # The same messages as JSON with `--json`: serde's derives, put on the generated types by the
-# generator in `immune-contract`, print them with serde_json. serde and serde_derive were already compiled in for
+# generator in `immunity-contract`, print them with serde_json. serde and serde_derive were already compiled in for
 # sigma-rust; naming serde here adds no crate.
 serde = { version = "1.0.229", features = ["derive"] }
 
@@ -79,12 +83,12 @@ prost-types = "0.14.4"
 
 # The integration tests start the debug binary thousands of times, and each start of a command
 # that cuts secrets or reads the rules compiles gitleaks's patterns or parses the shipped rules
-# in dependency code (regex, serde_norway, sigma-rust). Unoptimized, a start of `immune status`
+# in dependency code (regex, serde_norway, sigma-rust). Unoptimized, a start of `immunity status`
 # took 153 ms, of which loading the rules was 136 ms, and compiling the patterns another 136 ms
 # for the commands that cut. Dependencies are therefore compiled optimized in the dev and test
 # profiles (bundled SQLite with them), and without debug information, which no test reads; the
 # crate itself is not. Measured on a developer's Mac, cold, four compiler jobs and four test
-# threads: `immune status` 153 ms to 45 ms; compiling the dependencies 17 s longer; the tests
+# threads: `immunity status` 153 ms to 45 ms; compiling the dependencies 17 s longer; the tests
 # 437 s to 196 s; a cold `./check` 562 s to 328 s. The crate itself at opt-level 1 saved about
 # 12 s of tests and cost 35 s of compiling, so it is not used.
 [profile.dev.package."*"]
