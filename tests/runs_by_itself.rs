@@ -6979,12 +6979,12 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
             lines([
                 "added 7; watched.login-hook new",
                 "added 4, changed 1, removed 3; watched.login-hook changed",
-                "removed 5; watched.login-hook gone",
+                "removed 6; watched.login-hook gone",
                 "added 7; watched.login-hook new",
                 "not_read 1; watched.login-hook not read",
                 "; ",
                 "not_read 1; watched.login-hook not read",
-                "removed 5; watched.login-hook gone",
+                "removed 6; watched.login-hook gone",
                 "added 7; watched.login-hook new",
             ]),
         ),
@@ -7280,12 +7280,12 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
         e.coverage(TARGET_KIND),
         format!(
             "partial|not read in full: \
-             files named in startup items' arguments, which are not judged: 2; \
+             files that startup items name in their arguments: 2; \
              startup programs in a folder macOS asks permission for: 1; \
              startup programs inside an app bundle (BundleProgram): 1; \
              startup programs named and not there: 1; \
              startup programs not named by a full path: 5; \
-             startup programs that are not a regular file, such as an app named whole: 1; \
+             startup programs that are not a regular file (such as an app named whole): 1; \
              watched file over the size cap: 1; {AT_CHECKS}"
         )
     );
@@ -7294,10 +7294,10 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
     assert_eq!(
         lacks,
         [
-            "files named in startup items' arguments, which are not judged|",
+            "files that startup items name in their arguments|",
             "startup programs inside an app bundle (BundleProgram)|",
             "startup programs not named by a full path|",
-            "startup programs that are not a regular file, such as an app named whole|",
+            "startup programs that are not a regular file (such as an app named whole)|",
             "watched file over the size cap|",
         ]
     );
@@ -7412,7 +7412,7 @@ fn a_startup_item_that_could_not_be_read_keeps_its_programs_and_is_said_as_not_r
     assert_eq!(
         e.coverage(TARGET_KIND),
         format!(
-            "partial|not read in full: startup items that could not be read, whose programs are kept as last read: 1; {AT_CHECKS}"
+            "partial|not read in full: startup items that could not be read and whose programs are kept as last read: 1; {AT_CHECKS}"
         )
     );
     // The cause is a failed reading, with nothing named as lacking a reader.
@@ -7433,11 +7433,20 @@ fn an_item_whose_program_cannot_be_told_at_its_first_check_leaves_the_reading_pa
     let shut = e.agent("shut");
     launch_item(&shut, &["/usr/local/bin/runner"]);
     std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // An item past what is kept of one, though its own kind reads it whole.
+    put(
+        &e.agent("large"),
+        &format!(
+            "<plist version=\"1.0\"><dict><key>Program</key><string>/usr/local/bin/runner\
+             </string><key>Comment</key><string>{}</string></dict></plist>\n",
+            "x".repeat(1 << 20)
+        ),
+    );
     e.run();
     assert_eq!(
         e.coverage(TARGET_KIND),
         format!(
-            "partial|not read in full: startup items that could not be read, whose programs are kept as last read: 2; {AT_CHECKS}"
+            "partial|not read in full: startup items that could not be read and whose programs are kept as last read: 3; {AT_CHECKS}"
         )
     );
 }
@@ -7458,7 +7467,7 @@ fn a_program_that_is_also_a_watched_file_is_judged_by_its_own_kind_alone() {
     assert!(e.rules().is_empty());
     assert_eq!(
         e.coverage(TARGET_KIND),
-        format!("full|startup programs watched as another kind, judged there: 1; {AT_CHECKS}")
+        format!("full|startup programs watched as another kind and judged there: 1; {AT_CHECKS}")
     );
     put(&profile, "export EXAMPLE=2\n");
     e.run();
@@ -7471,6 +7480,34 @@ fn a_program_that_is_also_a_watched_file_is_judged_by_its_own_kind_alone() {
         ),
         ["file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#/LoginHook"]
     );
+}
+
+#[test]
+fn a_program_another_kind_watches_and_cannot_read_is_read_and_judged_as_a_program() {
+    let e = Estate::new("target-elsewhere-unread");
+    // Past what a watched file is read up to, without taking the space: a file with a hole.
+    let profile = e.system().join("etc/zshrc");
+    put(&profile, "");
+    std::fs::File::options()
+        .write(true)
+        .open(&profile)
+        .unwrap()
+        .set_len((8 << 20) + 1)
+        .unwrap();
+    put(
+        &e.system()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>LoginHook</key><string>/etc/zshrc</string></dict></plist>\n",
+    );
+    e.run();
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.rules());
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::options().write(true).open(&profile).unwrap();
+    file.write_all_at(b"export EXAMPLE=1\n", 0).unwrap();
+    e.run();
+    assert_eq!(e.rules(), [TARGET_RULE]);
 }
 
 #[test]

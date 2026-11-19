@@ -4380,7 +4380,12 @@ fn read_watched(
         }
 
         for (e, line) in p.look.entries.iter().zip(mine) {
-            if tg.is_some_and(|(t, _)| t.judged_elsewhere(&e.unit)) {
+            // The content of a file is one reading's: a program another kind could not read is
+            // the reading of programs', and one another kind read is that kind's.
+            let program = targets
+                .as_ref()
+                .is_some_and(|(t, _)| !t.judged_elsewhere(&e.unit));
+            if tg.map_or(program && e.content.literal().is_none(), |_| !program) {
                 continue;
             }
             let id = file_id(&e.unit);

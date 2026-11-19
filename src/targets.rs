@@ -27,17 +27,20 @@ pub const BY: &str = "started_by";
 pub const RULE: &str = "watched.startup-target";
 /// A target larger than this is not read.
 pub const CAP: u64 = 256 << 20;
+/// The largest startup item whose bytes are kept for the run: items are a few kilobytes, and
+/// every one is held until its programs are read. One past it is an item not told.
+pub const KEPT: usize = 1 << 20;
 
 /// Why a target was not read, or a file not judged, in the reading's words (`coverage`).
 const NOT_FULL: &str = "startup programs not named by a full path";
 const IN_BUNDLE: &str = "startup programs inside an app bundle (BundleProgram)";
-const NOT_FILE: &str = "startup programs that are not a regular file, such as an app named whole";
+const NOT_FILE: &str = "startup programs that are not a regular file (such as an app named whole)";
 const GUARDED: &str = "startup programs in a folder macOS asks permission for";
 const FAILED: &str = "startup programs that could not be opened";
-const ITEMS: &str = "startup items that could not be read, whose programs are kept as last read";
-const ARGUMENTS: &str = "files named in startup items' arguments, which are not judged";
+const ITEMS: &str = "startup items that could not be read and whose programs are kept as last read";
+const ARGUMENTS: &str = "files that startup items name in their arguments";
 /// What the reading names and is no gap in it.
-const ELSEWHERE: &str = "startup programs watched as another kind, judged there";
+const ELSEWHERE: &str = "startup programs watched as another kind and judged there";
 const ABSENT: &str = "startup programs named and not there";
 const NOTES: [&str; 2] = [ELSEWHERE, ABSENT];
 /// What the reading always says of when it reads.
@@ -198,7 +201,12 @@ enum Named {
 /// list, its top not a dictionary, or text past what this build reads.
 fn named_by(runs: Runs, bytes: &[u8], part: &str) -> Option<(Named, Vec<String>)> {
     let keys = match runs {
-        Runs::Launchd => vec!["Program", "ProgramArguments", "BundleProgram"],
+        Runs::Launchd => vec![
+            "Program",
+            "ProgramArguments",
+            "BundleProgram",
+            "RootDirectory",
+        ],
         Runs::Values(keys) => vec![*keys.iter().find(|k| Some(**k) == part.strip_prefix('/'))?],
     };
     let texts = plist::texts(bytes, &keys).ok()?;
@@ -213,9 +221,11 @@ fn named_by(runs: Runs, bytes: &[u8], part: &str) -> Option<(Named, Vec<String>)
         };
         return Some((named, Vec::new()));
     }
-    let list = match get("ProgramArguments") {
-        Some(Text::List(list)) => list.as_slice(),
-        _ => &[],
+    // A job run under another root, or arguments in a shape not taken, name no file read here.
+    let list = match (get("ProgramArguments"), get("RootDirectory")) {
+        (Some(Text::List(list)), None) => list.as_slice(),
+        (None, None) => &[],
+        _ => return Some((Named::NotFull, Vec::new())),
     };
     let rest = list.iter().skip(1).flatten().cloned().collect();
     let named = match (get("Program"), list.first()) {
@@ -313,11 +323,10 @@ pub fn read(
     for (unit, by) in named {
         let id = format!("{prefix}{unit}");
         look.read(unit.clone());
-        // A file another kind of this Mac watches keeps its content there (`judged_elsewhere`):
-        // every check reads them all, so this run's looks say it.
-        let watched = others
-            .iter()
-            .any(|l| l.entries.iter().any(|e| e.unit == unit));
+        // A file another kind of this Mac read in this run keeps its content there
+        // (`judged_elsewhere`); one it could not read is read here.
+        let watched = (others.iter().flat_map(|l| &l.entries))
+            .any(|e| e.unit == unit && e.content.literal().is_some());
         let (content, link) = if watched {
             t.count(ELSEWHERE);
             (Content::Unread(Cause::NoReader, ELSEWHERE.into()), None)
@@ -654,6 +663,18 @@ mod tests {
         assert_eq!(slot(number.as_bytes()).0, "not full");
         let none = only("Other", "<string>x</string>");
         assert_eq!(slot(none.as_bytes()).0, "nothing");
+        // A job run under another root, and arguments that are not a list: no file here.
+        let rooted = AGENT.replace(
+            "<key>RunAtLoad</key>",
+            "<key>RootDirectory</key><string>/Users/example/jail</string><key>RunAtLoad</key>",
+        );
+        let arguments = only(
+            "ProgramArguments",
+            "<string>/Users/example/bin/agent</string>",
+        );
+        for bytes in [rooted, arguments] {
+            assert_eq!(slot(bytes.as_bytes()).0, "not full");
+        }
     }
 
     #[test]
@@ -693,6 +714,16 @@ mod tests {
         assert_eq!(gap.cause, None);
         t.count(NOT_FULL);
         assert_eq!(t.coverage().0, "partial");
+    }
+
+    #[test]
+    fn the_name_of_what_the_reading_does_not_read_fits_a_list_of_names_as_it_is() {
+        let names = [
+            NOT_FULL, IN_BUNDLE, NOT_FILE, GUARDED, FAILED, ITEMS, ARGUMENTS,
+        ];
+        for name in names.into_iter().chain(NOTES).chain([watched::OVER_CAP]) {
+            assert!(!name.contains([',', ':']), "{name}");
+        }
     }
 
     #[test]

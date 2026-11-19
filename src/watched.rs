@@ -340,8 +340,9 @@ pub struct Entry {
     pub content: Content,
     /// The target text of a symbolic link, when the path is one.
     pub link: Option<String>,
-    /// The bytes its content was taken of, for a file that names a program.
-    pub bytes: Option<Vec<u8>>,
+    /// The bytes its content was taken of, for a file that names a program, up to
+    /// `targets::KEPT`, shared by the parts of one file.
+    pub bytes: Option<std::sync::Arc<[u8]>>,
 }
 
 /// Where a place is on disk, and its path as ids name it.
@@ -568,12 +569,14 @@ fn take(
     let shown = Unit::whole(shown);
     // The bytes are kept only where a file names a program, for `targets.rs` to read.
     let names = crate::targets::runs_of(kind.0).is_some();
-    let entry = |unit, content, link, bytes: &Option<Vec<u8>>| Entry {
+    let kept = |b: Option<Vec<u8>>| b.filter(|b| names && b.len() <= crate::targets::KEPT);
+    let kept = |b| kept(b).map(std::sync::Arc::<[u8]>::from);
+    let entry = |unit, content, link, bytes: &Option<std::sync::Arc<[u8]>>| Entry {
         unit,
         watched_as: kind.0,
         content,
         link,
-        bytes: bytes.as_ref().filter(|_| names).cloned(),
+        bytes: bytes.clone(),
     };
     match examined {
         // Listed and gone before it was looked at: the listing read in full holds it.
@@ -582,9 +585,10 @@ fn take(
         Examined::Unreached(guarded) => look.there_not_into(shown, guarded, at.home),
         Examined::Present(content, link, bytes) => {
             look.read(shown.clone());
-            look.entries.push(entry(shown, content, link, &bytes));
+            look.entries.push(entry(shown, content, link, &kept(bytes)));
         }
         Examined::Parts(parts, failed, link, bytes) => {
+            let bytes = kept(bytes);
             if failed.is_empty() {
                 look.read(shown.clone());
             } else {
