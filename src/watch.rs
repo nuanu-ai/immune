@@ -718,7 +718,7 @@ impl Watcher<'_> {
     /// Starts a stream on `wanted` in place of the one running, if any. Returns the problem
     /// lines of the paths FSEvents refused.
     fn start(&mut self, wanted: Vec<PathBuf>) -> Result<Vec<Value>, String> {
-        let deliver = || -> Box<dyn Fn(fsevents::Batch) + Send + Sync> {
+        let deliver = || -> fsevents::Deliver {
             let tx = self.tx.clone();
             Box::new(move |b: fsevents::Batch| {
                 let _ = tx.send(Msg::Events(b));
