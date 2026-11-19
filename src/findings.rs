@@ -838,13 +838,17 @@ const GROUPED: [&str; 1] = ["watched.git-hook"];
 
 /// What the findings of one group share, as the store holds them: the rule, the machine, the
 /// kind of change and the folder that holds the file (`baseline::parent`). `None` for a finding
-/// of a rule not in `GROUPED`, the response layer's included, and for one whose file holds `#`,
-/// which the store's id does not tell apart from a part of a file.
+/// of a rule not in `GROUPED`, the response layer's included, and for one whose subject holds
+/// `#` anywhere: the store's id joins a path and a part of a file with `#` and does not escape
+/// one in a name, so where such a subject splits is not known.
 pub fn group(i: &Item) -> Option<[&str; 4]> {
+    if i.about.contains('#') {
+        return None;
+    }
     let (machine, unit) = crate::known::place_of(&i.about)?;
     let rule = GROUPED.into_iter().find(|r| *r == i.rule)?;
     let change = i.change.as_deref()?;
-    (!unit.contains('#')).then_some([rule, machine, change, crate::baseline::parent(unit)])
+    Some([rule, machine, change, crate::baseline::parent(unit)])
 }
 
 /// The key a client groups findings by, equal for the findings of one group (`group`): `g` and

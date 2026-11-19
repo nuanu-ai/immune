@@ -43,9 +43,10 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     })
 }
 
-/// One finding whole; a refusal when the store has no finding with this id, or with one of
-/// `with`. After an answer given with `--with`, `with` are the other findings named, each as it
-/// stands now, in the order given, and the other of the pair is `answered_with` too.
+/// One finding whole; a refusal when the store has no finding with this id. After an answer
+/// given with `--with`, `with` are the other findings named, each as it stands now, in the order
+/// given, and the other of the pair is `answered_with` too. Each of them was found by the
+/// answer's own check (`findings::together`) in the same transaction, so each is read back.
 pub fn one(
     conn: &Connection,
     id: &str,
@@ -61,11 +62,7 @@ pub fn one(
         f.answered_together = with.iter().filter_map(|w| refs.get(*w).cloned()).collect();
         f.answered_with = f.answered_together.first().cloned().filter(|_| pair);
     }
-    // Every finding named is read back, or the answer is refused as a whole.
-    let all_read = one
-        .as_ref()
-        .is_some_and(|f| f.answered_together.len() == with.len());
-    Ok(one.filter(|_| all_read).ok_or(Refused {
+    Ok(one.ok_or(Refused {
         code: "unknown_finding",
         message: "the store has no finding with this id",
         example: "immunity findings --all lists every finding with its id; with --json, every one in every state",

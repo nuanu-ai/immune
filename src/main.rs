@@ -1440,11 +1440,10 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             })?;
         }
         // The answer names the other findings as the command left them. It is read before the
-        // commit, and a read that refuses commits nothing, for any finding named. No test reaches
-        // that branch: the write and the read take a finding by the same predicate
-        // (`findings::shown`), so a finding the write accepts the read shows. The branch stays so
-        // that a later difference between the two refuses with nothing written, never after a
-        // commit.
+        // commit, and a read that refuses commits nothing. No test reaches that branch: the
+        // write and the read take a finding by the same predicate (`findings::shown`), so a
+        // finding the write accepts the read shows. The branch stays so that a later difference
+        // between the two refuses with nothing written, never after a commit.
         let left = finding_answer::one(&tx, &args.id, &ids[1..], pair, now)?;
         if left.is_ok() {
             tx.commit()?;

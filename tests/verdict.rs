@@ -5366,6 +5366,22 @@ fn a_set_that_is_not_one_group_is_refused_naming_the_finding_that_does_not_fit()
         // With one --with, as for the pair.
         refuse(a, &[o], "not_the_pair", o);
     }
+    // Siblings on a machine whose name holds `#`: the subject holds it, so they have no group.
+    let hashed: Vec<String> = ["pre-commit", "pre-push", "commit-msg"]
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let about = format!("file:machine:ma#c/dev/shop/.git/hooks/{name}");
+            row(0xb5 + k as u64, HOOK, &about, "new")
+        })
+        .collect();
+    refuse(&hashed[0], &[&hashed[1]], "not_the_pair", &hashed[1]);
+    refuse(
+        &hashed[0],
+        &[&hashed[1], &hashed[2]],
+        "not_one_group",
+        &hashed[1],
+    );
     // The pair alone is still answered.
     let before = whole(&mac);
     let seq = read(&mac);
@@ -5402,6 +5418,12 @@ fn the_group_key_is_equal_for_siblings_and_differs_by_folder_machine_rule_and_ch
     ];
     let none = [
         row(0xc5, HOOK, &format!("{HOOKS}/pre#push"), "new"),
+        row(
+            0xc7,
+            HOOK,
+            "file:machine:ma#c/dev/shop/.git/hooks/pre-commit",
+            "new",
+        ),
         row(
             0xc6,
             "watched.autostart",
