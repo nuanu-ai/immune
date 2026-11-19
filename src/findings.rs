@@ -492,6 +492,28 @@ fn agent_start() -> Rule {
     }
 }
 
+fn agent_allowed() -> Rule {
+    // An entry of the allow list runs nothing: it takes a question away, and no ATT&CK technique
+    // describes that. The agent writes one itself each time the person chooses not to be asked
+    // again, so the levels are not urgent: told at once, they would be answered unread. Only a
+    // change of a list of strings is this kind (`autorun::Apart`).
+    Rule {
+        id: "autorun.agent-allowed",
+        kind: autorun::AGENT_ALLOWED.0,
+        technique: None,
+        severity: "medium",
+        confidence: "low",
+        finds: "event",
+        words: Words {
+            title: "The list of what your coding agent may do in a project without asking you has changed.",
+            short: "Agent allow list in a project changed",
+            meaning: "Your own choice not to be asked again writes this list. It is also how an agent that was tricked lets itself run a command later without your yes.",
+            advice: "Read the entries allowed in the file named here. If you did not approve one of them, remove it.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::AGENT_ALLOWED.0),
+    }
+}
+
 fn agent_settings() -> Rule {
     // Event Triggered Execution: the event is the agent started, anywhere, which then runs
     // what its own settings in the home folder name.
@@ -760,7 +782,7 @@ pub fn hold(
 // ---- End of packages the projects depend on. ----
 
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 22] {
+pub fn rules() -> [Rule; 23] {
     [
         autostart(),
         login_hook(),
@@ -777,6 +799,7 @@ pub fn rules() -> [Rule; 22] {
         editor_open(),
         package_install(),
         agent_start(),
+        agent_allowed(),
         agent_settings(),
         editor_extension(),
         indicator_match(),
@@ -1727,7 +1750,7 @@ pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 /// case, the one name for it in the app, the pages and the text. `kind` stays the stable name,
 /// stored and matched; the title is only shown. A test walks every kind the program can raise
 /// (`kinds`) and fails for one this table lacks.
-const KIND_TITLES: [(&str, &str); 24] = [
+const KIND_TITLES: [(&str, &str); 25] = [
     (watched::AUTOSTART, "Startup item"),
     (watched::LOGIN_HOOK, "Login hook"),
     (watched::PROFILE, "Shell startup file"),
@@ -1746,6 +1769,7 @@ const KIND_TITLES: [(&str, &str); 24] = [
     (autorun::EDITOR_OPEN.0, "Editor setting in a project"),
     (autorun::PACKAGE_INSTALL.0, "Package install script or hook"),
     (autorun::AGENT_START.0, "Agent tool in a project"),
+    (autorun::AGENT_ALLOWED.0, "Agent allowed without asking"),
     (autorun::AGENT_SETTINGS.0, "Coding agent tool"),
     (autorun::EDITOR_EXTENSION.0, "Editor extension"),
     (indicators::MATCHED, "Indicator match"),

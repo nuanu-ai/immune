@@ -1471,6 +1471,218 @@ fn a_planted_install_script_and_a_planted_agent_hook_are_findings_and_their_remo
     );
 }
 
+/// Every finding, open or not, as rule, where, state, severity and confidence, sorted.
+fn levelled(e: &Estate) -> Vec<[String; 5]> {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let mut found: Vec<[String; 5]> = e.contract(&["findings"])["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let f = &item["finding"];
+            [
+                &f["rule"],
+                &item["where_text"],
+                &f["state"],
+                &f["severity"],
+                &f["confidence"],
+            ]
+            .map(s)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// A finding as `levelled` gives it, open, with `severity/confidence`.
+fn open_at(rule: &str, place: &str, levels: &str) -> [String; 5] {
+    let (severity, confidence) = levels.split_once('/').unwrap();
+    [rule, place, "open", severity, confidence].map(str::to_string)
+}
+
+const URGENT: &str = "high/medium";
+
+/// A project's local settings for Claude Code with this allow value.
+fn local_allow(c: &Path, allow: &str) {
+    put(
+        &c.join(".claude/settings.local.json"),
+        &format!("{{\"permissions\": {{\"allow\": {allow}}}}}"),
+    );
+}
+
+/// Whether the journal after `seq` closed or retired anything.
+fn closed_after(e: &Estate, seq: i64) -> Vec<String> {
+    e.rows(&format!(
+        "SELECT entry || ' ' || subject FROM journal
+         WHERE seq > {seq} AND entry IN ('removed', 'retired', 'finding_cleared')"
+    ))
+}
+
+#[test]
+fn an_allow_entry_in_local_agent_settings_is_its_own_finding_at_medium_and_low_while_one_in_shared_settings_and_a_local_hook_stay_urgent()
+ {
+    // Claude Code writes an allow entry into a project's local settings itself, each time its
+    // user chooses not to be asked again: told at once, each would be answered unread. The
+    // same entry in the shared settings came with the repository, and a hook runs code.
+    let e = Estate::new("agent-allowed");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, "");
+    local_allow(&shop, "[\"Bash(make:*)\"]");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    // One more entry, as the agent adds it to the list; the sample of the rule adds a first.
+    let allow = "[\"Bash(make:*)\", \"Bash(npm test:*)\"]";
+    put(
+        &shop.join(".claude/settings.json"),
+        &format!("{{\"permissions\": {{\"deny\": [\"Read(./.env)\"], \"allow\": {allow}}}}}"),
+    );
+    put(
+        &shop.join(".claude/settings.local.json"),
+        &format!("{{\"permissions\": {{\"allow\": {allow}}}{HOOK}}}"),
+    );
+    e.run();
+    let local = "~/dev/shop/.claude/settings.local.json";
+    assert_eq!(
+        levelled(&e),
+        [
+            open_at(
+                "autorun.agent-allowed",
+                &format!("{local}#/permissions/allow"),
+                "medium/low"
+            ),
+            open_at(
+                "autorun.agent-start",
+                "~/dev/shop/.claude/settings.json#/permissions/allow",
+                URGENT
+            ),
+            open_at("autorun.agent-start", &format!("{local}#/hooks"), URGENT),
+        ]
+    );
+}
+
+/// The project's local settings moved to `elsewhere`, with a link left in their place.
+fn local_to_link(shop: &Path, elsewhere: &Path) {
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    std::fs::rename(shop.join(".claude/settings.local.json"), elsewhere).unwrap();
+    link(
+        elsewhere.to_str().unwrap(),
+        &shop.join(".claude/settings.local.json"),
+    );
+}
+
+const ALLOW_PART: &str = "~/dev/shop/.claude/settings.local.json#/permissions/allow";
+
+#[test]
+fn local_agent_settings_replaced_by_a_link_to_the_same_bytes_or_turned_back_into_a_file_raise_the_urgent_rule_not_the_lower_one()
+ {
+    // Where the file leads changed, not the list: that is told by the rule of the file.
+    let e = Estate::new("agent-allowed-link");
+    let shop = e.checkout("dev/shop");
+    local_allow(&shop, "[\"Bash(make:*)\"]");
+    e.run();
+    let before = e.last_entry();
+    let elsewhere = e.home().join(".invented/settings.local.json");
+    local_to_link(&shop, &elsewhere);
+    e.run();
+    // One finding of the urgent rule, and nothing closed on the way.
+    assert_eq!(
+        levelled(&e),
+        [open_at("autorun.agent-start", ALLOW_PART, URGENT)]
+    );
+    assert!(
+        closed_after(&e, before).is_empty(),
+        "{:?}",
+        closed_after(&e, before)
+    );
+
+    e.seen();
+    std::fs::remove_file(shop.join(".claude/settings.local.json")).unwrap();
+    std::fs::rename(&elsewhere, shop.join(".claude/settings.local.json")).unwrap();
+    e.run();
+    let open: Vec<[String; 5]> = levelled(&e)
+        .into_iter()
+        .filter(|f| f[2] == "open")
+        .collect();
+    assert_eq!(open, [open_at("autorun.agent-start", ALLOW_PART, URGENT)]);
+}
+
+#[test]
+fn an_allow_list_that_arrives_through_a_link_raises_the_urgent_rule() {
+    // The list is new and is told by its own kind; that the file now leads elsewhere is told
+    // by the rule of the file, though the entry it is seen on is new in the same run.
+    let e = Estate::new("agent-allowed-arrives-linked");
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(".claude/settings.local.json"), "{}");
+    e.run();
+    let elsewhere = e.home().join(".invented/settings.local.json");
+    local_to_link(&shop, &elsewhere);
+    put(&elsewhere, "{\"permissions\": {\"allow\": [\"Read\"]}}");
+    e.run();
+    assert_eq!(
+        levelled(&e),
+        [
+            open_at("autorun.agent-allowed", ALLOW_PART, "medium/low"),
+            open_at("autorun.agent-start", ALLOW_PART, URGENT),
+        ]
+    );
+}
+
+#[test]
+fn the_list_changed_in_local_agent_settings_reached_through_a_link_raises_the_lower_rule() {
+    // What is lowered is a change of the list, however the file is reached.
+    let e = Estate::new("agent-allowed-through-link");
+    let shop = e.checkout("dev/shop");
+    local_allow(&shop, "[\"Bash(make:*)\"]");
+    let elsewhere = e.home().join(".invented/settings.local.json");
+    local_to_link(&shop, &elsewhere);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    put(
+        &elsewhere,
+        "{\"permissions\": {\"allow\": [\"Bash(make:*)\", \"Bash(npm test:*)\"]}}",
+    );
+    e.run();
+    assert_eq!(
+        levelled(&e),
+        [open_at("autorun.agent-allowed", ALLOW_PART, "medium/low")]
+    );
+}
+
+#[test]
+fn an_allow_value_that_is_a_string_an_object_or_a_list_holding_an_object_raises_the_urgent_rule() {
+    // Only a list of strings is the lower kind; any other shape is the row's, whatever an
+    // entry means.
+    let e = Estate::new("agent-allowed-shape");
+    let shapes = [
+        ("a", "\"Read\""),
+        (
+            "b",
+            "{\"env\": {\"NODE_OPTIONS\": \"--require ./.invented/x.js\"}}",
+        ),
+        ("c", "[\"Bash(make:*)\", {\"hooks\": {\"Stop\": []}}]"),
+    ];
+    for (c, _) in shapes {
+        local_allow(&e.checkout(&format!("dev/{c}")), "[\"Bash(make:*)\"]");
+    }
+    e.run();
+    let before = e.last_entry();
+    for (c, allow) in shapes {
+        local_allow(&e.home().join(format!("dev/{c}")), allow);
+    }
+    e.run();
+    let part = |c: &str| format!("~/dev/{c}/.claude/settings.local.json#/permissions/allow");
+    assert_eq!(
+        levelled(&e),
+        shapes.map(|(c, _)| open_at("autorun.agent-start", &part(c), URGENT))
+    );
+    assert!(
+        closed_after(&e, before).is_empty(),
+        "{:?}",
+        closed_after(&e, before)
+    );
+}
+
 #[test]
 fn the_text_of_a_script_or_a_command_is_never_kept_printed_or_returned() {
     // A script is code someone else wrote: kept, it could be read as an instruction, and it
@@ -3109,6 +3321,10 @@ fn no_page_says_none_of_what_is_in_projects_after_a_walk_that_did_not_find_them_
         (
             "Programs and tools a project tells your coding agent to run",
             "programs-and-tools-a-project-tells-your-coding-agent-to-run",
+        ),
+        (
+            "Tools your coding agent may use in a project without asking",
+            "tools-your-coding-agent-may-use-in-a-project-without-asking",
         ),
         (
             "Scripts that run when a project&#39;s packages are installed",

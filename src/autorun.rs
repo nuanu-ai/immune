@@ -5,7 +5,8 @@
 //! on. Everything else is derived from the table: the kinds of reading, the watcher's
 //! subscriptions, the watched kinds for a person, the rules' levels, the inventory on the page
 //! and the count of ways read. Adding a product is adding a row; a row of a trigger and scope
-//! that has no rule yet needs their words and a rule.
+//! that has no rule yet needs their words and a rule. A key whose part runs nothing by itself
+//! can be watched apart from its row, as a kind whose rule states its own levels (`Apart`).
 //!
 //! The project rows are the files known to make a tool run code from a project folder, with
 //! `.gemini/settings.json` and the `.env` files Gemini CLI loads as two rows, since one part is
@@ -185,6 +186,16 @@ pub struct Kept {
 /// and what it is in a line.
 pub type Watched = (&'static str, &'static str, &'static str);
 
+/// A key of a row's file whose part runs nothing by itself, watched as a kind of its own whose
+/// rule states its own levels, while its value is a list of strings. Any other shape there,
+/// the rest of the file, and the file read whole stay the row's; so does a change of where the
+/// file leads, which is told by the row's rule (`read_watched` in `main.rs`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Apart {
+    pub key: &'static str,
+    pub watched: Watched,
+}
+
 /// A kind of watched place: the literal of `watched_as` and the coverage kind of its reading.
 pub type Kind = (&'static str, &'static str);
 
@@ -240,6 +251,7 @@ pub struct Point {
     /// The versions of macOS the row was checked on (`not_checked_on`).
     pub checked_on: Checked,
     pub kept: Option<Kept>,
+    pub apart: Option<Apart>,
 }
 
 /// The keys of Claude Code's project settings that run something or let it run unasked
@@ -374,6 +386,7 @@ const fn row(
         source,
         checked_on: NOT_CHECKED,
         kept: None,
+        apart: None,
     }
 }
 
@@ -396,6 +409,7 @@ const fn place(
         source,
         checked_on: NOT_CHECKED,
         kept: None,
+        apart: None,
     }
 }
 
@@ -481,6 +495,19 @@ pub const AGENT_SETTINGS: Watched = (
     "programs and tools your coding agents are set to run",
     "Programs and tools your coding agents start or run by themselves because their own settings in your home folder say so.",
 );
+pub const AGENT_ALLOWED: Watched = (
+    "tool a coding agent may use in a project without asking",
+    "tools your coding agent may use in a project without asking",
+    "Tools and commands a coding agent may use in a project without asking you first, as its local settings there allow.",
+);
+/// Claude Code's allow list in a project's local settings, which it writes itself each time
+/// the person chooses not to be asked again. An entry runs nothing; it takes away a question.
+/// In the shared `.claude/settings.json`, which comes with someone else's repository, the
+/// same key stays the row's.
+const ALLOWED: Apart = Apart {
+    key: "/permissions/allow",
+    watched: AGENT_ALLOWED,
+};
 pub const EDITOR_EXTENSION: Watched = (
     "editor extension",
     "editor extensions",
@@ -567,7 +594,7 @@ pub static POINTS: [Point; 87] = [
     row(&[".dir-locals.el"], Present, OpenInEditor, "Emacs", OncePerContent, (EVENT, "high", "low"), "https://www.gnu.org/software/emacs/manual/html_node/emacs/Safe-File-Variables.html"),
     row(&["build.rs"], Present, BuildOrTest, "Cargo, rust-analyzer", Never, (EVENT, "high", "low"), "https://doc.rust-lang.org/cargo/reference/build-scripts.html"),
     row(&[".claude/settings.json"], Select(Strict, CLAUDE), StartAgent, "Claude Code", OncePerFolder, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings"),
-    row(&[".claude/settings.local.json"], Select(Strict, CLAUDE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings"),
+    Point { apart: Some(ALLOWED), ..row(&[".claude/settings.local.json"], Select(Strict, CLAUDE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings") },
     row(&[".mcp.json"], Select(Strict, MCP_SERVERS), StartAgent, "Claude Code", DependsOnSetting, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/mcp"),
     row(&[".claude/skills", ".claude/commands", ".claude/agents"], Present, AgentEvent, "Claude Code", Never, (EVENT, "high", "low"), "https://github.com/osquery/osquery/blob/master/specs/ai_agent_skills.table"),
     row(&["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursor/rules", ".github/copilot-instructions.md"], Present, AgentEvent, "coding agents", Never, (None, "medium", "low"), "https://pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents"),
@@ -761,6 +788,22 @@ impl Point {
         }
     }
 
+    /// The literal of `watched_as` of one unit this row finds: its key's own kind for the part
+    /// at a key watched apart while `list` says its value is a list of strings; the row's for
+    /// every other.
+    fn watched_as_of(&self, unit: &Unit, list: bool) -> &'static str {
+        match self.apart {
+            Some(a) if list && unit.part == a.key => a.watched.0,
+            _ => self.watched_as().unwrap_or_default(),
+        }
+    }
+
+    /// Whether some of what this row finds is watched as `watched_as`.
+    pub fn finds(&self, watched_as: &str) -> bool {
+        self.watched_as() == Some(watched_as)
+            || self.apart.is_some_and(|a| a.watched.0 == watched_as)
+    }
+
     /// The note of a full reading that found nothing to watch.
     fn nothing(&self) -> String {
         match (self.kept, self.part, self.scope) {
@@ -933,19 +976,17 @@ pub fn live(watched_as: &str) -> bool {
 }
 
 fn live_in(points: &[Point], watched_as: &str) -> bool {
-    points
-        .iter()
-        .any(|p| p.live() && p.watched_as() == Some(watched_as))
+    points.iter().any(|p| p.live() && p.finds(watched_as))
 }
 
 /// What the rows read here are watched as, each once, in the order of the table.
 pub fn watched() -> Vec<Watched> {
     let mut out: Vec<Watched> = Vec::new();
     for p in POINTS.iter().filter(|p| p.read_here()) {
-        if let Some(w) = p.watched()
-            && !out.contains(&w)
-        {
-            out.push(w);
+        for w in p.watched().into_iter().chain(p.apart.map(|a| a.watched)) {
+            if !out.contains(&w) {
+                out.push(w);
+            }
         }
     }
     out
@@ -955,7 +996,7 @@ pub fn watched() -> Vec<Watched> {
 pub fn kinds_of(watched_as: &str) -> Vec<String> {
     POINTS
         .iter()
-        .filter(|p| p.read_here() && p.watched_as() == Some(watched_as))
+        .filter(|p| p.read_here() && p.finds(watched_as))
         .map(Point::kind)
         .collect()
 }
@@ -1204,7 +1245,7 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
             }
         }
         out.look.read(shown);
-        return push(p, out, found, link);
+        return push(p, out, found, link, &[]);
     }
     let bytes = match read_capped(&path, p.cap()) {
         Ok(bytes) => bytes,
@@ -1212,6 +1253,7 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
     };
     let whole = |bytes: &[u8]| Content::Hash(format!("sha256:{}", crate::sha256::hex(bytes)));
     let unit = shown.clone();
+    let mut lists = Vec::new();
     match p.part {
         WholeWhen(format, key, holds) => match whole_when(&bytes, format, key, holds) {
             Err(why) => return out.look.unread(shown, why),
@@ -1230,7 +1272,10 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         }
         Select(format, keys) => match select(&bytes, format, keys) {
             Selected::Values(values) => {
-                for (pointer, hash) in values {
+                for (pointer, hash, list) in values {
+                    if list {
+                        lists.push(pointer.clone());
+                    }
                     found.push((Unit::part(&shown.path, pointer), Content::Value(hash)));
                 }
             }
@@ -1243,16 +1288,23 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         Present | Entries | File | Keys(_) | Folders(_) => return out.look.there(shown),
     }
     out.look.read(unit);
-    push(p, out, found, link);
+    push(p, out, found, link, &lists);
 }
 
-/// Counts a place looked at and keeps what it holds as entries of the row.
-fn push(p: &Point, out: &mut Looked, found: Vec<(Unit, Content)>, link: Option<String>) {
+/// Counts a place looked at and keeps what it holds as entries of the row; `lists` are the
+/// parts whose value is a list of strings (`Apart`).
+fn push(
+    p: &Point,
+    out: &mut Looked,
+    found: Vec<(Unit, Content)>,
+    link: Option<String>,
+    lists: &[String],
+) {
     out.look.present += 1;
     for (unit, content) in found {
         out.look.entries.push(Entry {
+            watched_as: p.watched_as_of(&unit, lists.contains(&unit.part)),
             unit,
-            watched_as: p.watched_as().unwrap_or_default(),
             content,
             link: link.clone(),
         });
@@ -1312,8 +1364,9 @@ fn value(bytes: &[u8]) -> Content {
 /// What `Select` took from a file.
 #[derive(Debug, PartialEq)]
 pub enum Selected {
-    /// Per selected JSON pointer that is there, the checksum of its canonical value.
-    Values(Vec<(String, String)>),
+    /// Per selected JSON pointer that is there, the checksum of its canonical value and whether
+    /// it is a list whose every item is a string.
+    Values(Vec<(String, String, bool)>),
     /// Read whole instead, and why.
     Whole(String),
 }
@@ -1383,9 +1436,13 @@ fn pick(v: Option<&Value>, keys: &[&str], doubt: impl Fn(&str) -> bool) -> Selec
             continue;
         }
         let canonical = serde_json::to_vec(at).unwrap_or_default();
+        let list = at
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string));
         out.push((
             pointer,
             format!("sha256:{}", crate::sha256::hex(&canonical)),
+            list,
         ));
     }
     Selected::Values(out)
@@ -1895,9 +1952,19 @@ mod tests {
         let expected = Selected::Values(vec![(
             "/scripts/prepare".to_string(),
             hash(r#"{"a":"s","b":1}"#),
+            false,
         )]);
         assert_eq!(select(one, Strict, keys), expected);
         assert_eq!(select(two, Strict, keys), expected);
+        // A list whose every item is a string is said to be one; a list holding anything else
+        // is not.
+        for (value, list) in [(r#"["a","b"]"#, true), (r#"["a",{"b":1}]"#, false)] {
+            let file = format!(r#"{{"scripts": {{"install": {value}}}}}"#);
+            assert_eq!(
+                select(file.as_bytes(), Strict, keys),
+                Selected::Values(vec![("/scripts/install".to_string(), hash(value), list)])
+            );
+        }
         // Absent, null, a parent that is not an object, a top that is not one, an empty file
         // and one that is not JSON at all.
         assert_eq!(
@@ -1911,7 +1978,7 @@ mod tests {
         assert_eq!(select(b"[1, 2]", Strict, keys), Selected::Values(vec![]));
         assert_eq!(
             select(br#"{"scripts": {"install": 3}}"#, Strict, keys),
-            Selected::Values(vec![("/scripts/install".to_string(), hash("3"))])
+            Selected::Values(vec![("/scripts/install".to_string(), hash("3"), false)])
         );
         for not_json in [&b""[..], b"{\"scripts\": {,}}", b"\x00\xff"] {
             assert!(
@@ -1926,8 +1993,16 @@ mod tests {
         assert_eq!(
             select(file, Strict, &["/mcpServers/*"]),
             Selected::Values(vec![
-                ("/mcpServers/a~1b".to_string(), hash(r#"{"command":"x"}"#)),
-                ("/mcpServers/c~0d".to_string(), hash(r#"{"command":"y"}"#)),
+                (
+                    "/mcpServers/a~1b".to_string(),
+                    hash(r#"{"command":"x"}"#),
+                    false
+                ),
+                (
+                    "/mcpServers/c~0d".to_string(),
+                    hash(r#"{"command":"y"}"#),
+                    false
+                ),
             ])
         );
     }
@@ -1952,7 +2027,7 @@ mod tests {
             br#"{"name": "a", "name": "b", "scripts": {"prepare": "p", "prepare": "p"}}"#;
         assert_eq!(
             select(elsewhere, Strict, keys),
-            Selected::Values(vec![("/scripts/prepare".to_string(), hash("\"p\""))])
+            Selected::Values(vec![("/scripts/prepare".to_string(), hash("\"p\""), false)])
         );
         assert_eq!(
             select(b"\xEF\xBB\xBF{\"scripts\": {}}", Strict, keys),
@@ -1989,7 +2064,7 @@ mod tests {
         let elsewhere = b"{\"theme\": 1, \"theme\": 2, \"servers\": {\"a\": {}}}";
         assert_eq!(
             select(elsewhere, CommentsAndCommas, keys),
-            Selected::Values(vec![("/servers/a".to_string(), hash("{}"))])
+            Selected::Values(vec![("/servers/a".to_string(), hash("{}"), false)])
         );
     }
 
@@ -2002,6 +2077,7 @@ mod tests {
         let expected = Selected::Values(vec![(
             "/mcpServers/a".to_string(),
             hash(r#"{"command":"npx"}"#),
+            false,
         )]);
         for format in [Comments, CommentsAndCommas] {
             assert_eq!(select(one, format, GEMINI), expected);
@@ -2039,7 +2115,7 @@ mod tests {
         let Selected::Values(values) = select(file, CommentsAndCommas, VSCODE_SETTINGS) else {
             panic!("not read by key")
         };
-        let pointers: Vec<&str> = values.iter().map(|(p, _)| p.as_str()).collect();
+        let pointers: Vec<&str> = values.iter().map(|(p, _, _)| p.as_str()).collect();
         assert_eq!(
             pointers,
             [
@@ -2164,7 +2240,8 @@ mod tests {
 
     #[test]
     fn every_key_of_every_row_read_by_key_is_an_entry_of_its_triggers_kind() {
-        // A row is data: what it lists is what is read, with nothing else to write.
+        // A row is data: what it lists is what is read, with nothing else to write. A key
+        // watched apart holds a string here, not a list of strings: it is the row's kind too.
         let dir =
             std::env::temp_dir().join(format!("immunity-autorun-keys-{}", std::process::id()));
         let _removed = crate::common::Scratch::at(dir.clone());

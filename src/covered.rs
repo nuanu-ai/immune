@@ -1559,7 +1559,7 @@ pub fn in_projects(count: Count) -> bool {
     match count {
         Count::Files(as_) => autorun::POINTS.iter().any(|p| {
             (p.read_here() || p.watched_place())
-                && p.watched_as() == Some(as_)
+                && p.finds(as_)
                 && matches!(p.scope, autorun::Scope::Checkout)
         }),
         Count::Dependencies => true,
