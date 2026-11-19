@@ -1458,7 +1458,20 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
         covered::Found::All => "None is known.".to_string(),
         f => format!("None is known in {}.", f.projects()),
     };
-    coverage_of_list(&mut out, gap.as_deref(), list.is_empty(), &none);
+    // "None" only when every project was compared; else the status's own sentence, by count.
+    let matched = crate::text::Matched::of_totals(&crate::vulnerabilities::totals(conn, now)?);
+    let all = matched.all_compared();
+    coverage_of_list(&mut out, gap.as_deref(), all && list.is_empty(), &none);
+    if !all {
+        writeln!(
+            out,
+            "<p class=\"muted\">{}.</p>",
+            esc(&capital(&matched.said(
+                found,
+                u64::try_from(crate::store::checkouts(conn)?).ok()
+            )))
+        )?;
+    }
     if let Some(line) = scope {
         writeln!(out, "<p class=\"muted\">{}</p>", esc(&line))?;
     }

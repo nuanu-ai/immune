@@ -1386,34 +1386,8 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
         let mut matched = String::new();
         if let Some(v) = &s.vulnerabilities {
             let (found, scope) = crate::covered::Found::of(v.projects_found.as_ref());
-            let of = match found {
-                crate::covered::Found::All => {
-                    "the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock".to_string()
-                }
-                f => format!(
-                    "the package-lock.json, pnpm-lock.yaml and Cargo.lock of {}",
-                    f.projects()
-                ),
-            };
-            matched = format!(
-                "; matched against {of}: {} in packages they use",
-                count(
-                    v.affected_records,
-                    "known vulnerability",
-                    "known vulnerabilities"
-                )
-            );
-            if v.unknown_packages > 0 {
-                matched.push_str(&format!(
-                    ", and for {} whether one affects them cannot be told",
-                    count(v.unknown_packages, "package", "packages")
-                ));
-            }
-            // Beside the count, how many projects were not wholly read, so it never reads as all.
-            matched.push_str(&crate::text::not_wholly_read(
-                v.projects_not_read,
-                v.projects_without_lockfile,
-            ));
+            let projects = s.estate.as_ref().map(|e| e.checkouts);
+            matched = format!("; {}", crate::text::Matched::of(v).said(found, projects));
             // The one line of scope, after the count.
             if let Some(line) = scope {
                 matched.push_str(&format!(". {}", line.trim_end_matches('.')));
@@ -2783,17 +2757,9 @@ mod tests {
         assert!(status(&s, &screen, false).contains("Event level"));
     }
 
-    #[test]
-    fn the_osv_line_says_how_many_projects_were_not_wholly_read_beside_the_count() {
-        // Beside the count of known vulnerabilities, the labelled line says how many projects
-        // were not wholly read and how many have no lockfile, and leaves the headline alone.
-        let mut s = status_of("x");
-        let calm = status(&s, &Screen::pipe(), false);
-        if let Some(v) = s.vulnerabilities.as_mut() {
-            v.projects_not_read = 2;
-            v.projects_without_lockfile = 3;
-        }
-        let text = status(&s, &Screen::pipe(), true);
+    /// The labelled line about OSV data in the coverage view of `s`, unwrapped.
+    fn osv_line(s: &v1::Status) -> String {
+        let text = status(s, &Screen::pipe(), true);
         let line = text
             .lines()
             .find(|l| l.trim_start().starts_with("OSV data"))
@@ -2808,14 +2774,100 @@ mod tests {
             joined.push(' ');
             joined.push_str(l.trim());
         }
-        let said = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+        joined.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// `status_of` with these counts of projects and of known vulnerabilities.
+    fn compared(known: u64, compared: u64, not_read: u64, no_lockfile: u64) -> v1::Status {
+        let mut s = status_of("x");
+        if let Some(v) = s.vulnerabilities.as_mut() {
+            v.affected_records = known;
+            v.unknown_packages = 0;
+            v.projects_compared = compared;
+            v.projects_not_read = not_read;
+            v.projects_without_lockfile = no_lockfile;
+        }
+        s
+    }
+
+    #[test]
+    fn with_no_project_compared_the_osv_line_says_so_by_count_and_gives_no_count_of_zero() {
+        // No false calm: with none compared, a count of zero would read as "checked and fine".
+        let said = osv_line(&compared(0, 0, 4, 12));
         assert!(
-            said.contains("and the lockfiles of 2 projects were not all read, and 3 projects have no lockfile this version reads"),
-            "{text}"
+            said.contains("; no project's packages could be compared in full: the lockfiles of 4 projects were not all read, and 12 projects have no lockfile this version reads"),
+            "{said}"
         );
+        assert!(!said.contains("0 known vulnerabilit"), "{said}");
+        // A count found in the packages read is still said.
+        let found = osv_line(&compared(2, 0, 4, 0));
+        assert!(
+            found.contains("; 2 known vulnerabilities in the packages read"),
+            "{found}"
+        );
+        // With no project held, only that is said; held projects that all three counts leave
+        // out, such as those read against data not current, are not "none found".
+        let mut none = compared(0, 0, 0, 0);
+        none.estate.as_mut().unwrap().checkouts = 0;
+        let said = osv_line(&none);
+        assert!(
+            said.contains("; no projects were found to compare. "),
+            "{said}"
+        );
+        // Nothing follows when no count gives a reason and nothing was read.
+        let held = osv_line(&compared(0, 0, 0, 0));
+        assert!(
+            held.contains("; no project's packages could be compared in full. "),
+            "{held}"
+        );
+    }
+
+    #[test]
+    fn with_some_projects_compared_the_osv_line_names_how_many_and_what_was_not() {
+        let s = compared(0, 3, 4, 12);
+        let said = osv_line(&s);
+        assert!(
+            said.contains(", 3 compared in full: 0 known vulnerabilities in the packages read; not compared: the lockfiles of 4 projects were not all read, and 12 projects have no lockfile this version reads"),
+            "{said}"
+        );
+        // Either count alone is enough to leave projects not compared, and only it is said.
+        let not_read = osv_line(&compared(0, 3, 4, 0));
+        assert!(
+            not_read.contains("; not compared: the lockfiles of 4 projects were not all read. "),
+            "{not_read}"
+        );
+        let no_lockfile = osv_line(&compared(0, 3, 0, 12));
+        assert!(
+            no_lockfile
+                .contains("; not compared: 12 projects have no lockfile this version reads. "),
+            "{no_lockfile}"
+        );
+        // The headline is left alone.
         assert_eq!(
             status(&s, &Screen::pipe(), false).lines().next(),
-            calm.lines().next()
+            status(&compared(0, 3, 0, 0), &Screen::pipe(), false)
+                .lines()
+                .next()
+        );
+    }
+
+    #[test]
+    fn with_every_project_compared_the_osv_line_counts_in_packages_they_use() {
+        let said = osv_line(&compared(0, 3, 0, 0));
+        assert!(
+            said.contains(", 3 compared in full: 0 known vulnerabilities in packages they use"),
+            "{said}"
+        );
+        assert!(!said.contains("not compared"), "{said}");
+        // Packages for which it cannot be told are said beside the count.
+        let mut s = compared(0, 3, 0, 0);
+        s.vulnerabilities.as_mut().unwrap().unknown_packages = 2;
+        let untold = osv_line(&s);
+        assert!(
+            untold.contains(
+                "in packages they use, and for 2 packages whether one affects them cannot be told"
+            ),
+            "{untold}"
         );
     }
 

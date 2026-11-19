@@ -114,20 +114,106 @@ fn without_lockfile(n: u64) -> String {
     )
 }
 
-/// What the line about known vulnerabilities adds when not every project was wholly read: how
-/// many were not, beside the count of known vulnerabilities, so that it never reads as all.
-pub fn not_wholly_read(not_read: u64, no_lockfile: u64) -> String {
-    let mut out = String::new();
-    if not_read > 0 {
-        out.push_str(&format!(
-            ", and the lockfiles of {} were not all read",
-            count(not_read, "project", "projects")
-        ));
+/// What matching found in the packages the projects' lockfiles declare, by count: the known
+/// vulnerabilities, the packages for which whether one affects them cannot be told, and the
+/// projects compared in full, not wholly read and with no lockfile this version reads.
+pub struct Matched {
+    pub known: u64,
+    pub unknown_packages: u64,
+    pub compared: u64,
+    pub not_read: u64,
+    pub no_lockfile: u64,
+}
+
+impl Matched {
+    pub fn of(t: &v1::VulnerabilityTotals) -> Self {
+        Matched {
+            known: t.affected_records,
+            unknown_packages: t.unknown_packages,
+            compared: t.projects_compared,
+            not_read: t.projects_not_read,
+            no_lockfile: t.projects_without_lockfile,
+        }
     }
-    if no_lockfile > 0 {
-        out.push_str(&format!(", and {}", without_lockfile(no_lockfile)));
+
+    /// The same counts from the store's totals, for the report line of a check and the pages.
+    pub fn of_totals(t: &crate::vulnerabilities::Totals) -> Self {
+        let (no_lockfile, not_read) = crate::vulnerabilities::project_counts(&t.unread_places);
+        Matched {
+            known: t.records as u64,
+            unknown_packages: t.packages_unknown as u64,
+            compared: t.projects_compared as u64,
+            not_read: not_read as u64,
+            no_lockfile: no_lockfile as u64,
+        }
     }
-    out
+
+    /// A project was compared in full and none was left out by a lockfile not wholly read or
+    /// missing: only then is a count said of the packages the projects use.
+    pub fn all_compared(&self) -> bool {
+        self.compared > 0 && self.not_read == 0 && self.no_lockfile == 0
+    }
+
+    /// The one sentence about known vulnerabilities in the projects' packages, which the status,
+    /// the report line of a check and the pages say. The count goes with the number of projects
+    /// compared in full, and what was not compared is said beside it by count. With none
+    /// compared it says so and why, and gives no count of zero, which a reader would take for a
+    /// clean result. `projects` is how many projects the store holds, `None` when not known:
+    /// the three counts of projects do not cover one whose lockfiles were read in full against
+    /// data not current, so their zeros never stand for "no project".
+    pub fn said(&self, found: crate::covered::Found, projects: Option<u64>) -> String {
+        if projects == Some(0) {
+            return "no projects were found to compare".to_string();
+        }
+        let mut not = Vec::new();
+        if self.not_read > 0 {
+            not.push(format!(
+                "the lockfiles of {} were not all read",
+                count(self.not_read, "project", "projects")
+            ));
+        }
+        if self.no_lockfile > 0 {
+            not.push(without_lockfile(self.no_lockfile));
+        }
+        let not = not.join(", and ");
+        let known = count(self.known, "known vulnerability", "known vulnerabilities");
+        let unknown = count(self.unknown_packages, "package", "packages");
+        if self.compared == 0 {
+            let mut said = "no project's packages could be compared in full".to_string();
+            if !not.is_empty() {
+                said.push_str(&format!(": {not}"));
+            }
+            if self.known > 0 {
+                said.push_str(&format!("; {known} in the packages read"));
+            }
+            if self.unknown_packages > 0 {
+                said.push_str(&format!(
+                    "; for {unknown} whether a known vulnerability affects them cannot be told"
+                ));
+            }
+            return said;
+        }
+        let all = self.all_compared();
+        let mut said = format!(
+            "matched against the package-lock.json, pnpm-lock.yaml and Cargo.lock of {}, {} compared in full: {known} in {}",
+            found.projects(),
+            grouped(self.compared),
+            if all {
+                "packages they use"
+            } else {
+                "the packages read"
+            }
+        );
+        if self.unknown_packages > 0 {
+            said.push_str(&format!(
+                ", and for {unknown} whether one affects them cannot be told"
+            ));
+        }
+        if !all {
+            said.push_str(&format!("; not compared: {not}"));
+        }
+        said
+    }
 }
 
 /// What an answer tells a person when there is no store at the path, in the words a failure

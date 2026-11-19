@@ -897,10 +897,7 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
     // What is said of the projects as a whole speaks only for those found while not all were.
     let (found, scope) = Found::of(t.projects_found.as_ref());
     // Calm only when a project was compared and nothing at all could not be told.
-    let calm = t.projects_compared > 0
-        && t.projects_not_read == 0
-        && t.projects_without_lockfile == 0
-        && t.unknown_packages == 0;
+    let calm = crate::text::Matched::of(t).all_compared() && t.unknown_packages == 0;
     let (said, style) = if t.affected_records > 0 {
         let mut said = format!(
             "✗ {} {} {}",
