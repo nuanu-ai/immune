@@ -852,7 +852,7 @@ pub fn places() -> impl Iterator<Item = (&'static Point, Kind)> {
         .filter_map(|p| Some((p, p.place?)))
 }
 
-/// The version of macOS this Mac runs, by its major number, as `sw_vers` gives it; or not
+/// The version of macOS this Mac runs, by its major number, as the kernel holds it; or not
 /// known, which is never a version a row was checked on. The status says how many rows were
 /// not checked on it (`not_checked_said`).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -862,34 +862,48 @@ pub enum MacOs {
 }
 
 impl MacOs {
-    /// This Mac's, asked of the system's own tool once for as long as the program runs: the
+    /// This Mac's, asked of the kernel once for as long as the program runs: the
     /// version changes only with an update, which restarts the Mac.
     pub fn this_mac() -> MacOs {
         static ASKED: std::sync::OnceLock<MacOs> = std::sync::OnceLock::new();
         *ASKED.get_or_init(MacOs::running)
     }
 
-    /// The major version in what `sw_vers -productVersion` prints: `15.1.1`, `26.0`, `14`.
+    /// The major version in a product version, as a C string or a line: `15.1.1`, `26.0`, `14`.
     pub fn of(said: &str) -> MacOs {
-        let major = said.trim().split('.').next().unwrap_or_default();
+        let said = said.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+        let major = said.split('.').next().unwrap_or_default();
         match major.parse::<u32>() {
             Ok(n) if n > 0 && major.bytes().all(|b| b.is_ascii_digit()) => MacOs::Major(n),
             _ => MacOs::NotKnown,
         }
     }
 
-    /// This Mac's, asked of the system's own tool.
+    /// This Mac's, read from the kernel's `kern.osproductversion`, the version `sw_vers` prints.
+    /// No program is started: starting one is itself an event a published rule matches.
     pub fn running() -> MacOs {
-        std::process::Command::new(crate::tools::SW_VERS)
-            .arg("-productVersion")
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .map_or(MacOs::NotKnown, |out| {
-                MacOs::of(&String::from_utf8_lossy(&out.stdout))
-            })
+        MacOs::read(c"kern.osproductversion")
+    }
+
+    /// The version a sysctl of the kernel holds as a string; not known when it cannot be read.
+    fn read(name: &std::ffi::CStr) -> MacOs {
+        let mut buf = [0u8; 64];
+        let mut len = buf.len();
+        // SAFETY: `name` ends in NUL, `buf` holds `len` bytes, and nothing is set.
+        let r = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        // sysctl(3) does not say what the buffer holds after a failure.
+        if r != 0 {
+            return MacOs::NotKnown;
+        }
+        MacOs::of(&String::from_utf8_lossy(&buf))
     }
 }
 
@@ -1788,11 +1802,13 @@ mod tests {
     }
 
     #[test]
-    fn the_running_version_is_read_from_what_sw_vers_prints_and_one_not_read_is_not_known() {
+    fn a_version_is_its_major_number_and_anything_else_is_not_known() {
         for (said, macos) in [
             ("15.1.1\n", MacOs::Major(15)),
             ("26.0\n", MacOs::Major(26)),
             ("14\n", MacOs::Major(14)),
+            ("26\0", MacOs::Major(26)),
+            ("\0", MacOs::NotKnown),
             ("", MacOs::NotKnown),
             ("\n", MacOs::NotKnown),
             ("0.1\n", MacOs::NotKnown),
@@ -1801,8 +1817,21 @@ mod tests {
         ] {
             assert_eq!(MacOs::of(said), macos, "{said:?}");
         }
-        // The Mac that runs this test runs a version macOS's own tool can say.
-        assert!(matches!(MacOs::running(), MacOs::Major(n) if n >= 11));
+    }
+
+    #[test]
+    fn the_running_version_is_the_kernels_and_a_sysctl_missing_or_not_a_version_is_not_known() {
+        // The kernel's version is the one `sw_vers` prints, which the test may start.
+        let printed = std::process::Command::new("/usr/bin/sw_vers")
+            .arg("-productVersion")
+            .output()
+            .unwrap();
+        let printed = MacOs::of(&String::from_utf8_lossy(&printed.stdout));
+        assert!(matches!(printed, MacOs::Major(n) if n >= 11));
+        assert_eq!(MacOs::running(), printed);
+        assert_eq!(MacOs::read(c"kern.no_such_name"), MacOs::NotKnown);
+        // A string the kernel holds that is not a version: "Darwin".
+        assert_eq!(MacOs::read(c"kern.ostype"), MacOs::NotKnown);
     }
 
     #[test]
