@@ -283,7 +283,8 @@ impl Code {
     }
 
     /// Whether the signature satisfies a requirement written in Apple's language, without
-    /// validating the executable or the resources again.
+    /// validating the executable or the resources again: in every architecture, so that one
+    /// slice cannot carry the class of another.
     fn satisfies(&self, text: &str) -> bool {
         let Some(source) = cf_string(text) else {
             return false;
@@ -296,7 +297,8 @@ impl Code {
         let Some(requirement) = Owned::take(requirement) else {
             return false;
         };
-        self.check(BASIC_VALIDATE_ONLY | NO_NETWORK_ACCESS, Some(&requirement)) == 0
+        let flags = BASIC_VALIDATE_ONLY | CHECK_ALL_ARCHITECTURES | NO_NETWORK_ACCESS;
+        self.check(flags, Some(&requirement)) == 0
     }
 
     /// Who signed the code, as the literal of `signed_by`: `apple`, `app store`, `developer
@@ -305,6 +307,12 @@ impl Code {
     /// apart only by its code directory; or `unsigned`. `None` when the framework gives no
     /// signing information at all.
     pub fn signer(&self) -> Option<String> {
+        self.signed().map(|(signer, _)| signer)
+    }
+
+    /// The signer as `signer` says it, and the identifier a designated requirement names beside
+    /// the team, from one query. The identifier is text from the signature, data.
+    pub fn signed(&self) -> Option<(String, Option<String>)> {
         let info = self.information()?;
         // SAFETY: the keys are constants of the framework, valid for the life of the process.
         let (identifier, flags, team, unique) = unsafe {
@@ -319,13 +327,14 @@ impl Code {
         let (string_id, number_id, data_id) =
             unsafe { (CFStringGetTypeID(), CFNumberGetTypeID(), CFDataGetTypeID()) };
         // The header: unsigned code gives a dictionary without an identifier.
-        if get(&info, identifier, string_id).is_none() {
-            return Some("unsigned".to_string());
-        }
+        let Some(identifier) = get(&info, identifier, string_id) else {
+            return Some(("unsigned".to_string(), None));
+        };
+        let identifier = string(identifier);
         let flags = get(&info, flags, number_id).map_or(0, number);
         if flags & SIGNATURE_ADHOC != 0 {
             let cdhash = get(&info, unique, data_id).map(hex).unwrap_or_default();
-            return Some(format!("ad hoc, cdhash {cdhash}"));
+            return Some((format!("ad hoc, cdhash {cdhash}"), identifier));
         }
         let class = if self.satisfies(APPLE) {
             "apple"
@@ -336,10 +345,11 @@ impl Code {
         } else {
             "other certificate"
         };
-        Some(match get(&info, team, string_id).and_then(string) {
+        let signer = match get(&info, team, string_id).and_then(string) {
             Some(team) => format!("{class}, team {team}"),
             None => class.to_string(),
-        })
+        };
+        Some((signer, identifier))
     }
 
     /// The signing information, owned, or `None` when the framework gives none.
@@ -351,16 +361,6 @@ impl Code {
             unsafe { SecCodeCopySigningInformation(self.0.0, SIGNING_INFORMATION, &mut info) };
         let info = Owned::take(info)?;
         (status == 0).then_some(info)
-    }
-
-    /// The identifier the signature gives the code, as macOS's own test of the same program
-    /// names it beside the team (`identifier "..." and ...` in a designated requirement). Text
-    /// from the signature: data, never words of the program's own. `None` for unsigned code.
-    pub fn identifier(&self) -> Option<String> {
-        let info = self.information()?;
-        // SAFETY: a constant of the framework and a plain function of CoreFoundation.
-        let (key, string_id) = unsafe { (kSecCodeInfoIdentifier, CFStringGetTypeID()) };
-        get(&info, key, string_id).and_then(string)
     }
 
     /// Whether the seal verifies: every file, every architecture, nested code included,

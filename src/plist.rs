@@ -157,8 +157,10 @@ pub enum Text {
     One(String),
     /// `None` for an element that is not a string.
     List(Vec<Option<String>>),
-    /// Anything else, or text past `BYTES`, or a string that is not valid UTF-16.
+    /// Anything else.
     Other,
+    /// Text that cannot be told: past `BYTES`, an array past `NODES`, or not valid UTF-16.
+    Untold,
 }
 
 /// For each of `keys` the file holds at its top, in the order given, the value there as text.
@@ -169,7 +171,7 @@ pub fn texts<'k>(bytes: &[u8], keys: &[&'k str]) -> Result<Vec<(&'k str, Text)>,
     let mut out = Vec::new();
     for key in keys {
         let Some(name) = cf_string(key) else {
-            out.push((*key, Text::Other));
+            out.push((*key, Text::Untold));
             continue;
         };
         // SAFETY: as in `values`: the value is lent by the live dictionary.
@@ -177,44 +179,44 @@ pub fn texts<'k>(bytes: &[u8], keys: &[&'k str]) -> Result<Vec<(&'k str, Text)>,
         if value.is_null() {
             continue;
         }
+        // One string shared by every element is counted each time.
         let mut budget = BYTES;
-        let text = if let Some(s) = string(value, &mut budget) {
-            Text::One(s)
-        } else if unsafe { CFGetTypeID(value) == CFArrayGetTypeID() } {
-            // SAFETY: `value` is a live array; each index is below its count.
-            let n = unsafe { CFArrayGetCount(value) }.clamp(0, NODES as CFIndex);
-            let items = (0..n)
-                .map(|i| string(unsafe { CFArrayGetValueAtIndex(value, i) }, &mut budget))
-                .collect();
-            // One string shared by every element is counted each time: past the budget the
-            // array is not taken.
-            if budget == 0 {
-                Text::Other
-            } else {
-                Text::List(items)
+        let text = match string(value, &mut budget) {
+            Some(Some(s)) => Text::One(s),
+            Some(None) => Text::Untold,
+            None if unsafe { CFGetTypeID(value) == CFArrayGetTypeID() } => {
+                // SAFETY: `value` is a live array; each index is below its count.
+                let n = unsafe { CFArrayGetCount(value) }.clamp(0, NODES as CFIndex + 1);
+                let item = |i| string(unsafe { CFArrayGetValueAtIndex(value, i) }, &mut budget);
+                // Past `NODES`, or with an element that cannot be told, the array is not told.
+                (0..n)
+                    .map(item)
+                    .map(|s| s.map_or(Some(None), |s| s.map(Some)))
+                    .collect::<Option<Vec<_>>>()
+                    .filter(|items| items.len() <= NODES)
+                    .map_or(Text::Untold, Text::List)
             }
-        } else {
-            Text::Other
+            None => Text::Other,
         };
         out.push((*key, text));
     }
     Ok(out)
 }
 
-/// A live value as a string, when it is one, valid UTF-16 and within what is left of `budget`
-/// bytes, which it takes; past the budget the budget is spent.
-fn string(value: CFTypeRef, budget: &mut usize) -> Option<String> {
+/// A live value as a string: `None` when it is not one, and `Some(None)` when it cannot be
+/// told, past what is left of `budget` bytes, which it takes, or not valid UTF-16.
+fn string(value: CFTypeRef, budget: &mut usize) -> Option<Option<String>> {
     // SAFETY: plain functions of CoreFoundation on a live object.
     if unsafe { CFGetTypeID(value) != CFStringGetTypeID() } {
         return None;
     }
     let length = unsafe { CFStringGetLength(value) }.max(0) as usize;
-    if 2 * length > *budget {
+    let Some(left) = budget.checked_sub(2 * length) else {
         *budget = 0;
-        return None;
-    }
-    *budget -= 2 * length;
-    String::from_utf16(&units(value, length)).ok()
+        return Some(None);
+    };
+    *budget = left;
+    Some(String::from_utf16(&units(value, length)).ok())
 }
 
 /// The UTF-16 code units of a live string of `length` units.

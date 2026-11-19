@@ -1340,6 +1340,7 @@ fn push(
             unit,
             content,
             link: link.clone(),
+            bytes: None,
         });
     }
 }

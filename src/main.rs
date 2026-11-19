@@ -3850,11 +3850,12 @@ fn read_watched(
     // What the startup items just read name as the programs they start: at a check only, since
     // a watcher neither subscribes to them nor reads them.
     let targets = if only.is_none() && !run_id.starts_with(watch::RUN_PREFIX) {
+        let all: Vec<&look::Look> = placed.iter().map(|p| &p.look).collect();
         let items: Vec<&look::Look> = (placed.iter())
-            .filter(|p| targets::reads(p.watched_as))
+            .filter(|p| targets::runs_of(p.watched_as).is_some())
             .map(|p| &p.look)
             .collect();
-        let (look, read) = targets::read(run.tx, &machine, &roots, &items)?;
+        let (look, read) = targets::read(run.tx, &machine, &roots, &items, &all)?;
         let (completeness, reason, gap) = read.coverage();
         for (item, why) in &read.rows {
             rows.push(not_read_row(targets::TARGET, item, "", why));
@@ -4355,6 +4356,9 @@ fn read_watched(
         }
 
         for (e, line) in p.look.entries.iter().zip(mine) {
+            if tg.is_some_and(|(t, _)| t.judged_elsewhere(&e.unit)) {
+                continue;
+            }
             let id = file_id(&e.unit);
             let source_ref = format!("{raw_file}:{line}");
             let mut statements = Vec::new();

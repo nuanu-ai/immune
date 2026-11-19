@@ -5014,7 +5014,7 @@ fn a_watched_place_moved_into_documents_and_linked_back_is_not_looked_into_and_r
     put(
         &home,
         "Library/LaunchAgents/org.example.sync.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let brew = dir.input("brew.txt", SAMPLE);
     let run = || {
@@ -8129,7 +8129,7 @@ fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_ar
     let w = Watch::new("watched-changed");
     put(w.home(), ".zshrc", "export EDITOR=vi\n");
     let agents = w.home().join("Library/LaunchAgents");
-    put(&agents, "com.example.old.plist", "<plist/>\n");
+    put(&agents, "com.example.old.plist", "<plist><dict/></plist>\n");
     // A link retargeted is a change even when both targets hold the same.
     put(w.home(), "profile-a", "umask 022\n");
     put(w.home(), "profile-b", "umask 022\n");
@@ -8147,7 +8147,11 @@ fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_ar
     );
     std::fs::remove_file(agents.join("com.example.old.plist")).unwrap();
     // A name with a character that would reorder what the terminal shows.
-    put(&agents, "com.example.\u{202e}tsilp.plist", "<plist/>\n");
+    put(
+        &agents,
+        "com.example.\u{202e}tsilp.plist",
+        "<plist><dict/></plist>\n",
+    );
     std::fs::remove_file(&profile).unwrap();
     std::os::unix::fs::symlink("profile-b", &profile).unwrap();
     let printed = w.run();
@@ -8225,7 +8229,7 @@ fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_ar
     );
 
     // A file that comes back is new, not changed.
-    put(&agents, "com.example.old.plist", "<plist/>\n");
+    put(&agents, "com.example.old.plist", "<plist><dict/></plist>\n");
     let printed = w.run();
     assert!(
         printed
@@ -8239,11 +8243,11 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
     // A failed reading is never "unchanged" and never "gone".
     let w = Watch::new("watched-locked");
     let daemons = w.sys.join("Library/LaunchDaemons");
-    put(&daemons, "com.example.d.plist", "<plist/>\n");
+    put(&daemons, "com.example.d.plist", "<plist><dict/></plist>\n");
     put(
         w.home(),
         "Library/LaunchAgents/com.example.a.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     put(w.home(), ".ssh/config", "Host *\n");
     w.run();
@@ -8266,7 +8270,11 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
         );
     };
 
-    put(&daemons, "com.example.d.plist", "<plist>changed</plist>\n");
+    put(
+        &daemons,
+        "com.example.d.plist",
+        "<plist><dict><key>Changed</key><true/></dict></plist>\n",
+    );
     let _daemons = Locked::new(daemons.clone());
     // A folder that can be listed and whose entries cannot be looked at.
     let agents = w.home().join("Library/LaunchAgents");
@@ -8281,7 +8289,7 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
         )]
     );
     assert!(
-        printed.contains("0 new, 0 changed, 0 gone since the last reading; not read in full: launch agents and daemons (partial)."),
+        printed.contains("0 new, 0 changed, 0 gone since the last reading; not read in full: launch agents and daemons (partial), programs that launch agents, daemons and login hooks run (partial)."),
         "{printed}"
     );
     // Each place not read is named with why where a failure is said: under "Failed", in the
@@ -8306,7 +8314,7 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
         "{coverage:?}"
     );
     assert!(
-        printed.contains("not read in full: launch agents and daemons (partial), ssh access files (nothing read)."),
+        printed.contains("not read in full: launch agents and daemons (partial), ssh access files (nothing read), programs that launch agents, daemons and login hooks run (partial)."),
         "{printed}"
     );
     // Something of the kind could be read: the reading is partial.
@@ -8704,7 +8712,7 @@ fn a_watched_place_that_appears_after_the_first_reading_is_new_and_named() {
     put(
         w.home(),
         "Library/LaunchAgents/com.example.a.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     put(w.home(), ".ssh/rc", "xauth add\n");
     put(w.home(), ".zshenv", "export LANG=C\n");
@@ -8816,10 +8824,10 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
         "PasswordAuthentication no\n",
     );
     let agents = w.sys.join("Library/LaunchAgents");
-    put(&agents, "com.example.a.plist", "<plist/>\n");
+    put(&agents, "com.example.a.plist", "<plist><dict/></plist>\n");
     // Only a git hook named so is a sample; and a line break in a name breaks no line.
-    put(&agents, "com.example.sample", "<plist/>\n");
-    put(&agents, "com.example.\nb.plist", "<plist/>\n");
+    put(&agents, "com.example.sample", "<plist><dict/></plist>\n");
+    put(&agents, "com.example.\nb.plist", "<plist><dict/></plist>\n");
     let shop = checkout(w.home(), "dev/shop");
     put(&shop, ".git/hooks/pre-commit", "#!/bin/sh\n");
     std::os::unix::fs::symlink("nowhere", w.home().join(".profile")).unwrap();
@@ -8984,7 +8992,7 @@ fn plant_persistence(w: &Watch) {
     put(
         &w.sys,
         "Library/Security/SecurityAgentPlugins/Example.bundle/Contents/Info.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
 }
 
@@ -9077,7 +9085,7 @@ fn a_place_read_for_the_first_time_on_an_older_store_is_told_once_and_a_change_a
     put(
         &w.sys,
         "Library/Security/SecurityAgentPlugins/Other.bundle/Contents/Info.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     w.run();
     let mut found: Vec<(String, String)> = open_findings(&w.store(), &[])
@@ -9187,10 +9195,11 @@ fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_kept_on
              WHERE layer = 'live' AND (subject LIKE '%example.sh%' OR object LIKE '%example.sh%')
              ORDER BY subject, object"
         ),
+        // Named and not there, which is said as that and never as a link.
         [
-            "file:machine:mac//Library/Scripts/example.sh|dangling link",
             "file:machine:mac//Library/Scripts/example.sh|file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#/LoginHook",
             "file:machine:mac//Library/Scripts/example.sh|machine:mac",
+            "file:machine:mac//Library/Scripts/example.sh|not there",
             "file:machine:mac//Library/Scripts/example.sh|program a startup item runs",
         ]
     );
@@ -9603,7 +9612,7 @@ fn the_report_line_and_status_json_say_the_same_numbers_and_run_json_is_that_ans
     put(&shop, ".git/hooks/pre-commit", "#!/bin/sh\n");
     put(w.home(), ".zshrc", "bindkey -e\n");
     let agents = w.home().join("Library/LaunchAgents");
-    put(&agents, "com.example.old.plist", "<plist/>\n");
+    put(&agents, "com.example.old.plist", "<plist><dict/></plist>\n");
     put(w.home(), "profile-a", "umask 022\n");
     put(w.home(), "profile-b", "umask 077\n");
     let profile = w.home().join(".profile");
@@ -9620,7 +9629,7 @@ fn the_report_line_and_status_json_say_the_same_numbers_and_run_json_is_that_ans
     // Every kind of change at once, and a checkout cloned with a hook.
     put(w.home(), ".zshrc", "bindkey -v\n");
     std::fs::remove_file(agents.join("com.example.old.plist")).unwrap();
-    put(&agents, "com.example.new.plist", "<plist/>\n");
+    put(&agents, "com.example.new.plist", "<plist><dict/></plist>\n");
     // A link retargeted to other content changes its target and its content: one file.
     std::fs::remove_file(&profile).unwrap();
     std::os::unix::fs::symlink("profile-b", &profile).unwrap();
@@ -10732,8 +10741,16 @@ fn text_from_a_source_is_only_in_text_fields_shown_escaped_and_whole() {
     put(&shop, "yarn.lock", "# yarn lockfile v1\n");
     w.run();
     let agents = w.home().join("Library/LaunchAgents");
-    put(&agents, &format!("{said}\u{7}.plist"), "<plist/>\n");
-    put(&agents, &format!("{}.plist", "x".repeat(240)), "<plist/>\n");
+    put(
+        &agents,
+        &format!("{said}\u{7}.plist"),
+        "<plist><dict/></plist>\n",
+    );
+    put(
+        &agents,
+        &format!("{}.plist", "x".repeat(240)),
+        "<plist><dict/></plist>\n",
+    );
     let printed = w.run();
     assert!(!printed.lines().next().unwrap().contains(said));
 
@@ -10792,7 +10809,11 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
     w.run();
     let agents = w.home().join("Library/LaunchAgents");
     for i in 0..60 {
-        put(&agents, &format!("com.example.{i:02}.plist"), "<plist/>\n");
+        put(
+            &agents,
+            &format!("com.example.{i:02}.plist"),
+            "<plist><dict/></plist>\n",
+        );
     }
     w.run();
     put(w.home(), ".zshrc", "bindkey -e\n");
@@ -11797,7 +11818,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     put(
         w.home(),
         &format!("Library/LaunchAgents/{name}"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let first = w.run();
     // What is not covered comes after it by name, never counted as a thing to look at.
@@ -12626,7 +12647,7 @@ fn three_findings(w: &Watch) -> (String, String, String) {
     put(
         w.home(),
         "Library/LaunchAgents/com.example.helper.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     w.run();
     let open = open_findings(&w.store(), &[]);
@@ -12958,7 +12979,7 @@ fn what_needs_a_look_is_listed_up_to_fifty_with_its_total() {
         put(
             w.home(),
             &format!("Library/LaunchAgents/com.example.agent{n}.plist"),
-            "<plist/>\n",
+            "<plist><dict/></plist>\n",
         );
     }
     assert!(
@@ -13052,7 +13073,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     put(
         w.home(),
         &format!("Library/LaunchAgents/{name}"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     w.run();
     let r = status_json(&w.store());
@@ -13354,7 +13375,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     put(
         w.home(),
         "Library/LaunchAgents/com.example.helper.plist",
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let shop = checkout(w.home(), "dev/shop");
     put(&shop, "package-lock.json", PACKAGE_LOCK);
@@ -13550,7 +13571,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     put(
         &w.sys,
         "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist",
-        "<plist/>",
+        "<plist><dict/></plist>",
     );
     let dd = r#"{"schema_version":1,"version":10,"seq_num":1,"global_seq_num":1,"time":"2026-10-04T00:00:02.000002Z","process":{"executable":{"path":"/bin/sh"}},"event":{"exec":{"args":["dd","if=/dev/zero","bs=1","count=1"],"cwd":{"path":"/tmp"},"target":{"executable":{"path":"/bin/dd"},"audit_token":{"pid":402,"euid":501},"ppid":401,"signing_id":"com.apple.dd","team_id":null,"is_platform_binary":true}}}}"#;
     put(
@@ -13741,7 +13762,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     put(
         &w.sys,
         "Library/LaunchDaemons/ai.nuanu.immunity.core.eslogger.plist",
-        "<plist/>",
+        "<plist><dict/></plist>",
     );
     // Installed as this version installs it, recording file events too, so every rule
     // checked in full watches.
@@ -13977,7 +13998,7 @@ fn the_summary_page_stays_small_on_a_large_store() {
         put(
             w.home(),
             &format!("Library/LaunchAgents/com.example.agent{n}.plist"),
-            "<plist/>\n",
+            "<plist><dict/></plist>\n",
         );
     }
     run();

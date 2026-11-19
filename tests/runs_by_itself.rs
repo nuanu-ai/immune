@@ -2087,9 +2087,15 @@ fn a_watched_place_that_could_not_be_read_on_the_first_day_is_said_and_told_once
     // the folder it did read, an item that appears later is found.
     let e = Estate::new("unreadable-place");
     let agents = e.home().join("Library/LaunchAgents");
-    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    put(
+        &agents.join("com.invented.sync.plist"),
+        "<plist><dict/></plist>\n",
+    );
     let system = e.0.join("system/Library/LaunchAgents");
-    put(&system.join("com.invented.helper.plist"), "<plist/>\n");
+    put(
+        &system.join("com.invented.helper.plist"),
+        "<plist><dict/></plist>\n",
+    );
     {
         let _locked = Locked::new(agents.clone());
         let report = e.run();
@@ -2104,7 +2110,10 @@ fn a_watched_place_that_could_not_be_read_on_the_first_day_is_said_and_told_once
             "{report}"
         );
     }
-    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    put(
+        &system.join("com.invented.other.plist"),
+        "<plist><dict/></plist>\n",
+    );
     e.run();
     assert_eq!(
         e.found(),
@@ -2127,7 +2136,10 @@ fn a_reading_that_read_nothing_is_still_the_baseline_of_the_places_it_found_empt
     // one of them is found, and counted, while what the locked folder held is told once.
     let e = Estate::new("read-nothing");
     let agents = e.home().join("Library/LaunchAgents");
-    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    put(
+        &agents.join("com.invented.sync.plist"),
+        "<plist><dict/></plist>\n",
+    );
     {
         let _locked = Locked::new(agents.clone());
         e.run();
@@ -2139,7 +2151,10 @@ fn a_reading_that_read_nothing_is_still_the_baseline_of_the_places_it_found_empt
         );
     }
     let system = e.0.join("system/Library/LaunchAgents");
-    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    put(
+        &system.join("com.invented.other.plist"),
+        "<plist><dict/></plist>\n",
+    );
     let report = e.run();
     assert_eq!(
         e.found(),
@@ -4830,7 +4845,7 @@ fn the_changes_page_the_status_and_the_journal_count_a_first_reading_alike() {
     put(
         &e.home()
             .join("Library/LaunchAgents/com.invented.sync.plist"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let app = e.checkout("Documents/code/app");
     package(&app, "\"postinstall\": \"node setup.js\"");
@@ -5092,9 +5107,15 @@ fn what_is_removed_from_a_place_read_in_full_is_gone_while_another_place_of_its_
     // finding, as an install script removed from a project is journaled as removed.
     let e = Estate::new("removed-while-partial");
     let agents = e.home().join("Library/LaunchAgents");
-    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    put(
+        &agents.join("com.invented.sync.plist"),
+        "<plist><dict/></plist>\n",
+    );
     let system = e.0.join("system/Library/LaunchAgents");
-    put(&system.join("com.invented.helper.plist"), "<plist/>\n");
+    put(
+        &system.join("com.invented.helper.plist"),
+        "<plist><dict/></plist>\n",
+    );
     let shop = e.checkout("dev/shop");
     package(&shop, "\"postinstall\": \"node setup.js\"");
     let blog = e.checkout("dev/blog");
@@ -5151,7 +5172,10 @@ fn after_the_first_check_nothing_present_and_unrecorded_is_ever_silent() {
     let archived = e.checkout("archive/old");
     package(&archived, "\"postinstall\": \"node setup.js\"");
     let agents = e.home().join("Library/LaunchAgents");
-    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    put(
+        &agents.join("com.invented.sync.plist"),
+        "<plist><dict/></plist>\n",
+    );
     let hidden = e.home().join(".tools/helper");
     put(&hidden.join(".git/HEAD"), "ref: refs/heads/main\n");
     package(&hidden, "\"preinstall\": \"node x.js\"");
@@ -5296,7 +5320,10 @@ fn an_autostart_item_new_to_a_folder_listed_before_is_found_while_it_cannot_be_l
     std::fs::create_dir_all(&agents).unwrap();
     e.full();
     e.full();
-    put(&agents.join("com.invented.updater.plist"), "<plist/>\n");
+    put(
+        &agents.join("com.invented.updater.plist"),
+        "<plist><dict/></plist>\n",
+    );
     {
         // Listed, but no entry can be looked at.
         use std::os::unix::fs::PermissionsExt;
@@ -5625,7 +5652,7 @@ fn losing_sight_of_a_login_hook_a_pam_file_or_the_plugins_folder_read_before_rai
     let plugins = sys.join("Library/Security/SecurityAgentPlugins");
     put(
         &plugins.join("Example.bundle/Contents/Info.plist"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     e.run();
     assert!(e.rules().is_empty(), "{:?}", e.findings(false));
@@ -5777,7 +5804,7 @@ fn a_plugin_watched_only_for_whether_it_is_there_is_never_said_to_be_unchanged()
     let plugins = e.0.join("system/Library/Security/SecurityAgentPlugins");
     put(
         &plugins.join("Example.bundle/Contents/Info.plist"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     put(
         &e.0.join("system/etc/pam.d/sudo"),
@@ -5919,7 +5946,7 @@ fn a_small_preferences_file_whose_hook_refers_to_one_array_many_times_never_stop
     put(
         &e.home()
             .join("Library/LaunchAgents/com.example.invented.plist"),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     let mut child = e
         .command(Some(&e.home()), &e.0.join("empty"))
@@ -6400,7 +6427,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         &e.0.join(
             "system/Library/Security/SecurityAgentPlugins/Example.bundle/Contents/Info.plist",
         ),
-        "<plist/>\n",
+        "<plist><dict/></plist>\n",
     );
     e.run();
     let said = "a change inside it is not seen, only whether it is there";
@@ -6897,8 +6924,8 @@ fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_
         ),
         (
             Level::PlaceKey,
-            // The hook's program is read too: four facts come with it and three go with it, and
-            // a hook that cannot be read keeps its program.
+            // The hook's program is read too, and is not there: four facts come with it and
+            // three go with it, and a hook that cannot be read keeps its program.
             lines([
                 "added 7; watched.login-hook new",
                 "added 4, changed 1, removed 3; watched.login-hook changed",
@@ -7125,11 +7152,14 @@ fn a_program_its_publisher_rebuilt_raises_nothing_and_the_journal_holds_the_chan
     e.run();
     assert_eq!(e.rules(), [TARGET_RULE]);
     let rests = e.rests_on(TARGET_RULE);
+    // What changed is there, and the items that run it now; a signer that did not change is
+    // not this run's to show.
     assert!(
-        rests.contains(&"signed_by||apple, identifier com.apple.true".to_string())
-            && rests
-                .iter()
-                .any(|r| r.starts_with("has_seal|verifies|does not verify: ")),
+        rests
+            .iter()
+            .any(|r| r.starts_with("has_seal|verifies|does not verify: "))
+            && rests.iter().any(|r| r.starts_with("started_by|"))
+            && !rests.iter().any(|r| r.starts_with("signed_by|")),
         "{rests:?}"
     );
 }
@@ -7177,6 +7207,24 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
         &e.system().join("usr/local/bin/linked"),
     );
     launch_item(&e.agent("linked"), &["/usr/local/bin/linked"]);
+    // An app named whole, a program named where nothing is, and paths that could leave the
+    // root they are read under or name something else.
+    std::fs::create_dir_all(e.system().join("Applications/Example.app")).unwrap();
+    launch_item(&e.agent("app"), &["/Applications/Example.app"]);
+    launch_item(&e.agent("gone"), &["/usr/local/bin/gone"]);
+    let nowhere = e.system().join("usr/local/bin/nowhere");
+    link(
+        nowhere.to_str().unwrap(),
+        &e.system().join("usr/local/bin/dangling"),
+    );
+    launch_item(&e.agent("dangling"), &["/usr/local/bin/dangling"]);
+    for (name, path) in [
+        ("double", "//usr/local/bin/runner"),
+        ("dots", "/usr/local/../bin/runner"),
+        ("slash", "/usr/local/bin/runner/"),
+    ] {
+        launch_item(&e.agent(name), &[path]);
+    }
     e.run();
     assert_eq!(
         e.coverage(TARGET_KIND),
@@ -7185,7 +7233,9 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
              files named in startup items' arguments, which are not judged: 2; \
              startup programs in a folder macOS asks permission for: 1; \
              startup programs inside an app bundle (BundleProgram): 1; \
-             startup programs not named by a full path: 2; \
+             startup programs named and not there: 1; \
+             startup programs not named by a full path: 5; \
+             startup programs that are not a regular file, such as an app named whole: 1; \
              watched file over the size cap: 1; {AT_CHECKS}"
         )
     );
@@ -7197,6 +7247,7 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
             "files named in startup items' arguments, which are not judged|",
             "startup programs inside an app bundle (BundleProgram)|",
             "startup programs not named by a full path|",
+            "startup programs that are not a regular file, such as an app named whole|",
             "watched file over the size cap|",
         ]
     );
@@ -7216,6 +7267,17 @@ fn a_program_that_cannot_be_read_is_said_with_why_and_raises_the_rule_once_read_
         linked.starts_with("none|not_given|not looked into: "),
         "{linked}"
     );
+    // Named where nothing is: said so, and never shown as a link that leads nowhere, which a
+    // link to nothing is.
+    for (name, content) in [("gone", "not there"), ("dangling", "dangling link")] {
+        assert_eq!(
+            e.rows(&format!(
+                "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
+                   AND subject = 'file:machine:mac//usr/local/bin/{name}'"
+            )),
+            [content]
+        );
+    }
     // The folder the program's link leads into is named among those not looked into.
     assert_eq!(
         e.rows(
@@ -7311,6 +7373,87 @@ fn a_startup_item_that_could_not_be_read_keeps_its_programs_and_is_said_as_not_r
         ["failed"]
     );
     assert!(e.lacks(TARGET_KIND).is_empty());
+}
+
+#[test]
+fn an_item_whose_program_cannot_be_told_at_its_first_check_leaves_the_reading_partial() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("target-untold");
+    put(&e.agent("broken"), "not a property list\n");
+    let shut = e.agent("shut");
+    launch_item(&shut, &["/usr/local/bin/runner"]);
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    assert_eq!(
+        e.coverage(TARGET_KIND),
+        format!(
+            "partial|not read in full: startup items that could not be read, whose programs are kept as last read: 2; {AT_CHECKS}"
+        )
+    );
+}
+
+#[test]
+fn a_program_that_is_also_a_watched_file_is_judged_by_its_own_kind_alone() {
+    let e = Estate::new("target-elsewhere");
+    let profile = e.system().join("etc/zshrc");
+    put(&profile, "export EXAMPLE=1\n");
+    put(
+        &e.system()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>LoginHook</key><string>/etc/zshrc</string></dict></plist>\n",
+    );
+    e.run();
+    e.run();
+    assert!(e.rules().is_empty());
+    assert_eq!(
+        e.coverage(TARGET_KIND),
+        format!("full|startup programs watched as another kind, judged there: 1; {AT_CHECKS}")
+    );
+    put(&profile, "export EXAMPLE=2\n");
+    e.run();
+    assert_eq!(e.rules(), ["watched.shell-profile"]);
+    // Which item runs it is still known.
+    assert_eq!(
+        e.rows(
+            "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'started_by'
+               AND subject = 'file:machine:mac//etc/zshrc'"
+        ),
+        ["file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#/LoginHook"]
+    );
+}
+
+#[test]
+fn what_was_known_of_a_programs_code_before_a_reading_that_failed_is_asked_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("target-failed-between");
+    let runner = e.shipped("usr/local/bin/runner");
+    launch_item(&e.agent("a"), &["/usr/local/bin/runner"]);
+    e.run();
+    // As if an earlier reading had found another signer: carried while the content and the
+    // reading stay as they were.
+    let signer = format!(
+        "SELECT object FROM assertion WHERE layer = 'live' AND subject = '{RUNNER}'
+           AND predicate = 'signed_by'"
+    );
+    let other = "developer id, team ABCDE12345, identifier org.example.other";
+    Connection::open(e.store())
+        .unwrap()
+        .execute(
+            &format!(
+                "UPDATE assertion SET object = '{other}' WHERE id IN ({})",
+                signer.replace("SELECT object", "SELECT id")
+            ),
+            [],
+        )
+        .unwrap();
+    e.run();
+    assert_eq!(e.rows(&signer), [other]);
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+    e.run();
+    assert_eq!(e.rows(&signer), ["apple, identifier com.apple.true"]);
 }
 
 #[test]
