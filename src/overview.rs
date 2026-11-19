@@ -898,14 +898,7 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
         }
         Some(_) => {}
     }
-    // A watcher restarting on a new core comes back by itself; a job installed and not running is
-    // loaded again by the same command.
-    if s.watching.is_none() && s.watcher_restarting_since_at.is_none() {
-        next.push(match s.login_job_installed {
-            Some(true) => ("immunity on", "loads the login job again"),
-            _ => ("immunity on", "keeps watching between checks"),
-        });
-    }
+    next.extend(watcher_step(s));
     if !whole || next.is_empty() {
         next.push((
             "immunity status --coverage",
@@ -914,6 +907,39 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     }
     next.truncate(3);
     out.extend(screen.nexts(&next));
+}
+
+/// The next step that starts a watcher, while none holds the store and none is restarting on a
+/// new core, which comes back by itself: a job installed and not running is loaded again by the
+/// same command.
+pub(crate) fn watcher_step(s: &v1::Status) -> Option<(&'static str, &'static str)> {
+    if s.watching.is_some() || s.watcher_restarting_since_at.is_some() {
+        return None;
+    }
+    Some(match s.login_job_installed {
+        Some(true) => ("immunity on", "loads the login job again"),
+        _ => ("immunity on", "starts a watcher that outlives the terminal"),
+    })
+}
+
+/// The command that lists every application bundle with what macOS says of its seal.
+const LISTS_SEALS: &str = "immunity machine --json";
+
+/// How many application bundles do not verify, and how many of them have not since the first
+/// check; `None` when all verify.
+fn not_verifying(i: &v1::Integrity) -> Option<String> {
+    let (n, first) = (i.bundles_not_verifying, i.not_verifying_since_first_reading);
+    let since = match first {
+        f if f >= n && n == 1 => String::new(),
+        f if f >= n => "all ".to_string(),
+        f => format!("{} of them ", grouped(f)),
+    };
+    (n > 0).then(|| {
+        format!(
+            "{}, {since}since the first check",
+            count(n, "app does not verify", "apps do not verify")
+        )
+    })
 }
 
 /// A value in parts, each part in its own style.
@@ -1018,6 +1044,7 @@ pub(crate) fn context(
     let width = lines
         .iter()
         .map(|(l, _)| screen::columns(l))
+        // "Signatures" is as long.
         .chain(std::iter::once(screen::columns("Not judged")))
         .max()
         .unwrap_or(0);
@@ -1027,6 +1054,10 @@ pub(crate) fn context(
     for (label, parts) in &lines {
         let parts: Vec<(&str, Style)> = parts.iter().map(|(t, st)| (t.as_str(), *st)).collect();
         out.extend(screen.labelled_parts(2, width, label, &parts, None, 0));
+    }
+    // What stands as it was: the bundles that do not verify, which are not a finding.
+    if let Some(said) = s.integrity.as_ref().and_then(not_verifying) {
+        out.extend(screen.labelled(2, width, "Signatures", &said, PLAIN, Some(LISTS_SEALS), 0));
     }
     // Every failure, whoever can fix it; what the person can fix that is not one.
     let failed: Vec<&v1::Uncovered> = s.not_covered.iter().filter(|u| is_failure(u)).collect();
@@ -1244,11 +1275,9 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
                         i.changed_while_version_stayed
                     )
                 };
-                if i.bundles_not_verifying > 0 {
+                if let Some(apps) = not_verifying(i) {
                     said.push_str(&format!(
-                        "; {} not verify, {} of them since the first reading",
-                        count(i.bundles_not_verifying, "bundle does", "bundles do"),
-                        i.not_verifying_since_first_reading
+                        "; {apps}, which kept them as the baseline: a change of their seal or signer while the version stays is a finding, and {LISTS_SEALS} lists each with its seal"
                     ));
                 }
                 let not_full: Vec<String> = i
@@ -3253,7 +3282,7 @@ mod tests {
             visible(&text)
                 .lines()
                 .any(|l| l.starts_with("→ immunity on ")
-                    && l.ends_with("   keeps watching between checks")),
+                    && l.ends_with("   starts a watcher that outlives the terminal")),
             "{text}"
         );
         // Watched in full with no watcher: the watcher clause alone.
@@ -3293,7 +3322,10 @@ mod tests {
             not_installed,
             "  Watching      not installed: no watcher runs now, so changes are seen at each check"
         );
-        assert!(text.contains("keeps watching between checks"), "{text}");
+        assert!(
+            text.contains("starts a watcher that outlives the terminal"),
+            "{text}"
+        );
         let (restarting, text) = watching_with(Some(true), Some(1_800_000_000));
         assert_eq!(
             restarting,
@@ -3397,7 +3429,7 @@ mod tests {
                 .collect()
         };
         let findings_step = "→ immunity findings   lists every one, most urgent first";
-        let install_step = "→ immunity on   keeps watching between checks";
+        let install_step = "→ immunity on   starts a watcher that outlives the terminal";
         let coverage_step = "→ immunity status --coverage   what was read and what was not";
         // Something needs a look, no watcher runs, and coverage is not whole: all three, in order.
         let mut s = status_of("x");
@@ -3416,7 +3448,7 @@ mod tests {
                 .map(|l| {
                     l.find(" what")
                         .or(l.find(" lists"))
-                        .or(l.find(" keeps"))
+                        .or(l.find(" starts"))
                         .unwrap()
                 })
                 .collect();
@@ -3479,6 +3511,66 @@ mod tests {
             ends(&status(&calm, &Screen::pipe(), false)),
             [install_step, coverage_step]
         );
+    }
+
+    /// The line of a text whose label is this, as a person sees it.
+    fn line(text: &str, label: &str) -> String {
+        text.lines()
+            .map(visible)
+            .find(|l| l.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("{label}\n{text}"))
+    }
+
+    #[test]
+    fn bundles_that_did_not_verify_at_the_first_check_are_one_line_with_the_command_that_lists_them_and_no_finding()
+     {
+        let with = |n: u64, first: u64| {
+            let mut s = calm_status();
+            s.integrity = Some(v1::Integrity {
+                bundles: 9,
+                bundles_not_verifying: n,
+                not_verifying_since_first_reading: first,
+                ..Default::default()
+            });
+            s
+        };
+        let screen = Screen::terminal(90, false);
+        let calm = status(&with(0, 0), &screen, false);
+        let five = status(&with(5, 5), &screen, false);
+        assert_eq!(
+            visible(&line(&five, "Signatures")),
+            "  Signatures   5 apps do not verify, all since the first check    immunity machine --json"
+        );
+        assert!(
+            visible(&line(&status(&with(1, 1), &screen, false), "Signatures"))
+                .contains(" 1 app does not verify, since the first check "),
+        );
+        // Not a finding: the headline and the steps are those of the same Mac with none.
+        let rest = |t: &str| -> Vec<String> {
+            t.lines()
+                .filter(|l| !l.contains("Signatures"))
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(rest(&five), rest(&calm));
+        assert!(five.starts_with("✓ Nothing needs a look"), "{five}");
+        assert!(!calm.contains("Signatures"), "{calm}");
+        // Some that stopped verifying since, or came later, are counted apart.
+        let seven = status(&with(7, 5), &screen, false);
+        assert!(
+            visible(&line(&seven, "Signatures"))
+                .contains("7 apps do not verify, 5 of them since the first check"),
+            "{seven}"
+        );
+        // `--coverage` says the same in a sentence: the baseline, what would be a finding, and
+        // the command; with none, nothing of it.
+        let whole = |s: &v1::Status| visible(&status(s, &Screen::pipe(), true));
+        assert!(
+            whole(&with(5, 5)).contains("; 5 apps do not verify, all since the first check, which kept them as the baseline: a change of their seal or signer while the version stays is a finding, and immunity machine --json lists each with its seal"),
+            "{}",
+            whole(&with(5, 5))
+        );
+        assert!(!whole(&with(0, 0)).contains("verif"));
     }
 
     /// A status with nothing found, after a fresh check, with a watcher, nothing failed and

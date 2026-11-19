@@ -8794,7 +8794,7 @@ fn what_a_run_prints_for_a_person_is_told_from_the_status_it_left_with_every_fai
     assert!(!text.contains('\u{1b}'), "{text:?}");
     assert!(
         text.ends_with(
-            "\n→ immunity findings   lists every one, most urgent first\n→ immunity status     what is watched and what was not read\n"
+            "\n→ immunity findings   lists every one, most urgent first\n→ immunity on         starts a watcher that outlives the terminal\n→ immunity status     what is watched and what was not read\n"
         ),
         "{text}"
     );

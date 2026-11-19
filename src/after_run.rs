@@ -313,6 +313,7 @@ pub fn run(s: &v1::Status, screen: &Screen) -> String {
     if look.is_some_and(|n| n.total > 0) {
         next.push(("immunity findings", "lists every one, most urgent first"));
     }
+    next.extend(overview::watcher_step(s));
     next.push(("immunity status", "what is watched and what was not read"));
     out.extend(screen.nexts(&next));
     joined(&out)
@@ -925,14 +926,28 @@ mod tests {
             l[11],
             "→ immunity findings   lists every one, most urgent first"
         );
-        // What they do is lined up.
+        // With no watcher, what starts one; what they do is lined up.
         assert_eq!(
             l[12],
+            "→ immunity on         starts a watcher that outlives the terminal"
+        );
+        assert_eq!(
+            l[13],
             "→ immunity status     what is watched and what was not read"
         );
-        assert_eq!(l.len(), 13, "{text}");
+        assert_eq!(l.len(), 14, "{text}");
         // What was found before this check is not among what it raised.
         assert!(!text.contains(PROFILE), "{text}");
+    }
+
+    #[test]
+    fn with_no_watcher_a_run_names_the_command_that_starts_one_and_with_one_running_none() {
+        let step = "→ immunity on         starts a watcher that outlives the terminal";
+        assert!(lines(&run(&status(), &Screen::pipe())).contains(&step.to_string()));
+        let mut watched = status();
+        watched.watching = Some(v1::Watcher::default());
+        let text = run(&watched, &Screen::pipe());
+        assert!(!text.contains("immunity on"), "{text}");
     }
 
     /// The lines a screen of the store says between what needs a look and the next steps.
