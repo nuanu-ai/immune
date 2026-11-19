@@ -2859,15 +2859,27 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("not compared"), "{said}");
-        // Packages for which it cannot be told are said beside the count.
+    }
+
+    #[test]
+    fn a_package_that_cannot_be_told_leaves_the_projects_not_all_compared_and_is_the_reason() {
+        // Never "packages they use" while a package cannot be told, and no "not compared:"
+        // with nothing after it: the package is the reason, said by count, "it" for one.
         let mut s = compared(0, 3, 0, 0);
-        s.vulnerabilities.as_mut().unwrap().unknown_packages = 2;
-        let untold = osv_line(&s);
+        s.vulnerabilities.as_mut().unwrap().unknown_packages = 1;
+        let said = osv_line(&s);
         assert!(
-            untold.contains(
-                "in packages they use, and for 2 packages whether one affects them cannot be told"
+            said.contains(", 3 compared in full: 0 known vulnerabilities in the packages read, and for 1 package whether one affects it cannot be told. "),
+            "{said}"
+        );
+        let mut none = compared(0, 0, 0, 0);
+        none.vulnerabilities.as_mut().unwrap().unknown_packages = 2;
+        let said = osv_line(&none);
+        assert!(
+            said.contains(
+                "; for 2 packages whether a known vulnerability affects them cannot be told. "
             ),
-            "{untold}"
+            "{said}"
         );
     }
 

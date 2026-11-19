@@ -114,6 +114,15 @@ fn without_lockfile(n: u64) -> String {
     )
 }
 
+/// For how many packages whether `what` affects them cannot be told, "it" for one.
+fn untold(n: u64, what: &str) -> String {
+    format!(
+        "for {} whether {what} affects {} cannot be told",
+        count(n, "package", "packages"),
+        if n == 1 { "it" } else { "them" }
+    )
+}
+
 /// What matching found in the packages the projects' lockfiles declare, by count: the known
 /// vulnerabilities, the packages for which whether one affects them cannot be told, and the
 /// projects compared in full, not wholly read and with no lockfile this version reads.
@@ -148,10 +157,14 @@ impl Matched {
         }
     }
 
-    /// A project was compared in full and none was left out by a lockfile not wholly read or
-    /// missing: only then is a count said of the packages the projects use.
+    /// A project was compared in full, none was left out by a lockfile not wholly read or
+    /// missing, and no package cannot be told: only then is a count said of the packages the
+    /// projects use.
     pub fn all_compared(&self) -> bool {
-        self.compared > 0 && self.not_read == 0 && self.no_lockfile == 0
+        self.compared > 0
+            && self.not_read == 0
+            && self.no_lockfile == 0
+            && self.unknown_packages == 0
     }
 
     /// The one sentence about known vulnerabilities in the projects' packages, which the status,
@@ -177,7 +190,6 @@ impl Matched {
         }
         let not = not.join(", and ");
         let known = count(self.known, "known vulnerability", "known vulnerabilities");
-        let unknown = count(self.unknown_packages, "package", "packages");
         if self.compared == 0 {
             let mut said = "no project's packages could be compared in full".to_string();
             if !not.is_empty() {
@@ -188,7 +200,8 @@ impl Matched {
             }
             if self.unknown_packages > 0 {
                 said.push_str(&format!(
-                    "; for {unknown} whether a known vulnerability affects them cannot be told"
+                    "; {}",
+                    untold(self.unknown_packages, "a known vulnerability")
                 ));
             }
             return said;
@@ -205,11 +218,10 @@ impl Matched {
             }
         );
         if self.unknown_packages > 0 {
-            said.push_str(&format!(
-                ", and for {unknown} whether one affects them cannot be told"
-            ));
+            said.push_str(&format!(", and {}", untold(self.unknown_packages, "one")));
         }
-        if !all {
+        // Packages that cannot be told are their own reason, said above; this names the rest.
+        if !not.is_empty() {
             said.push_str(&format!("; not compared: {not}"));
         }
         said
