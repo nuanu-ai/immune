@@ -517,7 +517,9 @@ fn file_changes(conn: &Connection, base: &Baselines) -> rusqlite::Result<Vec<Fil
         let (change, id, kind) = match (e.entry.as_str(), e.predicate.as_str()) {
             ("added", "watched_as") => ("new", &e.subject, e.new.clone()),
             ("removed", "watched_as") => ("gone", &e.subject, e.old.clone()),
-            ("added" | "changed" | "removed", "has_content" | "links_to")
+            // The removal of a content is journaled only for a file that went, with the
+            // digest it had (`watched::content_gone`): that is not a change of the file.
+            ("added" | "changed", "has_content" | "links_to") | ("removed", "links_to")
                 if !new.contains(&(e.run_id.as_str(), e.scope.as_str())) =>
             {
                 ("changed", &e.scope, kind_of.get(&e.scope).cloned())
