@@ -13977,3 +13977,29 @@ fn looks(status: &serde_json::Value) -> serde_json::Value {
         })
         .collect()
 }
+
+#[test]
+fn the_version_of_macos_is_learnt_without_starting_a_program() {
+    // Starting a program to ask the version is itself an event a published rule matches, so
+    // every start of the core would queue a match of its own making. With no process left to
+    // the user, the status still knows the version.
+    use std::os::unix::process::CommandExt;
+    let dir = common::Scratch::new("macos-version");
+    let mut cmd = immunity_cmd(&dir);
+    cmd.args(["status", "--json", "--store"])
+        .arg(dir.join("store.db"));
+    // SAFETY: setrlimit is safe to call in the child before exec; exec starts no process.
+    unsafe {
+        cmd.pre_exec(|| {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_NPROC, &none);
+            Ok(())
+        });
+    }
+    let status: serde_json::Value = serde_json::from_str(&ok(&mut cmd)).unwrap();
+    let said = status["cannot_judge"].to_string();
+    assert!(!said.contains("is not known"), "{said}");
+}
