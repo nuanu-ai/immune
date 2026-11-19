@@ -348,7 +348,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         args,
         folder,
         tx,
-        stream: None,
+        streams: Vec::new(),
         wanted: Vec::new(),
         targets: Vec::new(),
         read_everything: false,
@@ -458,7 +458,7 @@ struct Watcher<'a> {
     args: &'a WatchArgs,
     folder: PathBuf,
     tx: Sender<Msg>,
-    stream: Option<fsevents::Stream>,
+    streams: Vec<fsevents::Stream>,
     /// The paths asked for, FSEvents refusing some or not.
     wanted: Vec<PathBuf>,
     /// Each path asked for with the reading its place belongs to.
@@ -718,19 +718,21 @@ impl Watcher<'_> {
     /// Starts a stream on `wanted` in place of the one running, if any. Returns the problem
     /// lines of the paths FSEvents refused.
     fn start(&mut self, wanted: Vec<PathBuf>) -> Result<Vec<Value>, String> {
-        let tx = self.tx.clone();
-        let deliver = Box::new(move |b: fsevents::Batch| {
-            let _ = tx.send(Msg::Events(b));
-        });
+        let deliver = || -> Box<dyn Fn(fsevents::Batch) + Send + Sync> {
+            let tx = self.tx.clone();
+            Box::new(move |b: fsevents::Batch| {
+                let _ = tx.send(Msg::Events(b));
+            })
+        };
         let refs: Vec<&Path> = wanted.iter().map(PathBuf::as_path).collect();
-        let (stream, refused) = fsevents::Stream::start(&refs, LATENCY, deliver)?;
+        let (streams, refused) = fsevents::Stream::start_all(&refs, LATENCY, &deliver)?;
         let problems = refused
             .iter()
             .map(|(i, why)| place_problem(&wanted[*i], why))
             .collect();
         let refused: BTreeSet<usize> = refused.into_iter().map(|(i, _)| i).collect();
-        // The new stream runs before the old one stops, so no change falls between them.
-        self.stream = Some(stream);
+        // The new streams run before the old ones stop, so no change falls between them.
+        self.streams = streams;
         self.wanted = wanted.clone();
         self.paths = wanted
             .into_iter()

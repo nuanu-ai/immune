@@ -228,15 +228,66 @@ pub type Refused = Vec<(usize, &'static str)>;
 
 /// Why a path cannot be handed to FSEvents.
 const NOT_UTF8: &str = "the path is not UTF-8, which FSEvents takes paths in";
+/// Why a path is not watched though FSEvents took it as a path.
+const NOT_STARTED: &str = "FSEvents did not start a stream on it";
+
+/// The most paths one stream is started on. `FSEventStreamStart` returns false for a stream of
+/// more: it took 4096 paths and refused 4097, whatever their length, and 40 streams of 4096
+/// ran side by side (measured on macOS 26, 19 November 2026). The header states no limit.
+const STREAM_PATHS: usize = 4096;
 
 impl Stream {
+    /// Starts streams on `paths`, as many as it takes: one stream holds at most
+    /// `STREAM_PATHS`. Each stream delivers through its own `deliver()`. A path FSEvents
+    /// cannot take, or whose stream did not start, is refused by its index and the rest are
+    /// watched; `Err` when no stream started.
+    pub fn start_all(
+        paths: &[&Path],
+        latency: f64,
+        deliver: &dyn Fn() -> Box<dyn Fn(Batch) + Send + Sync>,
+    ) -> Result<(Vec<Stream>, Refused), String> {
+        Stream::start_in_pieces(paths, latency, deliver, STREAM_PATHS)
+    }
+
+    /// `start_all` with streams of at most `most` paths.
+    fn start_in_pieces(
+        paths: &[&Path],
+        latency: f64,
+        deliver: &dyn Fn() -> Box<dyn Fn(Batch) + Send + Sync>,
+        most: usize,
+    ) -> Result<(Vec<Stream>, Refused), String> {
+        let (taken, not_utf8): (Vec<usize>, Vec<usize>) =
+            (0..paths.len()).partition(|&i| paths[i].to_str().is_some());
+        let mut refused: Refused = not_utf8.into_iter().map(|i| (i, NOT_UTF8)).collect();
+        let mut streams = Vec::new();
+        let mut failed = "no path could be handed to FSEvents".to_string();
+        for piece in taken.chunks(most) {
+            let of: Vec<&Path> = piece.iter().map(|&i| paths[i]).collect();
+            match Stream::start(&of, latency, deliver()) {
+                Ok((stream, no)) => {
+                    streams.push(stream);
+                    refused.extend(no.into_iter().map(|(i, why)| (piece[i], why)));
+                }
+                Err(why) => {
+                    refused.extend(piece.iter().map(|&i| (i, NOT_STARTED)));
+                    failed = why;
+                }
+            }
+        }
+        if streams.is_empty() {
+            return Err(failed);
+        }
+        refused.sort_unstable();
+        Ok((streams, refused))
+    }
+
     /// Starts a stream on `paths`, which need not exist yet, delivering batches to `deliver`
     /// from FSEvents' queue, of the changes made from now (`SinceNow`). When it returns, the
     /// stream is registered with FSEvents to receive events (`FSEventStreamStart`,
     /// `FSEvents.h:1266-1268`), so a change made after it brings an event. `latency` is how long FSEvents gathers events
     /// into one batch, in seconds. A path FSEvents cannot take is refused and the rest are
     /// watched; `Err` when none can be, or the stream cannot be created or started.
-    pub fn start(
+    fn start(
         paths: &[&Path],
         latency: f64,
         deliver: Box<dyn Fn(Batch) + Send + Sync>,
@@ -515,6 +566,83 @@ mod tests {
         assert_eq!(refused, vec![(0, NOT_UTF8)]);
         assert!(event_after(&rx, || std::fs::write(&good, "x").unwrap()).is_some());
         drop(stream);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn folders(dir: &Path, count: usize) -> Vec<std::path::PathBuf> {
+        (0..count)
+            .map(|i| dir.join(format!("project-{i}/hooks")))
+            .collect()
+    }
+
+    fn quiet() -> Box<dyn Fn(Batch) + Send + Sync> {
+        Box::new(|_| {})
+    }
+
+    #[test]
+    fn a_change_under_any_of_more_paths_than_one_stream_takes_is_delivered() {
+        // A Mac with many projects has more places than one stream takes, and the watcher
+        // must still start and see a change in the first and the last of them.
+        let dir = temp("many");
+        let folders = folders(&dir, STREAM_PATHS + 1);
+        let paths: Vec<&Path> = folders.iter().map(|p| p.as_path()).collect();
+        let (tx, rx) = mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let deliver = || -> Box<dyn Fn(Batch) + Send + Sync> {
+            let tx = std::sync::Mutex::new(tx.lock().unwrap().clone());
+            Box::new(move |b: Batch| {
+                let _ = tx.lock().unwrap().send(b);
+            })
+        };
+        let (streams, refused) = Stream::start_all(&paths, 0.1, &deliver).unwrap();
+        assert_eq!((streams.len(), refused), (2, Refused::new()));
+        for folder in [folders.first().unwrap(), folders.last().unwrap()] {
+            let under = |b: &Batch| match &b.at {
+                Where::Paths(at) => at.iter().any(|p| p.starts_with(folder)),
+                Where::Anywhere => true,
+            };
+            let start = std::time::Instant::now();
+            let mut seen = false;
+            while !seen && start.elapsed() < DEADLINE {
+                seen = event_after(&rx, || {
+                    std::fs::create_dir_all(folder).unwrap();
+                    std::fs::write(folder.join("pre-commit"), "x").unwrap();
+                })
+                .is_some_and(|b| under(&b));
+            }
+            assert!(seen, "an event under {}", folder.display());
+        }
+        drop(streams);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn paths_whose_stream_did_not_start_are_refused_by_index_and_the_others_are_watched() {
+        // One stream does not take this many paths, so the first piece is not watched, and
+        // the watcher says which places those are and goes on with the rest.
+        let dir = temp("refused");
+        let most = STREAM_PATHS + 1;
+        let folders = folders(&dir, most + 1);
+        let paths: Vec<&Path> = folders.iter().map(|p| p.as_path()).collect();
+        let (streams, refused) = Stream::start_in_pieces(&paths, 0.1, &quiet, most).unwrap();
+        assert_eq!(streams.len(), 1);
+        assert_eq!(
+            refused,
+            (0..most).map(|i| (i, NOT_STARTED)).collect::<Refused>()
+        );
+        assert!(Stream::start_in_pieces(&paths[..most], 0.1, &quiet, most).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_that_is_not_utf8_among_many_is_refused_by_its_own_index() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = temp("many-utf8");
+        let bad = dir.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        let good = dir.join("good");
+        let (streams, refused) = Stream::start_all(&[&good, &bad, &good], 0.1, &quiet).unwrap();
+        assert_eq!((streams.len(), refused), (1, vec![(1, NOT_UTF8)]));
+        assert!(Stream::start_all(&[&bad], 0.1, &quiet).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

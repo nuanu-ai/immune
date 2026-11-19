@@ -16,6 +16,10 @@ Immunity Core has no numbered release yet. Entries go by the day a change reache
 - What is said of projects speaks of the projects found, and the page says where projects are looked for.
 - The rules page lists the rules that are checked, in full or in part. What a rule checked in part goes without is in that rule's details.
 
+### Fixed
+
+- The watcher starts on a Mac with more watched places than one FSEvents stream takes. A stream takes 4096 paths, and a Mac with many projects has had more since Git and pnpm hooks are watched in each (#67, #72): `immunity watch` then stopped with `watch_failed`, "FSEvents could not start the stream", each time it started. It now starts as many streams as the places need. The places of a stream that did not start are named as a problem, and the rest are watched.
+
 ## 2026-11-18
 
 `main` at `b3f3558`. Contract 1.21.0, store format 8.
