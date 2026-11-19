@@ -71,6 +71,18 @@ prost = "0.14.4"
 # generator in `immunity-contract`, print them with serde_json. serde and serde_derive were already compiled in for
 # sigma-rust; naming serde here adds no crate.
 serde = { version = "1.0.229", features = ["derive"] }
+# Codex CLI compresses a session it has not changed for a week with zstd, and the reader of
+# agent sessions decodes it (`agent_folders.rs`). zstd is a format someone else defines, so it
+# is not decoded by our own code. macOS ships no zstd decoder: the SDK has no libzstd,
+# libcompression offers LZ4, zlib, LZMA, LZFSE and Brotli, and its libarchive is built without
+# zstd (`bsdtar --version` lists zlib, liblzma and bz2lib). No crate already on this list
+# decodes zstd.
+# The reference implementation would bring C code and its build. ruzstd is a decoder in pure
+# Rust, MIT, used by `object` and `backtrace` and fuzzed by its author. Only `std` is on, for
+# its streaming decoder over `std::io::Read`, and with it the crate has no dependencies.
+# Without the feature `hash` the frame's checksum is read and not checked. Its encoder is
+# never used.
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # The test that keeps the committed types equal to what the schema gives generates them again
