@@ -4105,18 +4105,16 @@ fn an_answer_whose_other_finding_is_not_its_pair_is_refused_and_the_store_is_as_
 }
 
 #[test]
-fn with_with_an_answer_names_what_it_read_and_each_flag_once() {
+fn with_with_an_answer_names_what_it_read_journal_seq_once_and_each_finding_once() {
     let (mac, core, verdict, _, _) = paired("pair-usage");
     let seq = read(&mac);
     let bytes = std::fs::read(mac.store()).unwrap();
-    for args in [
-        // --with goes with an answer.
-        vec!["--with", verdict.as_str()],
-        // An answer with --with names the read it rests on.
-        vec!["seen", "--with", &verdict],
-        vec!["expected", "--reason", "invented", "--with", &verdict],
-        // Each is given once, and not empty.
-        vec![
+    // --with may be given more than once, each time naming another finding: the same one twice
+    // is refused by the store, not the usage.
+    refused_answer(
+        &mac,
+        &core,
+        &[
             "seen",
             "--with",
             &verdict,
@@ -4125,6 +4123,17 @@ fn with_with_an_answer_names_what_it_read_and_each_flag_once() {
             "--journal-seq",
             &seq,
         ],
+        "named_twice",
+        Some(&verdict),
+    );
+    for args in [
+        // --with goes with an answer.
+        vec!["--with", verdict.as_str()],
+        // An answer with --with names the read it rests on.
+        vec!["seen", "--with", &verdict],
+        vec!["expected", "--reason", "invented", "--with", &verdict],
+        vec!["seen", "--with", &verdict, "--with", &verdict],
+        // --journal-seq is given once, and --with is not empty.
         vec!["seen", "--with", "", "--journal-seq", &seq],
         vec![
             "seen",
@@ -5091,4 +5100,375 @@ fn taking_back_one_answer_given_to_both_takes_back_only_what_is_named() {
     assert_eq!(back["answered_with"]["state"], "open");
     // What the status counts is what it was before any answer.
     assert_eq!(counted(&mac.status()), first);
+}
+
+// ---- One answer for the findings of one group. ----
+
+/// The folder of hooks of the invented project, as the store names files on this Mac.
+const HOOKS: &str = "file:machine:mac/dev/shop/.git/hooks";
+const HOOK: &str = "watched.git-hook";
+
+/// A finding of `rule` about `about` with this change, open, written into the store as a check
+/// would leave it; its id is `f` and `n` in ten hexadecimal digits.
+fn finding_row(mac: &Mac, n: u64, rule: &str, about: &str, change: &str) -> String {
+    let conn = rusqlite::Connection::open(mac.store()).unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO entity (id, type) VALUES (?1, 'file')",
+        [about],
+    )
+    .unwrap();
+    let id = format!("f{n:010x}");
+    conn.execute(
+        "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                              first_seen_run, last_seen_at, last_seen_run)
+         VALUES (?1, ?2, ?3, 1, 'open', ?4, 1, 'r', 1, 'r')",
+        rusqlite::params![id, rule, about, change],
+    )
+    .unwrap();
+    id
+}
+
+/// A Mac with four new hooks in one project's hooks folder, each a finding: one group.
+fn hooks(tag: &str) -> (Mac, Vec<String>) {
+    let mac = Mac::new(tag);
+    mac.run();
+    let ids = ["pre-commit", "pre-push", "commit-msg", "post-merge"]
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            finding_row(
+                &mac,
+                0xa0 + k as u64,
+                HOOK,
+                &format!("{HOOKS}/{name}"),
+                "new",
+            )
+        })
+        .collect();
+    (mac, ids)
+}
+
+/// The response layer's finding about `id`, raised by a suspicious verdict: the other of its pair.
+fn partner_of(mac: &Mac, id: &str, case: &str) -> String {
+    let v = about_finding(&mac.store_id(), id, "suspicious", case);
+    let r = mac.send(&levels(v, ("high", "high")));
+    r["recorded"]["finding"]["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn several_findings_of_one_group_are_answered_by_one_command_each_with_its_own_answer_under_one_run_id()
+ {
+    let (mac, ids) = hooks("group-seen");
+    let (a, b, c, sibling) = (&ids[0], &ids[1], &ids[2], &ids[3]);
+    let before = whole(&mac);
+    let seq = read(&mac);
+    let answer = given(
+        &mac,
+        a,
+        &[
+            "seen",
+            "--with",
+            c,
+            "--with",
+            b,
+            "--reason",
+            "invented: a linter",
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    // The answer names the others in the order given, each as it left it, and no pair.
+    let together: Vec<(&str, &str)> = answer["answered_together"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["id"].as_str().unwrap(), r["state"].as_str().unwrap()))
+        .collect();
+    assert_eq!(together, [(c.as_str(), "seen"), (b.as_str(), "seen")]);
+    assert!(answer["answered_with"].is_null(), "{answer:#}");
+    // Exactly the three named changed, one journal entry each under one run id.
+    only_answered(&mac, &before, &[a, b, c]);
+    let said = mac.finding(a)["answer"].clone();
+    for id in [b, c] {
+        assert_eq!(mac.finding(id)["answer"], said);
+    }
+    assert_eq!(said["reason_text"], "invented: a linter");
+    // Each can be taken back alone.
+    let before = whole(&mac);
+    given(&mac, b, &["reopen"]);
+    only_answered(&mac, &before, &[b]);
+    assert_eq!(mac.finding(a)["finding"]["state"], "seen");
+    // Two of one group are answered with one --with, as a pair is.
+    let seq = read(&mac);
+    let before = whole(&mac);
+    given(&mac, b, &["seen", "--with", sibling, "--journal-seq", &seq]);
+    only_answered(&mac, &before, &[b, sibling]);
+}
+
+#[test]
+fn a_finding_the_command_did_not_name_stays_as_it_was_a_sibling_in_the_same_folder_included() {
+    let (mac, ids) = hooks("group-unnamed");
+    let before = whole(&mac);
+    let seq = read(&mac);
+    given(
+        &mac,
+        &ids[0],
+        &["seen", "--with", &ids[1], "--journal-seq", &seq],
+    );
+    only_answered(&mac, &before, &[&ids[0], &ids[1]]);
+    for sibling in &ids[2..] {
+        let f = mac.finding(sibling);
+        assert_eq!(f["finding"]["state"], "open");
+        assert!(f["answer"].is_null());
+    }
+}
+
+#[test]
+fn reopen_with_several_findings_of_one_group_takes_each_answer_back() {
+    let (mac, ids) = hooks("group-reopen");
+    let marked = |seq: &str| {
+        let with = ["--with", &ids[1], "--with", &ids[2], "--journal-seq", seq];
+        let args = [&["expected", "--reason", "invented: ours"][..], &with].concat();
+        given(&mac, &ids[0], &args);
+    };
+    marked(&read(&mac));
+    // Taking answers back quiets nothing, so it needs no read.
+    let before = whole(&mac);
+    let back = given(
+        &mac,
+        &ids[0],
+        &["reopen", "--with", &ids[1], "--with", &ids[2]],
+    );
+    only_answered(&mac, &before, &[&ids[0], &ids[1], &ids[2]]);
+    for id in &ids[..3] {
+        let f = mac.finding(id);
+        assert_eq!(f["finding"]["state"], "open");
+        assert!(f["answer"].is_null());
+    }
+    assert_eq!(back["answered_together"][1]["state"], "open");
+    // For a person, the others are counted and every answer is said to be taken back.
+    marked(&read(&mac));
+    let out = mac
+        .command(&["finding", &ids[0], "reopen", "--with", &ids[1]])
+        .args(["--with", &ids[2]])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with(&format!("✓ Reopened {} and 2 other findings\n", ids[0])),
+        "{text}"
+    );
+    assert!(text.contains("All 3 answers are taken back"), "{text}");
+}
+
+#[test]
+fn a_named_finding_of_a_group_that_changed_since_the_read_refuses_the_whole_command() {
+    let (mac, ids) = hooks("group-changed");
+    let seq = read(&mac);
+    // The last finding named is answered and taken back after the read: two journal entries
+    // about it, and its row as it was.
+    given(&mac, &ids[2], &["seen"]);
+    given(&mac, &ids[2], &["reopen"]);
+    let args = [
+        "seen",
+        "--with",
+        &ids[1],
+        "--with",
+        &ids[2],
+        "--journal-seq",
+        &seq,
+    ];
+    refused_answer(&mac, &ids[0], &args, "changed_since_read", Some(&ids[2]));
+}
+
+#[test]
+fn when_the_last_finding_named_cannot_be_answered_the_earlier_ones_are_not_recorded() {
+    let (mac, ids) = hooks("group-all-or-none");
+    given(&mac, &ids[2], &["seen"]);
+    let seq = read(&mac);
+    let args = [
+        "seen",
+        "--with",
+        &ids[1],
+        "--with",
+        &ids[2],
+        "--journal-seq",
+        &seq,
+    ];
+    refused_answer(&mac, &ids[0], &args, "finding_closed", Some(&ids[2]));
+    for id in &ids[..2] {
+        assert_eq!(mac.finding(id)["finding"]["state"], "open");
+    }
+    // Reopen too: the last has no answer to take back.
+    given(&mac, &ids[0], &["seen"]);
+    given(&mac, &ids[1], &["seen"]);
+    given(&mac, &ids[2], &["reopen"]);
+    let args = ["reopen", "--with", &ids[1], "--with", &ids[2]];
+    refused_answer(&mac, &ids[0], &args, "finding_not_answered", Some(&ids[2]));
+    for id in &ids[..2] {
+        assert_eq!(mac.finding(id)["finding"]["state"], "seen");
+    }
+    // The first finding named is refused as without --with, quoting no id.
+    let seq = read(&mac);
+    let args = ["seen", "--with", &ids[3], "--journal-seq", &seq];
+    refused_answer(&mac, &ids[0], &args, "finding_closed", None);
+}
+
+#[test]
+fn a_set_that_is_not_one_group_is_refused_naming_the_finding_that_does_not_fit() {
+    let (mac, ids) = hooks("group-refused");
+    let (a, b) = (&ids[0], &ids[1]);
+    let partner = partner_of(&mac, a, "case-3");
+    let row =
+        |n: u64, rule: &str, about: &str, change: &str| finding_row(&mac, n, rule, about, change);
+    let odd = [
+        row(
+            0xb0,
+            HOOK,
+            "file:machine:mac/dev/cart/.git/hooks/pre-commit",
+            "new",
+        ),
+        row(
+            0xb1,
+            "watched.autostart",
+            &format!("{HOOKS}/pre-rebase"),
+            "new",
+        ),
+        row(
+            0xb2,
+            HOOK,
+            "file:machine:other/dev/shop/.git/hooks/pre-commit",
+            "new",
+        ),
+        row(0xb3, HOOK, &format!("{HOOKS}/update"), "changed"),
+        row(0xb4, HOOK, &format!("{HOOKS}/pre#push"), "new"),
+    ];
+    let seq = read(&mac);
+    let refuse = |first: &str, with: &[&str], code: &str, misfit: &str| {
+        let mut args = vec!["seen"];
+        for w in with {
+            args.extend(["--with", w]);
+        }
+        args.extend(["--journal-seq", &seq]);
+        refused_answer(&mac, first, &args, code, Some(misfit));
+    };
+    // An id named twice, the first included.
+    refuse(a, &[b, b], "named_twice", b);
+    refuse(a, &[b, a], "named_twice", a);
+    // A pair partner mixed with a sibling, either way round.
+    refuse(a, &[&partner, b], "not_one_group", &partner);
+    refuse(a, &[b, &partner], "not_one_group", &partner);
+    refuse(&partner, &[a, b], "not_one_group", a);
+    // Another folder, rule, machine or change, and a file whose path holds `#`.
+    for o in &odd {
+        refuse(a, &[b, o], "not_one_group", o);
+        refuse(o, &[a, b], "not_one_group", a);
+        // With one --with, as for the pair.
+        refuse(a, &[o], "not_the_pair", o);
+    }
+    // Siblings on a machine whose name holds `#`: the subject holds it, so they have no group.
+    let hashed: Vec<String> = ["pre-commit", "pre-push", "commit-msg"]
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let about = format!("file:machine:ma#c/dev/shop/.git/hooks/{name}");
+            row(0xb5 + k as u64, HOOK, &about, "new")
+        })
+        .collect();
+    refuse(&hashed[0], &[&hashed[1]], "not_the_pair", &hashed[1]);
+    refuse(
+        &hashed[0],
+        &[&hashed[1], &hashed[2]],
+        "not_one_group",
+        &hashed[1],
+    );
+    // The pair alone is still answered.
+    let before = whole(&mac);
+    let seq = read(&mac);
+    given(
+        &mac,
+        a,
+        &["seen", "--with", &partner, "--journal-seq", &seq],
+    );
+    only_answered(&mac, &before, &[a, &partner]);
+}
+
+#[test]
+fn the_group_key_is_equal_for_siblings_and_differs_by_folder_machine_rule_and_change() {
+    let (mac, ids) = hooks("group-key");
+    let row =
+        |n: u64, rule: &str, about: &str, change: &str| finding_row(&mac, n, rule, about, change);
+    let apart = [
+        row(
+            0xc0,
+            HOOK,
+            "file:machine:mac/dev/cart/.git/hooks/pre-commit",
+            "new",
+        ),
+        row(
+            0xc1,
+            HOOK,
+            "file:machine:other/dev/shop/.git/hooks/pre-commit",
+            "new",
+        ),
+        row(0xc2, HOOK, &format!("{HOOKS}/update"), "gone"),
+        // A file at the top of the home folder and one at the root.
+        row(0xc3, HOOK, "file:machine:mac/x", "new"),
+        row(0xc4, HOOK, "file:machine:mac//x", "new"),
+    ];
+    let none = [
+        row(0xc5, HOOK, &format!("{HOOKS}/pre#push"), "new"),
+        row(
+            0xc7,
+            HOOK,
+            "file:machine:ma#c/dev/shop/.git/hooks/pre-commit",
+            "new",
+        ),
+        row(
+            0xc6,
+            "watched.autostart",
+            &format!("{HOOKS}/pre-rebase"),
+            "new",
+        ),
+        partner_of(&mac, &ids[0], "case-4"),
+    ];
+    let list: std::collections::BTreeMap<String, Value> = mac.findings()["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["finding"]["id"].as_str().unwrap().to_string(), f.clone()))
+        .collect();
+    let group = |id: &str| list[id]["group"].as_str().map(str::to_string);
+    let folder = |id: &str| list[id]["folder_text"].as_str().map(str::to_string);
+    let key = group(&ids[0]).unwrap();
+    assert!(key.len() == 33 && key.starts_with('g'), "{key}");
+    for sibling in &ids[1..] {
+        assert_eq!(group(sibling).as_deref(), Some(key.as_str()));
+    }
+    // A rule differs too: the response layer's finding about the same folder has no group.
+    let mut keys = std::collections::BTreeSet::from([key]);
+    for odd in &apart {
+        assert!(keys.insert(group(odd).unwrap()), "{odd}");
+    }
+    for no in &none {
+        assert_eq!((group(no), folder(no)), (None, None), "{no}");
+    }
+    // The folder is data, written as a place is shown.
+    assert_eq!(folder(&ids[0]).as_deref(), Some("~/dev/shop/.git/hooks"));
+    assert_eq!(folder(&apart[3]).as_deref(), Some("~"));
+    assert_eq!(folder(&apart[4]).as_deref(), Some("/"));
+    // The one finding whole and the status carry the same.
+    assert_eq!(mac.finding(&ids[0])["group"], list[&ids[0]]["group"]);
+    assert_eq!(
+        mac.finding(&ids[0])["folder_text"],
+        list[&ids[0]]["folder_text"]
+    );
+    let status = looks(&mac.status());
+    let shown = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == ids[0].as_str())
+        .unwrap();
+    assert_eq!(shown["group"], list[&ids[0]]["group"]);
 }

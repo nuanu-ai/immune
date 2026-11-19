@@ -96,7 +96,8 @@ pub const COMMANDS: &[Command] = &[
                 takes it out of what needs a look for 30 days, or --days. seen closes it; if it \
                 happens again, a new finding opens. reopen takes an answer back. Each answers \
                 with the finding as it left it. --with gives the same answer to the other \
-                finding of a pair, in one transaction. --journal-seq names the answer the \
+                finding of a pair, or, once for each, to other findings of one group, in one \
+                transaction. --journal-seq names the answer the \
                 findings were read in; the answer is refused if anything joined them since, and \
                 it is needed with --with, --via agent or --via app. --via says who gave the \
                 answer; without it, the command line.",
@@ -786,8 +787,14 @@ impl Typed {
 
     /// The value of `flag` set to its placeholder, or the flag and its placeholder added.
     fn value(&mut self, flag: &str) {
+        self.value_of(flag, 0);
+    }
+
+    /// The value of `flag` the `n`th time set to its placeholder, or the flag and its
+    /// placeholder added.
+    fn value_of(&mut self, flag: &str, n: usize) {
         let shown = placeholder(flag).unwrap_or("<value>");
-        match self.flag(flag, 0) {
+        match self.flag(flag, n) {
             Some(at) if at + 1 < self.0.len() => self.0[at + 1] = Word::Placeholder(shown),
             Some(_) => self.0.push(Word::Placeholder(shown)),
             None => {
@@ -910,8 +917,9 @@ pub enum FindingNext {
     Read,
     /// The answer taken back.
     Reopen,
-    /// The same command with the finding named by `--with` left for the person to give.
-    OtherId,
+    /// The same command with the finding named by the `n`th `--with` left for the person to
+    /// give.
+    OtherId(usize),
     /// The list of every finding, to find the id in.
     List,
 }
@@ -929,9 +937,9 @@ pub fn finding_next(args: &[String], next: FindingNext) -> Pasted {
     ];
     let verb = match next {
         FindingNext::List => return Pasted::own("immunity findings --all"),
-        FindingNext::OtherId => {
+        FindingNext::OtherId(n) => {
             let mut typed = typed;
-            typed.value("--with");
+            typed.value_of("--with", n);
             return typed.line("finding");
         }
         FindingNext::Reopen => {
@@ -941,8 +949,9 @@ pub fn finding_next(args: &[String], next: FindingNext) -> Pasted {
         FindingNext::Read => None,
     };
     // Every flag typed that the command given next takes, with its value, as typed.
+    // `--with` may be given more than once, and each is kept.
     for flag in form_flags("finding", verb) {
-        if let Some(at) = typed.flag(flag, 0) {
+        for at in (0..).map_while(|n| typed.flag(flag, n)) {
             let takes = if placeholder(flag).is_some() { 2 } else { 1 };
             kept.extend(typed.0.iter().skip(at).take(takes).cloned());
         }
@@ -1184,9 +1193,16 @@ mod tests {
             ),
             (
                 "finding",
-                &["f0123456789", "seen", "--with", "a", "--with", "b"],
-                "--with is given once",
-                "immunity finding f0123456789 seen --with a",
+                &[
+                    "f0123456789",
+                    "seen",
+                    "--journal-seq",
+                    "1",
+                    "--journal-seq",
+                    "2",
+                ],
+                "--journal-seq is given once",
+                "immunity finding f0123456789 seen --journal-seq 1",
             ),
             (
                 "rules",
@@ -1475,13 +1491,23 @@ mod tests {
                 "immunity finding f0123456789 reopen --via agent --with f7a76b7b86f --journal-seq 4 --store /x/s.db",
             ),
             (
-                FindingNext::OtherId,
+                FindingNext::OtherId(0),
                 "immunity finding f0123456789 seen --with <id> --journal-seq 4 --via agent --store /x/s.db",
             ),
             (FindingNext::List, "immunity findings --all"),
         ] {
             assert_eq!(finding_next(&typed, next).command, said, "{next:?}");
         }
+        // Of several --with, the one refused is left to name, and reopen keeps every one.
+        let typed = words(&["f0", "seen", "--with", "f1", "--with", "f2"]);
+        assert_eq!(
+            finding_next(&typed, FindingNext::OtherId(1)).command,
+            "immunity finding f0 seen --with f1 --with <id>"
+        );
+        assert_eq!(
+            finding_next(&typed, FindingNext::Reopen).command,
+            "immunity finding f0 reopen --with f1 --with f2"
+        );
         // Without an id typed, the place for one; without a store, none.
         assert_eq!(
             finding_next(&words(&["--reason", "r"]), FindingNext::Reopen).command,

@@ -92,6 +92,17 @@ message ListedFinding {
   // gives them. Absent, and empty, for every other finding. Since 1.16.0.
   optional string package_text = 13;
   repeated string releases_text = 14;
+  // The group the finding is one of: findings of one rule, on one machine, with one kind of
+  // change, about files of one folder, which one command answers together, each named
+  // (`immunity finding <id> seen --with <id> --with <id>`). An opaque key, `g` and 32
+  // hexadecimal digits: equal for the findings of one group, and different for two groups but
+  // by a chance of one in 2^128. Absent for a finding of no group: only `watched.git-hook` has
+  // groups, a hooks folder being written as a whole by one tool; a `verdict.suspicious` finding
+  // has none and keeps its pair; nor has a finding whose file's path holds `#`. Since 1.22.0.
+  optional string group = 15;
+  // The folder of the group, as `where_text` gives a place, `~` for the home folder itself.
+  // Absent when `group` is. Since 1.22.0.
+  optional string folder_text = 16;
 }
 
 // The answer to `immunity finding <id>`: one finding whole.
@@ -134,7 +145,7 @@ message Finding {
   string kind_title = 19;
   // The other finding of the pair that an answer given with `--with` answered beside this one,
   // as that answer left it: its `state` is the one it has now. Absent when the command named no
-  // other finding, and when it only read. Since 1.9.0.
+  // other finding, when the findings named were a group, and when it only read. Since 1.9.0.
   FindingRef answered_with = 20;
   // The journal's latest sequence number in the state of the store this answer was read from:
   // what the reader has seen. An answer passes it back as `--journal-seq`, and is refused with
@@ -151,6 +162,14 @@ message Finding {
   int64 journal_seq = 21;
   // As in `ListedFinding`. Since 1.16.0.
   string short_title = 22;
+  // As in `ListedFinding`. Since 1.22.0.
+  optional string group = 23;
+  optional string folder_text = 24;
+  // Every other finding an answer given with `--with` named, in the order given, each as that
+  // answer left it: its `state` is the one it has now. The other of a pair is here and in
+  // `answered_with`; the others of a group are only here. Empty when the command named no other
+  // finding, and when it only read. Since 1.22.0.
+  repeated FindingRef answered_together = 25;
 }
 
 // The person's answer to a finding.
