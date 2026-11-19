@@ -114,10 +114,37 @@ fn without_lockfile(n: u64) -> String {
     )
 }
 
-/// What the line about known vulnerabilities adds when not every project was wholly read: how
-/// many were not, beside the count of known vulnerabilities, so that it never reads as all.
-pub fn not_wholly_read(not_read: u64, no_lockfile: u64) -> String {
-    let mut out = String::new();
+/// A full comparison can support a negative result. A match can stand with partial coverage.
+pub fn has_vulnerability_results(projects_compared: u64, records: u64) -> bool {
+    projects_compared > 0 || records > 0
+}
+
+/// What matching against OSV established, and the coverage it had, for the run and status.
+pub fn vulnerability_comparison(
+    of: &str,
+    projects: u64,
+    projects_compared: u64,
+    records: u64,
+    unknown_packages: u64,
+    not_read: u64,
+    no_lockfile: u64,
+) -> String {
+    let mut out = if has_vulnerability_results(projects_compared, records) {
+        format!(
+            "matched against {of}: {} in packages they use",
+            count(records, "known vulnerability", "known vulnerabilities")
+        )
+    } else if projects == 0 {
+        "no projects were found to compare".to_string()
+    } else {
+        "whether known vulnerabilities affect the projects could not be established because no project's lockfiles were compared in full with current vulnerability data".to_string()
+    };
+    if unknown_packages > 0 {
+        out.push_str(&format!(
+            ", and for {} whether one affects them cannot be told",
+            count(unknown_packages, "package", "packages")
+        ));
+    }
     if not_read > 0 {
         out.push_str(&format!(
             ", and the lockfiles of {} were not all read",

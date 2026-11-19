@@ -976,6 +976,19 @@ pub(crate) fn context(
     if let Some(said) = not_fresh(s, screen) {
         lines.push(("Not fresh", vec![(said, YELLOW)]));
     }
+    if s.estate.as_ref().is_some_and(|e| e.checkouts > 0)
+        && s.vulnerabilities.as_ref().is_some_and(|v| {
+            !crate::text::has_vulnerability_results(v.projects_compared, v.affected_records)
+        })
+    {
+        lines.push((
+            "OSV coverage",
+            vec![(
+                "0 projects compared in full. Vulnerability exposure is unknown.".to_string(),
+                YELLOW,
+            )],
+        ));
+    }
     lines.push(("Watching", clauses(watching_parts(s, screen))));
     let event_level = s.event_level.as_ref().and_then(event_level_short);
     if let Some(parts) = event_level.clone() {
@@ -1366,25 +1379,16 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
                     f.projects()
                 ),
             };
-            matched = format!(
-                "; matched against {of}: {} in packages they use",
-                count(
-                    v.affected_records,
-                    "known vulnerability",
-                    "known vulnerabilities"
-                )
-            );
-            if v.unknown_packages > 0 {
-                matched.push_str(&format!(
-                    ", and for {} whether one affects them cannot be told",
-                    count(v.unknown_packages, "package", "packages")
-                ));
-            }
-            // Beside the count, how many projects were not wholly read, so it never reads as all.
-            matched.push_str(&crate::text::not_wholly_read(
+            matched = crate::text::vulnerability_comparison(
+                &of,
+                s.estate.as_ref().map_or(0, |e| e.checkouts),
+                v.projects_compared,
+                v.affected_records,
+                v.unknown_packages,
                 v.projects_not_read,
                 v.projects_without_lockfile,
-            ));
+            );
+            matched.insert_str(0, "; ");
             // The one line of scope, after the count.
             if let Some(line) = scope {
                 matched.push_str(&format!(". {}", line.trim_end_matches('.')));

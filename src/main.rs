@@ -5257,27 +5257,23 @@ fn match_dependencies(run: &Run) -> Result<usize, Box<dyn Error>> {
 
 /// One sentence about the vulnerability data for the report line, with what matching found. It
 /// speaks for the projects found: whether those are all of them is the status's to say.
-fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Totals) -> String {
+fn feeds_sentence(
+    states: &[osv::State],
+    run_id: &str,
+    t: &vulnerabilities::Totals,
+    projects: u64,
+) -> String {
     let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
-    let mut matched = format!(
-        "matched against the package-lock.json, pnpm-lock.yaml and Cargo.lock of the projects found: {} in packages they use",
-        things(
-            t.records as i64,
-            "known vulnerability",
-            "known vulnerabilities"
-        )
-    );
-    if t.packages_unknown > 0 {
-        matched.push_str(&format!(
-            ", and for {} whether one affects them cannot be told",
-            things(t.packages_unknown as i64, "package", "packages")
-        ));
-    }
     let (without_lockfile, not_read) = vulnerabilities::project_counts(&t.unread_places);
-    matched.push_str(&text::not_wholly_read(
+    let matched = text::vulnerability_comparison(
+        "the package-lock.json, pnpm-lock.yaml and Cargo.lock of the projects found",
+        projects,
+        t.projects_compared as u64,
+        t.records as u64,
+        t.packages_unknown as u64,
         not_read as u64,
         without_lockfile as u64,
-    ));
+    );
     format!(
         "Vulnerability data from OSV: {}; {matched}.",
         clauses.join("; ")
@@ -5532,7 +5528,12 @@ fn summary_sentences(s: &status::Summary) -> String {
         &s.vulnerabilities.catalogue_compared,
     ));
     line.push(' ');
-    line.push_str(&feeds_sentence(&s.feeds, &s.run.id, &s.vulnerabilities));
+    line.push_str(&feeds_sentence(
+        &s.feeds,
+        &s.run.id,
+        &s.vulnerabilities,
+        t.checkouts as u64,
+    ));
     // What this build cannot read here is part of every report: in the clause of what is not
     // covered, and named by `immunity status`.
     line
