@@ -8,7 +8,7 @@ Immunity Core has no numbered release yet. Entries go by the day a change reache
 
 ### Changed
 
-- The project is now Immunity Core. Build package `immunity-core` to run `immunity`. The contract crate is `immunity-contract` 1.21.1 and the protobuf package is `immunity.v1`. Message format and field numbers stay at their previous values. The core’s own rule set is named `immunity` and its redaction kinds begin with `immunity:`.
+- The project is now Immunity Core. Build package `immunity-core` to run `immunity`. The contract crate is `immunity-contract` 1.21.1 and the protobuf package is `immunity.v1`. Message format and field numbers stay at their previous values. The core's own rule set is named `immunity` and its redaction kinds begin with `immunity:`.
 - The service and collector use the `ai.nuanu.immunity.core` namespace. This build starts a fresh format 9 store. See [updating and removing](docs/reference.md#updating-and-removing) before updating a running installation.
 
 - The pages `immunity view` writes list what Immunity Core reads. What this version has no reader for is no longer on them: folders macOS protects, files that run code by themselves and are only known by name, lockfiles of other kinds, published rules it cannot check. It stays in [docs/reference.md](docs/reference.md), in `immunity status --json` and in `immunity rules --all`.
