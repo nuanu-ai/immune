@@ -2,10 +2,13 @@
 //! in temporary folders, hidden worktrees and on other volumes, which the walk of the home
 //! folder never sees.
 //!
-//! The source is Claude Code's session files, `<sessions>/<folder>/*.jsonl`. Of a session
-//! only the `cwd` field of a line is read; nothing else from it reaches the store, the raw
+//! The sources are the session files of the coding agents in `SOURCES`, line-delimited JSON
+//! whose lines state the session's working folder: Claude Code's and Codex CLI's. Of a session
+//! only the working folder of a line is read; nothing else from it reaches the store, the raw
 //! input or the output. A working folder that still exists leads to the nearest folder
-//! above it that holds `.git`: that folder is the checkout. git is never run.
+//! above it that holds `.git`: that folder is the checkout. git is never run. The agents in
+//! `UNREAD` keep sessions whose working folder this version cannot read: their folder is only
+//! looked for, never listed, and when it is there the agent is named as not read.
 //!
 //! Sessions are deleted after a while and the checkout stays. So the candidates of a run
 //! are the working folders in the sessions plus the checkouts this reader already holds,
@@ -47,10 +50,110 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const READER: &str = "agent-folders";
 pub const KIND: &str = "checkouts in agent working folders";
 pub const BASIS: &str = "observed";
-/// Where Claude Code keeps its sessions, inside the home folder.
+/// Where Claude Code keeps its sessions, inside the home folder: the folder
+/// `--sessions-root` stands in for.
 pub const SESSIONS: &str = ".claude/projects";
 /// The note of a full reading when there are no sessions to read.
-pub const NOT_HERE: &str = "no Claude Code sessions on this machine";
+pub const NOT_HERE: &str = "no sessions of Claude Code or Codex CLI on this machine";
+/// How the reason's last clause begins when session files lead into folders macOS asks
+/// permission for; the folders follow.
+pub const FILES_NOT_LOOKED_INTO: &str = "session files not looked into: ";
+/// What a reading names, by the agent's name, as sessions this version does not read.
+pub const OTHER_AGENT: &str = "sessions of a coding agent";
+/// What it names, the same way, as session files kept compressed, which it does not read.
+pub const COMPRESSED: &str = "compressed session files of a coding agent";
+
+/// One agent's session files this reader reads.
+pub struct Source {
+    pub agent: &'static str,
+    /// The folder of the sessions, inside the home folder.
+    pub dir: &'static str,
+    /// How many folders lie between it and a session file.
+    pub depth: usize,
+    /// Where a line states the working folder, as a JSON pointer.
+    pub cwd: &'static str,
+    /// The quoted values of `type` whose lines always state it: such a line that does not is
+    /// of a shape this version does not know, and is counted as unparsed.
+    pub stated_by: &'static [&'static str],
+    /// The end of the name of a session file the agent compressed, which is not read.
+    pub compressed: Option<&'static str>,
+}
+
+/// Claude Code: `<dir>/<folder>/<session>.jsonl`, the working folder in `cwd`. It keeps them
+/// elsewhere when started with `CLAUDE_CONFIG_DIR`, which this reader cannot know.
+/// https://code.claude.com/docs/en/claude-directory
+pub const CLAUDE_CODE: Source = Source {
+    agent: "Claude Code",
+    dir: SESSIONS,
+    depth: 1,
+    cwd: "/cwd",
+    stated_by: &[],
+    compressed: None,
+};
+
+/// Codex CLI keeps a session as `sessions/<year>/<month>/<day>/rollout-*.jsonl`, and one
+/// archived flat in `archived_sessions`, inside `~/.codex`. Each line is
+/// `{"timestamp", "type", "payload"}`; the first, `session_meta`, and every `turn_context`
+/// state the working folder in `payload.cwd`. A file not changed for seven days is compressed
+/// with zstd to `.jsonl.zst`, which this version has no reader for.
+/// https://github.com/openai/codex/blob/main/codex-rs/rollout/src/lib.rs (the folders),
+/// https://github.com/openai/codex/blob/main/codex-rs/history/src/rollout_payload.rs (a line),
+/// https://github.com/openai/codex/blob/main/codex-rs/rollout/src/compression.rs
+const CODEX: Source = Source {
+    agent: "Codex CLI",
+    dir: ".codex/sessions",
+    depth: 3,
+    cwd: "/payload/cwd",
+    stated_by: &["\"session_meta\"", "\"turn_context\""],
+    compressed: Some(".jsonl.zst"),
+};
+
+/// Every agent whose sessions are read.
+pub static SOURCES: [Source; 3] = [
+    CLAUDE_CODE,
+    CODEX,
+    Source {
+        dir: ".codex/archived_sessions",
+        depth: 0,
+        ..CODEX
+    },
+];
+
+/// Agents that keep sessions in the home folder in a form whose working folder this version
+/// cannot read, with where.
+pub const UNREAD: [(&str, &str); 3] = [
+    // JSON lines whose working folder is given only as a hash of it.
+    // https://geminicli.com/docs/cli/session-management/
+    // https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingService.ts
+    ("Gemini CLI", ".gemini/tmp"),
+    // One JSON file for each session.
+    // https://github.com/continuedev/continue/blob/main/core/util/paths.ts
+    ("Continue", ".continue/sessions"),
+    // A format its documentation does not give.
+    // https://docs.github.com/en/copilot/concepts/agents/copilot-cli/chronicle
+    ("GitHub Copilot CLI", ".copilot/session-state"),
+];
+
+/// The agents of `UNREAD` whose folder is in `home`, whose names are `homes`. A folder is
+/// looked for and never listed or read, and the last name of its path is not followed. One
+/// whose path leads into a folder macOS asks permission for is not looked for.
+pub fn unread_here(home: &Path, homes: &[&Path]) -> Vec<&'static str> {
+    UNREAD
+        .iter()
+        .filter(|(_, dir)| {
+            let path = home.join(dir);
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return false;
+            };
+            match crate::guarded::real(parent, homes) {
+                crate::guarded::Real::At(real) => std::fs::symlink_metadata(real.join(name))
+                    .is_ok_and(|m| m.is_dir() || m.is_symlink()),
+                _ => false,
+            }
+        })
+        .map(|(agent, _)| *agent)
+        .collect()
+}
 
 /// Part of the store's schema (`store::schema`). A new store has no positions, so its first
 /// reading is from the first byte of every file.
@@ -101,8 +204,11 @@ pub struct Sessions {
     pub unreadable: usize,
     /// Folders of sessions that could not be listed.
     pub unlisted: usize,
-    /// Lines that mention `"cwd"` and are not JSON.
+    /// Lines that mention `"cwd"` and are not JSON, or lines of a kind that always states the
+    /// working folder and do not.
     pub unparsed: usize,
+    /// Session files kept compressed, by agent: not read.
+    pub compressed: BTreeMap<&'static str, usize>,
     /// Every distinct working folder, as recorded.
     pub folders: BTreeSet<String>,
     /// Folders macOS asks permission for that a session file, a link, leads into: not read.
@@ -161,11 +267,30 @@ impl Stat {
     }
 }
 
-/// Reads the working folders from every session file under `dir`, each from where `held`
-/// says the last reading stopped when that can be trusted, at `now`. The folder, and a
+impl Sessions {
+    /// Takes in what another source's reading read, within what the store keeps of all files.
+    /// What a reading cost stays each source's own.
+    pub fn add(&mut self, mut other: Sessions) {
+        self.files += other.files;
+        self.unreadable += other.unreadable;
+        self.unlisted += other.unlisted;
+        self.unparsed += other.unparsed;
+        for (agent, n) in other.compressed {
+            *self.compressed.entry(agent).or_default() += n;
+        }
+        self.folders.append(&mut other.folders);
+        self.guarded.append(&mut other.guarded);
+        self.held.append(&mut other.held);
+        within_bounds(&mut self.held);
+    }
+}
+
+/// Reads the working folders from every session file of `source` under `dir`, each from where
+/// `held` says the last reading stopped when that can be trusted, at `now`. The folder, and a
 /// session file, may be a link: it is not followed into a folder macOS asks permission for.
 /// `homes` are the home folder's names.
 pub fn sessions(
+    source: &'static Source,
     dir: &Path,
     homes: &[&Path],
     held: &BTreeMap<PathBuf, Held>,
@@ -182,71 +307,123 @@ pub fn sessions(
         Err(e) => return Found::Failed(format!("{}: {e}", dir.display())),
         Ok(_) => {}
     }
-    let projects = match std::fs::read_dir(listed) {
+    let entries = match std::fs::read_dir(listed) {
         Ok(entries) => entries,
         Err(e) => return Found::Failed(format!("{}: {e}", dir.display())),
     };
-    // A file whose change time is before this had not changed for a while.
-    let settled_before = now
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
-        .saturating_sub(SETTLE_NS);
-    let mut out = Sessions::default();
-    for project in projects {
-        let Ok(project) = project else {
-            out.unlisted += 1;
-            continue;
-        };
-        if !project.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let Ok(files) = std::fs::read_dir(project.path()) else {
-            out.unlisted += 1;
-            continue;
-        };
-        for file in files {
-            let Ok(file) = file else {
-                out.unlisted += 1;
+    let mut walk = Walk {
+        source,
+        homes,
+        held,
+        // A file whose change time is before this had not changed for a while.
+        settled_before: now
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+            .saturating_sub(SETTLE_NS),
+        out: Sessions::default(),
+    };
+    walk.entries(entries, source.depth);
+    within_bounds(&mut walk.out.held);
+    Found::Read(walk.out)
+}
+
+/// One reading of a source's folder.
+struct Walk<'a> {
+    source: &'static Source,
+    homes: &'a [&'a Path],
+    held: &'a BTreeMap<PathBuf, Held>,
+    settled_before: i64,
+    out: Sessions,
+}
+
+impl Walk<'_> {
+    /// Reads the session files `depth` folders below the entries of a folder. A folder in
+    /// between is entered only when it is one, not a link to one.
+    fn entries(&mut self, entries: std::fs::ReadDir, depth: usize) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                self.out.unlisted += 1;
                 continue;
             };
-            let path = file.path();
+            let path = entry.path();
+            if depth > 0 {
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                match std::fs::read_dir(&path) {
+                    Ok(inner) => self.entries(inner, depth - 1),
+                    Err(_) => self.out.unlisted += 1,
+                }
+                continue;
+            }
+            if let Some(end) = self.source.compressed
+                && path.as_os_str().as_bytes().ends_with(end.as_bytes())
+            {
+                *self.out.compressed.entry(self.source.agent).or_default() += 1;
+                continue;
+            }
             if path.extension().is_none_or(|e| e != "jsonl") {
                 continue;
             }
-            let path = match crate::guarded::followed(&path, homes) {
+            let path = match crate::guarded::followed(&path, self.homes) {
                 Ok(path) => path,
                 Err(g) => {
-                    out.guarded.insert(g);
+                    self.out.guarded.insert(g);
                     continue;
                 }
             };
-            out.files += 1;
-            read_session(&path, held.get(&path), settled_before, &mut out);
+            self.out.files += 1;
+            let before = self.held.get(&path);
+            read_session(
+                self.source,
+                &path,
+                before,
+                self.settled_before,
+                &mut self.out,
+            );
         }
     }
-    within_bounds(&mut out.held);
-    Found::Read(out)
 }
 
-/// The working folders and unparsed lines of some lines of a session.
-#[derive(Default)]
+/// The working folders and unparsed lines of some lines of a session of `source`.
 struct Parsed {
+    source: &'static Source,
     folders: BTreeSet<String>,
     unparsed: usize,
 }
 
 impl Parsed {
+    fn of(source: &'static Source) -> Parsed {
+        Parsed {
+            source,
+            folders: BTreeSet::new(),
+            unparsed: 0,
+        }
+    }
+
     fn take(&mut self, line: &[u8]) {
         // Most of the volume is text that never names a folder: skip it unparsed.
-        if !contains(line, b"\"cwd\"") {
+        let stated_by = self.source.stated_by;
+        if !contains(line, b"\"cwd\"") && !stated_by.iter().any(|t| contains(line, t.as_bytes())) {
             return;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
             self.unparsed += 1;
             return;
         };
-        if let Some(cwd) = value.get("cwd").and_then(|v| v.as_str()) {
-            self.folders.insert(cwd.to_string());
+        match value.pointer(self.source.cwd).and_then(|v| v.as_str()) {
+            Some(cwd) => {
+                self.folders.insert(cwd.to_string());
+            }
+            // A line of a kind that always states it, and does not: a shape not known.
+            None if value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| stated_by.iter().any(|s| s.trim_matches('"') == t)) =>
+            {
+                self.unparsed += 1;
+            }
+            None => {}
         }
     }
 }
@@ -254,8 +431,14 @@ impl Parsed {
 /// Reads one session file into `out`. A file that cannot be read keeps its entry, and what
 /// that entry holds still counts: what was established is not dropped because a reading
 /// failed, and the reading is partial.
-fn read_session(path: &Path, before: Option<&Held>, settled_before: i64, out: &mut Sessions) {
-    let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+fn read_session(
+    source: &'static Source,
+    path: &Path,
+    before: Option<&Held>,
+    settled_before: i64,
+    out: &mut Sessions,
+) {
+    let (mut whole, mut last) = (Parsed::of(source), Parsed::of(source));
     let read = File::open(path).and_then(|mut file| {
         let then = Then {
             stat: Stat::of(&file.metadata()?),
@@ -596,9 +779,19 @@ mod tests {
             self.root.join(rel)
         }
 
-        /// Reads the folder at `now`, going on from `held`.
+        /// Reads the folder at `now` as Claude Code's, going on from `held`.
         fn read(&self, held: &BTreeMap<PathBuf, Held>, now: SystemTime) -> Sessions {
-            match sessions(&self.root, &[Path::new("/nonexistent-home")], held, now) {
+            self.read_as(&SOURCES[0], held, now)
+        }
+
+        fn read_as(
+            &self,
+            source: &'static Source,
+            held: &BTreeMap<PathBuf, Held>,
+            now: SystemTime,
+        ) -> Sessions {
+            let homes = [Path::new("/nonexistent-home")];
+            match sessions(source, &self.root, &homes, held, now) {
                 Found::Read(s) => s,
                 _ => panic!("the folder of sessions was not read"),
             }
@@ -913,7 +1106,7 @@ mod tests {
                 settled_before,
                 change_time_kept: true,
             };
-            let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+            let (mut whole, mut last) = (Parsed::of(&CLAUDE_CODE), Parsed::of(&CLAUDE_CODE));
             read_from(
                 &mut Cursor::new(Vec::new()),
                 &then,
@@ -946,7 +1139,7 @@ mod tests {
                 settled_before: 1_000,
                 change_time_kept,
             };
-            let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+            let (mut whole, mut last) = (Parsed::of(&CLAUDE_CODE), Parsed::of(&CLAUDE_CODE));
             let mut cost = Cost::default();
             let held = read_from(
                 &mut Cursor::new(text.as_bytes().to_vec()),
@@ -1125,7 +1318,7 @@ mod tests {
             settled_before: 0,
             change_time_kept: true,
         };
-        let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+        let (mut whole, mut last) = (Parsed::of(&CLAUDE_CODE), Parsed::of(&CLAUDE_CODE));
         let mut cost = Cost::default();
         let before = read_from(
             &mut Cursor::new(head.clone().into_bytes()),
@@ -1148,7 +1341,7 @@ mod tests {
             settled_before: 0,
             change_time_kept: true,
         };
-        let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+        let (mut whole, mut last) = (Parsed::of(&CLAUDE_CODE), Parsed::of(&CLAUDE_CODE));
         assert!(read_from(&mut failing, &then, &mut whole, &mut last, &mut cost).is_err());
 
         // A real file that cannot be opened: its entry and what that holds stay.
@@ -1254,5 +1447,168 @@ mod tests {
         assert_eq!(read.held.len(), 64);
         assert!(!read.held.contains_key(&t.file("-invented-a/s64.jsonl")));
         assert_eq!(read.folders.len(), 65 * HELD_FOLDERS);
+    }
+
+    /// A line of a Codex CLI rollout, as it writes one: `type` and `payload`.
+    fn codex(kind: &str, payload: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"2026-11-19T09:00:00.000Z\",\"type\":\"{kind}\",\"payload\":{payload}}}\n"
+        )
+    }
+
+    fn codex_meta(cwd: &str) -> String {
+        codex(
+            "session_meta",
+            &format!(
+                "{{\"session_id\":\"00000000-0000-4000-8000-000000000002\",\"id\":\"00000000-0000-4000-8000-000000000002\",\
+                 \"timestamp\":\"2026-11-19T09:00:00.000Z\",\"cwd\":\"{cwd}\",\"originator\":\"codex_cli_rs\",\
+                 \"cli_version\":\"0.200.0\"}}"
+            ),
+        )
+    }
+
+    fn codex_message(n: usize) -> String {
+        codex(
+            "response_item",
+            &format!(
+                "{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"invented request {n}\"}}]}}"
+            ),
+        )
+    }
+
+    #[test]
+    fn a_working_folder_named_only_in_a_codex_session_is_read_and_a_compressed_one_is_counted() {
+        // Codex CLI keeps its sessions by date, three folders deep, and states the working
+        // folder in the payload of its first line and of each turn's context.
+        let t = Trial::new("codex");
+        let day = t.file("2026/11/19");
+        std::fs::create_dir_all(&day).unwrap();
+        let text = codex_meta("/invented/c0")
+            + &codex_message(1)
+            + &codex(
+                "turn_context",
+                "{\"cwd\":\"/invented/c1\",\"approval_policy\":\"on-request\",\"model\":\"invented\"}",
+            )
+            + &codex(
+                "event_msg",
+                "{\"type\":\"user_message\",\"message\":\"the cwd is /invented/not-a-folder\"}",
+            );
+        std::fs::write(day.join("rollout-2026-11-19T09-00-00-a.jsonl"), text).unwrap();
+        // Compressed after a week: not read, and counted by agent.
+        std::fs::write(
+            day.join("rollout-2026-11-12T09-00-00-b.jsonl.zst"),
+            "\u{28}",
+        )
+        .unwrap();
+        // Not at the depth sessions are kept at.
+        std::fs::write(t.file("2026/stray.jsonl"), codex_meta("/invented/c9")).unwrap();
+
+        let read = t.read_as(&SOURCES[1], &BTreeMap::new(), later(10));
+
+        assert_eq!(folders(&read), ["/invented/c0", "/invented/c1"]);
+        assert_eq!((read.files, read.unparsed), (1, 0));
+        assert_eq!(read.compressed, BTreeMap::from([("Codex CLI", 1)]));
+        // Claude Code's sessions are not Codex's: the same folder read as Claude Code's finds
+        // no session at its depth.
+        assert!(t.read(&BTreeMap::new(), later(10)).folders.is_empty());
+    }
+
+    #[test]
+    fn a_codex_session_that_states_no_working_folder_names_none_and_its_line_is_counted() {
+        // A first line or a turn's context without the working folder is a shape this
+        // version does not know: never dropped in silence.
+        let t = Trial::new("codex-none");
+        // Archived sessions are kept flat.
+        let path = t.file("rollout-2026-11-19T09-00-00-c.jsonl");
+        let text = codex("session_meta", "{\"id\":\"00000000-0000-4000-8000-000000000003\"}")
+            + &codex("turn_context", "{\"workdir\":\"/invented/c2\"}")
+            + &codex_message(1)
+            // Claude Code's shape, not Codex's.
+            + &turn("/invented/c3", 2);
+        std::fs::write(&path, text).unwrap();
+
+        let read = t.read_as(&SOURCES[2], &BTreeMap::new(), later(10));
+
+        assert!(read.folders.is_empty());
+        assert_eq!((read.files, read.unparsed), (1, 2));
+        assert_eq!(read.held[&path].unparsed, 2);
+    }
+
+    #[test]
+    fn what_each_agents_sessions_gave_is_told_together_within_the_bound_over_all_files() {
+        // A file or a line one agent's sessions could not give is not lost because another's
+        // were read too, and the store keeps no more of all of them than of one.
+        let entry = |file: usize| Held {
+            stat: Stat {
+                inode: file as u64,
+                ctime_ns: 1,
+            },
+            settled: true,
+            position: 0,
+            digest: String::new(),
+            folders: (0..HELD_FOLDERS)
+                .map(|i| format!("/{file:03}-{i:02}-{}", "p".repeat(HELD_FOLDER_BYTES - 8)))
+                .collect(),
+            unparsed: 0,
+        };
+        let one = |agent: &'static str, n: usize, files: std::ops::Range<usize>| Sessions {
+            files: n,
+            unreadable: n,
+            unlisted: n,
+            unparsed: n,
+            compressed: BTreeMap::from([(agent, n)]),
+            folders: BTreeSet::from([format!("/invented/{n}")]),
+            guarded: BTreeSet::from([PathBuf::from(format!("/invented/g{n}"))]),
+            held: files
+                .map(|f| (PathBuf::from(format!("/invented/{f:03}.jsonl")), entry(f)))
+                .collect(),
+            ..Sessions::default()
+        };
+        let mut all = one("Claude Code", 1, 0..40);
+        all.add(one("Codex CLI", 2, 40..80));
+
+        assert_eq!(
+            said(&all),
+            (
+                3,
+                3,
+                3,
+                3,
+                BTreeSet::from(["/invented/1".into(), "/invented/2".into()])
+            )
+        );
+        assert_eq!(
+            all.compressed,
+            BTreeMap::from([("Claude Code", 1), ("Codex CLI", 2)])
+        );
+        assert_eq!(all.guarded.len(), 2);
+        assert_eq!(all.held.len(), 64);
+    }
+
+    #[test]
+    fn another_agents_session_store_is_named_without_reading_inside_it() {
+        // Present is all that is learned of it: a store that cannot be listed is named all
+        // the same, and one reached through a folder macOS asks permission for is not looked
+        // for.
+        let t = Trial::new("unread");
+        let home = t.file("home");
+        let homes = [home.as_path()];
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(unread_here(&home, &homes).is_empty());
+
+        let store = home.join(".gemini/tmp");
+        std::fs::create_dir_all(store.join("invented-hash/chats")).unwrap();
+        let mode = |m: u32| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&store, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        mode(0o000);
+        let named = unread_here(&home, &homes);
+        mode(0o755);
+        assert_eq!(named, ["Gemini CLI"]);
+
+        std::fs::create_dir_all(home.join("Documents/kept/sessions")).unwrap();
+        std::os::unix::fs::symlink(home.join("Documents/kept"), home.join(".continue")).unwrap();
+        assert_eq!(unread_here(&home, &homes), ["Gemini CLI"]);
     }
 }

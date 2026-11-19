@@ -1438,15 +1438,27 @@ pub fn projects_found(latest: &[Latest], this: Option<&str>) -> v1::ProjectsFoun
             continue;
         }
         // Projects are found by walking and by reading sessions: a gap that is not a place
-        // left out is a failure.
-        let cause = match r.and_then(|r| r.cause.as_deref()) {
-            Some("not_given") => store::Cause::NotGiven,
-            _ => store::Cause::Failed,
-        };
+        // left out is a failure. Sessions this version has no reader for are a place it does
+        // not enter, said in the reading's own words.
+        let (cause, reason) = (
+            r.and_then(|r| r.cause.as_deref()),
+            r.and_then(|r| r.reason.as_deref()),
+        );
         // A walk limited to the folder given says so in the program's own words.
-        let why = match r.and_then(|r| r.reason.as_deref()) {
-            Some(crate::checkouts::ONLY_GIVEN) => crate::checkouts::ONLY_GIVEN.to_string(),
+        let why = match (cause, reason) {
+            (_, Some(crate::checkouts::ONLY_GIVEN)) => crate::checkouts::ONLY_GIVEN.to_string(),
+            // The folders macOS protects come last and are named apart, never in the why.
+            (Some("no_reader"), Some(reason)) => reason
+                .split(crate::agent_folders::FILES_NOT_LOOKED_INTO)
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches("; ")
+                .to_string(),
             _ => format!("the reading of {kind} was not full"),
+        };
+        let cause = match cause {
+            Some("not_given" | "no_reader") => store::Cause::NotGiven,
+            _ => store::Cause::Failed,
         };
         gaps.push((cause, why));
     }
@@ -1608,6 +1620,15 @@ fn plain_lack(what: &str, name: Option<&str>) -> String {
         }
         crate::lockfiles::LINKED => {
             return format!("{} that is a link", name.unwrap_or("a lockfile"));
+        }
+        crate::agent_folders::OTHER_AGENT => {
+            return format!("sessions of {}", name.unwrap_or("other coding agents"));
+        }
+        crate::agent_folders::COMPRESSED => {
+            return format!(
+                "compressed sessions of {}",
+                name.unwrap_or("other coding agents")
+            );
         }
         _ if name.is_some() => return name.unwrap_or_default().to_string(),
         crate::lockfiles::NOT_LOOKED => {

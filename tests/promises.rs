@@ -3841,6 +3841,137 @@ fn a_checkout_outside_the_home_folder_is_found_through_an_agent_session_and_its_
 }
 
 #[test]
+fn a_checkout_named_only_in_a_codex_session_is_found_and_an_agent_whose_sessions_are_not_read_is_named()
+ {
+    // Codex CLI's sessions are read as Claude Code's are. Another agent's sessions in the home
+    // folder are never read, and that agent is named as not read in the status and in the
+    // check's line, so the projects are not said to be all found.
+    let a = Agents::new("agent-codex");
+    let api = checkout(&a.outside, "api");
+    std::fs::create_dir_all(api.join("src")).unwrap();
+    let meta = serde_json::json!({
+        "timestamp": "2026-11-19T09:00:00.000Z",
+        "type": "session_meta",
+        "payload": {"id": "00000000-0000-4000-8000-000000000004", "cwd": api.join("src"),
+                    "originator": "codex_cli_rs", "cli_version": "0.200.0"},
+    });
+    put(
+        &a.home,
+        ".codex/sessions/2026/11/19/rollout-2026-11-19T09-00-00-d.jsonl",
+        &format!("{meta}\n"),
+    );
+    a.run();
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'"
+        ),
+        [a.outside_id("api")]
+    );
+    // Nothing is named while no such store is here.
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+    assert_eq!(
+        status_json(&a.store())["no_reader_for"]["items"],
+        serde_json::json!([])
+    );
+
+    std::fs::create_dir_all(a.home.join(".gemini/tmp/invented-hash/chats")).unwrap();
+    // Codex compresses a session it has not touched for a week, which is not read.
+    put(
+        &a.home,
+        ".codex/sessions/2026/11/12/rollout-2026-11-12T09-00-00-e.jsonl.zst",
+        "(",
+    );
+    let report = a.run();
+
+    let why = "sessions of Gemini CLI are not read; \
+               1 compressed session file of Codex CLI is not read";
+    assert_eq!(a.agent_coverage(), [format!("partial|{why}")]);
+    let status = status_json(&a.store());
+    assert_eq!(
+        status["no_reader_for"]["items"],
+        serde_json::json!([
+            {"what": "compressed session files of a coding agent", "what_text": "Codex CLI",
+             "where_count": 1},
+            {"what": "sessions of a coding agent", "what_text": "Gemini CLI", "where_count": 1}
+        ])
+    );
+    let item = status["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "not-understood")
+        .unwrap_or_else(|| panic!("{:#}", status["not_covered"]));
+    assert_eq!(
+        item["examples_text"],
+        serde_json::json!(["compressed sessions of Codex CLI", "sessions of Gemini CLI"])
+    );
+    assert!(
+        report.contains("files this version does not understand yet"),
+        "{report}"
+    );
+    let (_, text, _) = status_out(&a.store(), &[]);
+    assert!(text.contains("Gemini CLI"), "{text}");
+    // What is said of the projects as a whole speaks of the projects found, with why.
+    let found = &status["vulnerabilities"]["projects_found"];
+    assert_eq!(
+        (&found["all"], &found["cause"], &found["why"]),
+        (
+            &serde_json::json!(false),
+            &serde_json::json!("not_given"),
+            &serde_json::json!(why)
+        ),
+        "{found}"
+    );
+    // The checkout found stays found, and goes once it is gone: what was found is compared
+    // in full all the same.
+    let live = || {
+        rows(
+            &a.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'",
+        )
+    };
+    assert_eq!(live(), [a.outside_id("api")]);
+    std::fs::remove_dir_all(&api).unwrap();
+    a.run();
+    assert!(live().is_empty());
+}
+
+#[test]
+fn a_folder_of_codex_sessions_inside_a_folder_macos_protects_is_not_looked_into_while_claude_codes_are_read()
+ {
+    let a = Agents::new("agent-codex-guarded");
+    let app = checkout(&a.outside, "app");
+    session(&a.sessions, "s1", &[&app]);
+    std::fs::create_dir_all(a.home.join("Documents/kept/sessions")).unwrap();
+    std::os::unix::fs::symlink(a.home.join("Documents/kept"), a.home.join(".codex")).unwrap();
+
+    a.run();
+
+    let coverage = a.agent_coverage();
+    assert!(
+        coverage[0].starts_with("partial|session files not looked into: "),
+        "{coverage:?}"
+    );
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'"
+        ),
+        [a.outside_id("app")]
+    );
+    // With another agent named too, the folder stays out of what is said of the projects: it
+    // is named apart.
+    std::fs::create_dir_all(a.home.join(".gemini/tmp")).unwrap();
+    a.run();
+    let found = &status_json(&a.store())["vulnerabilities"]["projects_found"];
+    assert_eq!(
+        found["why"], "sessions of Gemini CLI are not read",
+        "{found}"
+    );
+}
+
+#[test]
 fn a_checkout_seen_by_both_readers_is_one_entity() {
     // Two readers that find the same checkout must not make the owner see it twice.
     let a = Agents::new("agent-both");
@@ -3942,7 +4073,7 @@ fn a_checkout_whose_folder_is_gone_is_removed_once() {
 
 #[test]
 fn a_missing_session_folder_is_not_applicable_not_a_failure() {
-    // Without Claude Code there is nothing to read; that must not look like a gap.
+    // Without Claude Code or Codex CLI there is nothing to read; that must not look like a gap.
     let dir = Dir::new("agent-absent");
     let store = dir.store();
     let brew = dir.input("brew.txt", SAMPLE);
@@ -3957,7 +4088,7 @@ fn a_missing_session_folder_is_not_applicable_not_a_failure() {
             "SELECT completeness, reason FROM coverage
              WHERE reader = 'agent-folders' ORDER BY id DESC LIMIT 1"
         ),
-        ["full|no Claude Code sessions on this machine"]
+        ["full|no sessions of Claude Code or Codex CLI on this machine"]
     );
     // Brew, the home walk and lockfiles; the absent sessions are not a reader that read.
     assert!(report.starts_with("3 readers,"), "{report}");
@@ -4550,7 +4681,7 @@ fn projects_kept_in_desktop_or_documents_are_said_not_looked_into_and_the_list_n
     assert!(
         projects.contains("<h2>Projects found</h2>")
             && projects.contains(
-                "that were found on this Mac, with how many of their dependencies are known from the files that list them. They are looked for in your home folder, up to 5 folders down, and in the folders your coding agents worked in.</p>"
+                "that were found on this Mac, with how many of their dependencies are known from the files that list them. They are looked for in your home folder, up to 5 folders down, and in the folders Claude Code and Codex CLI worked in.</p>"
             ),
         "{projects}"
     );
