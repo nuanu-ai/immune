@@ -1693,6 +1693,8 @@ struct Survey {
     own: Vec<Vec<String>>,
     /// Every statement that stands. Those not contradicted are not servers.
     standing: Vec<owner::Standing>,
+    /// Whether the statements were read from a store: without one, none was applied.
+    stored: bool,
     said: Vec<String>,
     third_party: usize,
     several_names: usize,
@@ -1703,13 +1705,13 @@ struct Survey {
 /// What `immunity servers` says when there is no store at the path to read statements from.
 const NO_WORD: &str = "No store was found, so no statement about a server was applied.";
 
-/// The owner's statements that stand, from the store if there is one.
-fn owner_word(store: &Path) -> Result<Vec<owner::Standing>, Box<dyn Error>> {
+/// The owner's statements that stand, from the store; `None` when there is no store.
+fn owner_word(store: &Path) -> Result<Option<Vec<owner::Standing>>, Box<dyn Error>> {
     if !store.is_file() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let conn = store::open_read_only(store)?;
-    Ok(owner::standing(&conn)?)
+    Ok(Some(owner::standing(&conn)?))
 }
 
 /// Whether the tailnet's name for a system is one the server check cannot read at all.
@@ -1721,7 +1723,9 @@ fn device(platform: Option<&str>) -> bool {
 /// and never runs ssh.
 fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     let dir = home(&args.store).join("sweep");
-    let standing = owner_word(&args.store)?;
+    let word = owner_word(&args.store)?;
+    let stored = word.is_some();
+    let standing = word.unwrap_or_default();
     let traces = [
         (
             ssh_config::READER,
@@ -2019,6 +2023,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
         theirs,
         own,
         standing,
+        stored,
         said,
         third_party,
         several_names,
@@ -2082,7 +2087,7 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
             s.rows.iter().filter(|r| !r.read).count()
         ),
         // With no store at the path, a wrong `--store` would leave the statements out in silence.
-        owner_word: if args.store.is_file() {
+        owner_word: if s.stored {
             word_line(&s.standing)
         } else {
             Some(NO_WORD.to_string())

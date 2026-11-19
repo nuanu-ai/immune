@@ -2403,6 +2403,55 @@ fn a_hook_in_a_folder_git_now_runs_hooks_from_is_new_where_an_earlier_run_told_t
     );
 }
 
+/// A pnpm file in a checkout made in the launch agents' folder, so it is watched in two places:
+/// as a launch agent and as the project's. The project stops being a checkout as the file
+/// changes, in one run: its place in the project is gone, and the launch agents' reading still
+/// reads its content, which changed.
+fn gone_from_one_place_changed_in_another(tag: &str) -> Estate {
+    let e = Estate::new(tag);
+    let agents = e.checkout("Library/LaunchAgents");
+    let file = agents.join(".pnpmfile.cjs");
+    put(&file, "module.exports = {};\n");
+    e.run_in(&agents);
+    e.run_in(&agents);
+    std::fs::remove_dir_all(agents.join(".git")).unwrap();
+    put(&file, "module.exports = { hooks: {} };\n");
+    e.run_in(&agents);
+    e
+}
+
+#[test]
+fn a_file_gone_from_one_place_and_changed_in_another_in_one_run_is_counted_as_gone_and_as_changed()
+{
+    let e = gone_from_one_place_changed_in_another("gone-and-changed");
+    let path = "Library/LaunchAgents/.pnpmfile.cjs";
+    let listed: Vec<String> = e.status()["watched"]["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["path_text"] == path)
+        .map(|c| c["change"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        listed.contains(&"gone".to_string()) && listed.contains(&"changed".to_string()),
+        "{listed:?}"
+    );
+    // The checkout's `.git` was an entry of the launch agents' folder too.
+    let since = &e.status()["watched"]["since_last_reading"];
+    assert_eq!((&since["gone"], &since["changed"]), (&2.into(), &1.into()));
+}
+
+#[test]
+fn a_file_gone_from_one_place_whose_content_another_still_reads_journals_no_removed_digest() {
+    let e = gone_from_one_place_changed_in_another("gone-still-read");
+    assert_eq!(
+        e.rows(
+            "SELECT old_value FROM journal WHERE entry = 'removed' AND predicate = 'has_content'"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn a_hook_another_checkout_watched_as_a_hook_before_this_run_is_not_new_where_a_second_starts_using_it()
  {

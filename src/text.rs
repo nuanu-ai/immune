@@ -189,9 +189,8 @@ impl Matched {
         let mut not = Vec::new();
         if self.not_read > 0 {
             not.push(format!(
-                "the lockfiles of {} were not all read, so whether a known vulnerability affects {} cannot be told",
-                count(self.not_read, "project", "projects"),
-                if self.not_read == 1 { "it" } else { "them" }
+                "the lockfiles of {} were not all read, so whether a known vulnerability affects what was not read cannot be told",
+                count(self.not_read, "project", "projects")
             ));
         }
         if self.no_lockfile > 0 {

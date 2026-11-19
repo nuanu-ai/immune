@@ -80,7 +80,9 @@ pub fn hook_departure(kind: &str, event: &crate::store::Event) -> bool {
 /// Journals the digest a file that is gone had as the removal of its content, so that the
 /// finding that it is gone rests on it (`findings::raise`). The file took its content reading
 /// with it and journaled nothing (`lifecycle::retract_inside`). An entry watched only for
-/// presence, or whose content was never read, had no digest and journals nothing.
+/// presence, or whose content was never read, had no digest and journals nothing. Nor does a
+/// file whose content another place still reads: what this run retracted of it is a digest a
+/// change replaced, not one the file went with.
 pub fn content_gone(
     tx: &rusqlite::Transaction,
     r: &crate::store::Reading,
@@ -93,7 +95,10 @@ pub fn content_gone(
          FROM assertion
          WHERE retracted_by = ?2 AND reader = ?3 AND scope = ?4 AND kind = ?5
            AND predicate = 'has_content'
-           AND (object GLOB 'sha256:*' OR object GLOB 'value sha256:*')",
+           AND (object GLOB 'sha256:*' OR object GLOB 'value sha256:*')
+           AND NOT EXISTS (SELECT 1 FROM assertion
+                           WHERE layer = 'live' AND reader = ?3 AND scope = ?4 AND kind = ?5
+                             AND predicate = 'has_content')",
         rusqlite::params![r.at, r.run_id, READER, id, CONTENT],
     )?;
     Ok(())

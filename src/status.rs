@@ -495,11 +495,9 @@ fn path_of(id: &str) -> &str {
 fn file_changes(conn: &Connection, base: &Baselines) -> rusqlite::Result<Vec<FileChange>> {
     let mut events = journaled(conn, None, Some(watched::READER), base)?;
     events.retain(|e| !e.first && !e.hook_still_active);
-    // A file new or gone in a run is not also changed in it: a gone file's content is journaled
-    // as removed for its finding (`watched::content_gone`).
-    let new_or_gone: HashSet<(&str, &str)> = events
+    let new: HashSet<(&str, &str)> = events
         .iter()
-        .filter(|e| matches!(e.entry.as_str(), "added" | "removed") && e.predicate == "watched_as")
+        .filter(|e| e.entry == "added" && e.predicate == "watched_as")
         .map(|e| (e.run_id.as_str(), e.subject.as_str()))
         .collect();
     // The kind of each file, from its latest `watched_as`, live or retracted.
@@ -519,8 +517,10 @@ fn file_changes(conn: &Connection, base: &Baselines) -> rusqlite::Result<Vec<Fil
         let (change, id, kind) = match (e.entry.as_str(), e.predicate.as_str()) {
             ("added", "watched_as") => ("new", &e.subject, e.new.clone()),
             ("removed", "watched_as") => ("gone", &e.subject, e.old.clone()),
-            ("added" | "changed" | "removed", "has_content" | "links_to")
-                if !new_or_gone.contains(&(e.run_id.as_str(), e.scope.as_str())) =>
+            // The removal of a content is journaled only for a file that went, with the
+            // digest it had (`watched::content_gone`): that is not a change of the file.
+            ("added" | "changed", "has_content" | "links_to") | ("removed", "links_to")
+                if !new.contains(&(e.run_id.as_str(), e.scope.as_str())) =>
             {
                 ("changed", &e.scope, kind_of.get(&e.scope).cloned())
             }
