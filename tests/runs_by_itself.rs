@@ -4120,6 +4120,356 @@ fn an_indicator_taken_off_the_list_leaves_its_finding_open_for_the_owner() {
     );
 }
 
+const MATCH_KIND: &str = "indicators matched against watched files and texts read in checkouts";
+
+/// The live indicator matches, as file and indicator, sorted.
+fn indicator_matches(e: &Estate) -> Vec<String> {
+    e.rows(
+        "SELECT subject, object FROM assertion WHERE layer = 'live'
+           AND predicate = 'matches_indicator' ORDER BY subject, object",
+    )
+}
+
+/// Two invented indicators.
+const LIST_AB: &str = r#"[{"kind": "domain-name:value", "value": "a.sample.invalid"},
+    {"kind": "domain-name:value", "value": "b.sample.invalid"}]"#;
+
+/// A project six folders down, past the depth of the whole walk.
+const DEEP: &str = "src/clients/acme/apps/web/frontend";
+
+/// A lockfile that names `host`.
+fn naming(host: &str) -> String {
+    LOCK.replace("registry.npmjs.org", host)
+}
+
+/// A live match as `indicator_matches` gives it.
+fn matched(file: &str, host: &str) -> String {
+    format!("file:machine:mac/{file}|[domain-name:value = '{host}']")
+}
+
+/// The latest cause of the reading of matches.
+fn match_cause(e: &Estate) -> String {
+    e.rows(&format!(
+        "SELECT cause FROM coverage WHERE kind = '{MATCH_KIND}' ORDER BY id DESC LIMIT 1"
+    ))
+    .concat()
+}
+
+/// The project `DEEP`, found by a run pointed nearer, whose lockfile names `a.sample.invalid`.
+fn deep_match(e: &Estate) -> PathBuf {
+    let deep = e.checkout(DEEP);
+    put(&deep.join("package-lock.json"), &naming("a.sample.invalid"));
+    e.list(LIST_AB);
+    e.run_in(&e.home().join("src"));
+    deep
+}
+
+#[test]
+fn a_new_text_match_raises_a_finding_and_a_match_made_again_as_it_was_raises_nothing_new() {
+    let e = Estate::new("match-raised");
+    deep_match(&e);
+    let value = "[domain-name:value = 'a.sample.invalid']".to_string();
+    assert_eq!(
+        e.findings(false),
+        [(
+            "indicator.match".to_string(),
+            "open".to_string(),
+            format!("~/{DEEP}/package-lock.json"),
+            value
+        )]
+    );
+    e.seen();
+    e.full();
+    assert_eq!(
+        indicator_matches(&e),
+        [matched(
+            &format!("{DEEP}/package-lock.json"),
+            "a.sample.invalid"
+        )]
+    );
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+}
+
+#[test]
+fn a_match_in_a_file_not_read_this_run_is_made_again_as_it_was_until_the_file_is_read_without_it() {
+    let e = Estate::new("match-carried");
+    let deep = deep_match(&e);
+    // The text no longer names the indicator: only making the match again keeps it.
+    put(&deep.join("package-lock.json"), LOCK);
+    e.full();
+    assert_eq!(
+        indicator_matches(&e),
+        [matched(
+            &format!("{DEEP}/package-lock.json"),
+            "a.sample.invalid"
+        )]
+    );
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|1 known checkout was not looked into"
+    );
+    assert_eq!(match_cause(&e), "not_given");
+    e.run_in(&e.home().join("src"));
+    assert!(indicator_matches(&e).is_empty());
+    assert_eq!(e.coverage(MATCH_KIND), "full|");
+}
+
+#[test]
+fn a_hash_match_whose_file_changed_is_retracted_though_its_checkout_was_not_looked_into_and_its_bytes_back_raise_a_new_finding()
+ {
+    // The folder of a person's SSH files kept as a checkout: hidden, so the whole walk does
+    // not look into it, while the file is read as a watched place at every check.
+    let e = Estate::new("match-hash-held");
+    let ssh = e.checkout(".ssh");
+    let rc = ssh.join("rc");
+    let bytes = "echo sample\n";
+    put(&rc, bytes);
+    e.list(&format!(
+        r#"[{{"kind": "file:hashes.'SHA-256'", "value": "{}"}}]"#,
+        sha256_of(bytes)
+    ));
+    e.run_in(&ssh);
+    assert_eq!(e.rules(), ["indicator.match"]);
+    e.seen();
+    put(&rc, "echo other\n");
+    e.full();
+    assert!(indicator_matches(&e).is_empty());
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|1 known checkout was not looked into"
+    );
+    // The change is a finding of its own, beside the one the bytes coming back raise.
+    e.seen();
+    put(&rc, bytes);
+    e.full();
+    assert!(e.rules().contains(&"indicator.match".to_string()));
+}
+
+#[test]
+fn a_file_read_through_an_outer_checkout_decides_its_own_matches_though_its_checkout_was_not_looked_into()
+ {
+    // The whole walk finds the outer checkout and does not go into it: the inner one, found
+    // by a run pointed at it, is held and not looked into, while the outer one's lockfiles
+    // include its own.
+    let e = Estate::new("match-outer");
+    e.checkout("dev/mono");
+    let lock = e.checkout("dev/mono/pkg").join("package-lock.json");
+    put(&lock, &naming("a.sample.invalid"));
+    e.list(LIST_AB);
+    e.run_in(&e.home().join("dev/mono/pkg"));
+    put(&lock, &naming("b.sample.invalid"));
+    e.full();
+    assert_eq!(
+        indicator_matches(&e),
+        [matched(
+            "dev/mono/pkg/package-lock.json",
+            "b.sample.invalid"
+        )]
+    );
+}
+
+#[test]
+fn the_reading_names_a_file_that_could_not_be_read_and_how_many_known_checkouts_were_not_looked_into()
+ {
+    let e = Estate::new("match-reasons");
+    for name in ["one", "two"] {
+        e.checkout(&format!("src/clients/acme/apps/web/{name}"));
+    }
+    e.run_in(&e.home().join("src"));
+    let tasks = e.checkout("dev/shop").join(".vscode/tasks.json");
+    put(&tasks, &ON_ASK.replace("make", "curl a.sample.invalid"));
+    e.list(LIST_AB);
+    e.full();
+    mode(&tasks, 0o000);
+    e.full();
+    mode(&tasks, 0o644);
+    // What the file matched is made again as it was.
+    assert_eq!(
+        indicator_matches(&e),
+        [matched("dev/shop/.vscode/tasks.json", "a.sample.invalid")]
+    );
+    let coverage = e.coverage(MATCH_KIND);
+    assert!(
+        coverage.starts_with("partial|could not be read: dev/shop/.vscode/tasks.json (")
+            && coverage.ends_with("); 2 known checkouts were not looked into"),
+        "{coverage}"
+    );
+    assert_eq!(match_cause(&e), "failed");
+}
+
+#[test]
+fn the_reading_of_matches_is_partial_when_the_checkout_walk_failed() {
+    let e = Estate::new("match-walk-failed");
+    e.checkout("dev/shop");
+    let locked = e.home().join("dev/locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    e.list(LIST_AB);
+    mode(&locked, 0o000);
+    e.full();
+    mode(&locked, 0o755);
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|the checkout walk could not list some folders"
+    );
+    assert_eq!(match_cause(&e), "failed");
+}
+
+/// A project `dev/shop` whose `file`, relative to it, names `a.sample.invalid`, read once:
+/// the match is there and the reading of matches is full.
+fn shop_match(e: &Estate, file: &str, text: &str) -> PathBuf {
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(file), text);
+    e.list(LIST_AB);
+    e.run();
+    assert_eq!(
+        indicator_matches(e),
+        [matched(&format!("dev/shop/{file}"), "a.sample.invalid")]
+    );
+    assert_eq!(e.coverage(MATCH_KIND), "full|");
+    shop
+}
+
+#[test]
+fn a_match_in_a_folder_of_a_project_that_could_not_be_listed_is_kept_and_the_reading_names_the_project()
+ {
+    let e = Estate::new("match-unlisted");
+    let shop = shop_match(&e, "web/package-lock.json", &naming("a.sample.invalid"));
+    mode(&shop.join("web"), 0o000);
+    e.run();
+    mode(&shop.join("web"), 0o755);
+    assert_eq!(indicator_matches(&e).len(), 1);
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|a folder could not be listed in dev/shop"
+    );
+    assert_eq!(match_cause(&e), "failed");
+}
+
+#[test]
+fn a_match_in_a_lockfile_that_became_a_link_is_kept_and_the_reading_names_it_as_not_opened() {
+    let e = Estate::new("match-linked");
+    let shop = shop_match(&e, "package-lock.json", &naming("a.sample.invalid"));
+    put(&shop.join("elsewhere.json"), LOCK);
+    std::fs::remove_file(shop.join("package-lock.json")).unwrap();
+    std::os::unix::fs::symlink("elsewhere.json", shop.join("package-lock.json")).unwrap();
+    e.run();
+    assert_eq!(indicator_matches(&e).len(), 1);
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|1 lockfile found and not opened in dev/shop"
+    );
+    assert_eq!(match_cause(&e), "no_reader");
+}
+
+#[test]
+fn a_match_in_a_task_file_that_could_not_be_looked_at_is_kept_and_the_reading_names_it() {
+    // The folder of the task file is a link to itself: the file cannot be looked at, and the
+    // walk for lockfiles does not follow the link.
+    let e = Estate::new("match-task-loop");
+    let shop = shop_match(
+        &e,
+        ".vscode/tasks.json",
+        &ON_ASK.replace("make", "curl a.sample.invalid"),
+    );
+    std::fs::remove_dir_all(shop.join(".vscode")).unwrap();
+    std::os::unix::fs::symlink(".vscode", shop.join(".vscode")).unwrap();
+    e.run();
+    assert_eq!(indicator_matches(&e).len(), 1);
+    let coverage = e.coverage(MATCH_KIND);
+    assert!(
+        coverage.starts_with("partial|could not be read: dev/shop/.vscode/tasks.json ("),
+        "{coverage}"
+    );
+    assert_eq!(match_cause(&e), "failed");
+}
+
+#[test]
+fn a_match_under_a_project_not_looked_into_is_kept_though_a_project_inside_it_was_looked_into() {
+    // The project inside is the only root given: its walk does not read the outer project's
+    // task file, which lies in its folder.
+    let e = Estate::new("match-any-prefix");
+    let app = shop_match(
+        &e,
+        ".vscode/tasks.json",
+        &ON_ASK.replace("make", "curl a.sample.invalid"),
+    );
+    put(&app.join(".vscode/.git/HEAD"), "ref: refs/heads/main\n");
+    e.run_in(&app.join(".vscode"));
+    assert_eq!(
+        indicator_matches(&e),
+        [matched("dev/shop/.vscode/tasks.json", "a.sample.invalid")]
+    );
+    assert_eq!(
+        e.coverage(MATCH_KIND),
+        "partial|1 known checkout was not looked into"
+    );
+}
+
+#[test]
+fn a_lockfile_replaced_by_a_folder_loses_its_match_the_reading_is_full_and_its_text_back_raises_a_new_finding()
+ {
+    let e = Estate::new("match-folder");
+    let shop = shop_match(&e, "package-lock.json", &naming("a.sample.invalid"));
+    e.seen();
+    let lock = shop.join("package-lock.json");
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir_all(&lock).unwrap();
+    e.run();
+    assert!(indicator_matches(&e).is_empty());
+    assert_eq!(e.coverage(MATCH_KIND), "full|");
+    std::fs::remove_dir_all(&lock).unwrap();
+    put(&lock, &naming("a.sample.invalid"));
+    e.run();
+    assert_eq!(e.rules(), ["indicator.match"]);
+}
+
+#[test]
+fn in_one_run_a_match_in_a_file_not_read_is_kept_while_a_match_in_a_deleted_lockfile_of_a_project_looked_into_goes()
+ {
+    let e = Estate::new("match-per-file");
+    let tasks = e.checkout("dev/shop").join(".vscode/tasks.json");
+    put(&tasks, &ON_ASK.replace("make", "curl a.sample.invalid"));
+    let lock = e.checkout("dev/web").join("package-lock.json");
+    put(&lock, &naming("b.sample.invalid"));
+    e.list(LIST_AB);
+    e.run();
+    assert_eq!(indicator_matches(&e).len(), 2);
+    mode(&tasks, 0o000);
+    std::fs::remove_file(&lock).unwrap();
+    e.run();
+    mode(&tasks, 0o644);
+    assert_eq!(
+        indicator_matches(&e),
+        [matched("dev/shop/.vscode/tasks.json", "a.sample.invalid")]
+    );
+    let coverage = e.coverage(MATCH_KIND);
+    assert!(
+        coverage.starts_with("partial|could not be read: dev/shop/.vscode/tasks.json (")
+            && !coverage.contains("dev/web"),
+        "{coverage}"
+    );
+}
+
+#[test]
+fn an_indicator_taken_off_the_list_goes_although_its_file_could_not_be_read() {
+    let e = Estate::new("match-off-list-unreadable");
+    let shop = shop_match(
+        &e,
+        ".vscode/tasks.json",
+        &ON_ASK.replace("make", "curl a.sample.invalid"),
+    );
+    let tasks = shop.join(".vscode/tasks.json");
+    e.list(r#"[{"kind": "domain-name:value", "value": "b.sample.invalid"}]"#);
+    mode(&tasks, 0o000);
+    e.run();
+    mode(&tasks, 0o644);
+    assert!(indicator_matches(&e).is_empty());
+    assert!(
+        e.coverage(MATCH_KIND)
+            .starts_with("partial|could not be read: ")
+    );
+}
+
 #[test]
 fn what_an_indicator_is_not_matched_against_is_named_never_answered_as_no_match() {
     // A block of addresses and a file name have no matcher: both are said by name, so silence

@@ -342,15 +342,28 @@ fn walk(checkout: &Path, limit: usize) -> Walk {
     out
 }
 
-/// The lockfiles inside a checkout that this reader opens as text, relative to it, for the
-/// indicators reader to look for strings in.
-pub fn read_as_text(checkout: &Path) -> Vec<String> {
-    walk(checkout, LOOK_LIMIT)
-        .lockfiles
-        .into_iter()
-        .filter(|(_, kind, at)| *at == Where::Opened && SUPPORTED.contains(kind))
-        .map(|(p, _, _)| p)
-        .collect()
+/// What one walk of a checkout gives the indicators reader to look for strings in, relative
+/// to the checkout: the lockfiles of the kinds read here that are opened as text, those found
+/// and not opened, and whether every folder could be listed and the walk went to its end.
+pub struct Texts {
+    pub opened: Vec<String>,
+    pub not_opened: Vec<String>,
+    pub listed: bool,
+    pub stopped: bool,
+}
+
+pub fn read_as_text(checkout: &Path) -> Texts {
+    let walked = walk(checkout, LOOK_LIMIT);
+    let (opened, not_opened) = (walked.lockfiles.into_iter())
+        .filter(|(_, kind, _)| SUPPORTED.contains(kind))
+        .partition::<Vec<_>, _>(|(_, _, at)| *at == Where::Opened);
+    let paths = |found: Vec<(String, &str, Where)>| found.into_iter().map(|(p, ..)| p).collect();
+    Texts {
+        opened: paths(opened),
+        not_opened: paths(not_opened),
+        listed: walked.listed,
+        stopped: walked.stopped,
+    }
 }
 
 /// Reads one checkout. `None` when it holds no lockfile at all: then there is nothing
@@ -2439,7 +2452,7 @@ snapshots:
             assert_eq!(unknown_for(&o), eco, "{tag}");
             // Not opened, so neither in the copy of what was read nor read as text.
             assert_eq!(o.lockfiles.len(), 1, "{tag}");
-            assert_eq!(read_as_text(&dir.0), ["Cargo.lock"], "{tag}");
+            assert_eq!(read_as_text(&dir.0).opened, ["Cargo.lock"], "{tag}");
         }
     }
 
@@ -2572,7 +2585,7 @@ snapshots:
                 "{mark}"
             );
             assert_eq!(
-                read_as_text(&dir.0),
+                read_as_text(&dir.0).opened,
                 ["web/a/b/package-lock.json", "web/package-lock.json"],
                 "{mark}"
             );

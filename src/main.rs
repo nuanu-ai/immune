@@ -2448,7 +2448,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     }
     read_other_autoruns(&mut run, &args.home, &found, walk_failure)?;
     let mut changed = read_integrity(&mut run, args)?;
-    changed.extend(read_indicators(&mut run, args, &found)?);
+    changed.extend(read_indicators(&mut run, args, &found, walk_failure)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
     opened += read_events(&mut run, args)?;
     read_traces(&mut run, args)?;
@@ -2977,12 +2977,7 @@ fn read_checkouts(run: &mut Run, args: &Args) -> Result<CheckoutWalk, Box<dyn Er
             (why, Cause::Failed)
         }))
         .collect();
-    let gap = Gap::when(Cause::worst(reasons.iter().map(|(_, c)| *c)));
-    let reason = (!reasons.is_empty()).then(|| {
-        let said: Vec<&str> = reasons.iter().map(|(r, _)| r.as_str()).collect();
-        said.join("; ")
-    });
-    let completeness = if reason.is_some() { "partial" } else { "full" };
+    let (completeness, reason, gap) = partial_when(&reasons);
     // Every checkout the store holds is in the statements or was looked for and is gone, so
     // the reading is compared whole, whatever its coverage says.
     let applied = Applied {
@@ -3589,6 +3584,17 @@ fn read_lockfiles(
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("lockfiles.txt"), manifest)?;
     Ok(())
+}
+
+/// A reading's completeness, reason and gap from why it is not whole, each why with its cause:
+/// partial with every why said and the worst cause, or full.
+fn partial_when(reasons: &[(String, Cause)]) -> (&'static str, Option<String>, Gap) {
+    let gap = Gap::when(Cause::worst(reasons.iter().map(|(_, c)| *c)));
+    let said: Vec<&str> = reasons.iter().map(|(r, _)| r.as_str()).collect();
+    match said.is_empty() {
+        true => ("full", None, gap),
+        false => ("partial", Some(said.join("; ")), gap),
+    }
 }
 
 /// How one reading is written: its coverage, and how its statements are compared with what is
@@ -4836,6 +4842,7 @@ fn read_indicators(
     run: &mut Run,
     args: &Args,
     found: &[checkouts::Checkout],
+    walk_failure: Option<&str>,
 ) -> Result<Vec<findings::Observed>, Box<dyn Error>> {
     let path = args
         .indicators
@@ -4897,37 +4904,95 @@ fn read_indicators(
         }
     };
 
+    // What this run did not read that could hold a match: the places, as ids name them after
+    // `file:{machine}/`, each a file or a project with all under it; what the reading says of
+    // them; and why. One list keeps a match and says why the reading is not full.
+    struct Unread {
+        places: Vec<String>,
+        why: String,
+        cause: Cause,
+    }
     // What matches, as file id and indicator: hashes against watched files, the network
-    // kinds against the texts read in checkouts.
+    // kinds against the texts read in checkouts; and which texts were read.
     let mut matches = indicators::match_hashes(run.tx, &list)?;
-    let mut failed = Vec::new();
+    let (mut read, mut failed, mut unread) = (BTreeSet::new(), Vec::new(), Vec::new());
     for c in found {
-        let mut texts = lockfiles::read_as_text(&c.path);
-        if std::fs::symlink_metadata(c.path.join(autorun::TASKS)).is_ok() {
-            texts.push(autorun::TASKS.to_string());
+        let texts = lockfiles::read_as_text(&c.path);
+        let in_project = |rel: &str| format!("{}/{rel}", c.rel);
+        if !texts.not_opened.is_empty() {
+            let n = things(texts.not_opened.len() as i64, "lockfile", "lockfiles");
+            unread.push(Unread {
+                places: texts.not_opened.iter().map(|rel| in_project(rel)).collect(),
+                why: format!("{n} found and not opened in {}", c.rel),
+                cause: Cause::NoReader,
+            });
         }
-        for rel in texts {
-            let shown = format!("{}/{rel}", c.rel);
+        let project = |why: &str, cause| Unread {
+            places: vec![c.rel.clone()],
+            why: format!("{why} in {}", c.rel),
+            cause,
+        };
+        if !texts.listed {
+            unread.push(project("a folder could not be listed", Cause::Failed));
+        }
+        if texts.stopped {
+            let why = "lockfiles were not looked for past the walk's limit";
+            unread.push(project(why, Cause::NoReader));
+        }
+        let mut opened = texts.opened;
+        use std::io::ErrorKind::{NotADirectory, NotFound};
+        match std::fs::symlink_metadata(c.path.join(autorun::TASKS)) {
+            Ok(_) => opened.push(autorun::TASKS.to_string()),
+            Err(e) if matches!(e.kind(), NotFound | NotADirectory) => {}
+            Err(e) => failed.push((in_project(autorun::TASKS), e.to_string())),
+        }
+        for rel in opened {
+            let shown = in_project(&rel);
             match autorun::read_capped(&c.path.join(&rel), indicators::CAP) {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
+                    let file = format!("file:{machine}/{shown}");
                     for i in indicators::match_text(&text, &list) {
-                        matches.push((format!("file:{machine}/{shown}"), i));
+                        matches.push((file.clone(), i));
                     }
+                    read.insert(file);
                 }
-                Err(why) => failed.push(format!("{shown} ({why})")),
+                Err(why) => failed.push((shown, why.to_string())),
             }
         }
     }
-    let before: BTreeSet<(String, String)> = run
-        .tx
-        .prepare(
-            "SELECT subject, object FROM assertion
-             WHERE layer = 'live' AND reader = ?1 AND predicate = 'matches_indicator'",
-        )?
-        .query_map([indicators::READER], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let statements: Vec<Statement> = matches
+    if !failed.is_empty() {
+        let said: Vec<String> = failed
+            .iter()
+            .map(|(f, why)| format!("{f} ({why})"))
+            .collect();
+        let why = format!("could not be read: {}", said.join("; "));
+        let places = failed.into_iter().map(|(f, _)| f).collect();
+        let cause = Cause::Failed;
+        unread.insert(0, Unread { places, why, cause });
+    }
+    unread.extend(walk_failure.map(|why| Unread {
+        places: Vec::new(),
+        why: why.to_string(),
+        cause: Cause::Failed,
+    }));
+    let visited = Visited::of(run.tx, &machine, found)?;
+    let omitted: Vec<String> = visited.held.difference(&visited.looked).cloned().collect();
+    if !omitted.is_empty() {
+        let held = things(
+            omitted.len() as i64,
+            "known checkout was",
+            "known checkouts were",
+        );
+        let why = format!("{held} not looked into");
+        let cause = Cause::NotGiven;
+        unread.push(Unread {
+            places: omitted,
+            why,
+            cause,
+        });
+    }
+    let mut statements: Vec<Statement> = matches
         .iter()
         .map(|(file, i)| Statement {
             subject: file.clone(),
@@ -4936,20 +5001,59 @@ fn read_indicators(
             source_ref: raw.clone(),
         })
         .collect();
-    let (completeness, reason, gap) = if failed.is_empty() {
-        ("full", None, Gap::default())
-    } else {
-        let reason = format!("could not be read: {}", failed.join("; "));
-        ("partial", Some(reason), Gap::of(Cause::Failed))
+    // Each live match is decided by its own file. Its indicator off the list, it goes; a hash
+    // match is this run's matching of the digests the store holds; a text read now decides
+    // its own. A text not read now is made again exactly when the list of what was not read
+    // names it or a place above it; otherwise the run looked where it was and found no text.
+    let on_list: BTreeMap<String, &indicators::Indicator> =
+        list.matched.iter().map(|i| (i.literal(), i)).collect();
+    let in_files = format!("file:{machine}/");
+    let named = |subject: &str| {
+        let path = subject.strip_prefix(&in_files).unwrap_or(subject);
+        unread.iter().flat_map(|u| &u.places).any(|place| {
+            (path.strip_prefix(place.as_str()))
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
     };
-    run.apply(
-        &on_machine(indicators::MATCH_KIND),
-        indicators::BASIS,
+    let live: Vec<(String, String, String)> = run
+        .tx
+        .prepare(
+            "SELECT subject, object, source_ref FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate = 'matches_indicator'",
+        )?
+        .query_map([indicators::READER], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (subject, object, source_ref) in &live {
+        let Some(i) = on_list.get(object) else {
+            continue;
+        };
+        if i.kind == indicators::SHA256 || read.contains(subject) || !named(subject) {
+            continue;
+        }
+        statements.push(Statement {
+            subject: subject.clone(),
+            predicate: "matches_indicator",
+            object: object.clone(),
+            source_ref: source_ref.clone(),
+        });
+    }
+    // Not full while anything that could hold a match was not read, each said as the list has it.
+    let reasons: Vec<(String, Cause)> = unread.iter().map(|u| (u.why.clone(), u.cause)).collect();
+    let (completeness, reason, gap) = partial_when(&reasons);
+    let applied = Applied {
         completeness,
-        reason.as_deref(),
-        &gap,
-        &statements,
-    )?;
+        reason: reason.as_deref(),
+        gap: &gap,
+        compared: "full",
+    };
+    let with_basis: Vec<(&str, &Statement)> =
+        statements.iter().map(|s| (indicators::BASIS, s)).collect();
+    let match_kind = on_machine(indicators::MATCH_KIND);
+    run.apply_judged(&match_kind, &applied, &with_basis, &mut |_| {
+        Ok(Verdict::Change)
+    })?;
     let lacks = indicators::lacks(&list);
     let (completeness, reason, gap) = if lacks.is_empty() {
         ("full", None, Gap::default())
@@ -4969,9 +5073,10 @@ fn read_indicators(
     )?;
 
     // A file is found once in a run, however many indicators it newly matches.
+    let before: BTreeSet<(&str, &str)> = live.iter().map(|(f, i, _)| (&f[..], &i[..])).collect();
     let new: BTreeSet<&String> = statements
         .iter()
-        .filter(|s| !before.contains(&(s.subject.clone(), s.object.clone())))
+        .filter(|s| !before.contains(&(&s.subject[..], &s.object[..])))
         .map(|s| &s.subject)
         .collect();
     Ok(new
