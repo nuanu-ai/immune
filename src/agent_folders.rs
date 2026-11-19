@@ -409,11 +409,26 @@ impl Walk<'_> {
                 .source
                 .compressed
                 .is_some_and(|end| path.as_os_str().as_bytes().ends_with(end.as_bytes()));
-            if depth > 0 || (!compressed && path.extension().is_none_or(|e| e != "jsonl")) {
-                if (depth > 0 || self.source.deeper) && entry.file_type().is_ok_and(|t| t.is_dir())
-                {
-                    below.push(path);
+            let session =
+                depth == 0 && (compressed || path.extension().is_some_and(|e| e == "jsonl"));
+            // Where a folder would be entered, the entry's type decides first: a folder is
+            // entered whatever its name; a link is not followed and, like an entry whose type
+            // cannot be told, is a folder not listed. A link named like a session file at the
+            // level of the sessions is a session file `read_session` refuses.
+            if depth > 0 || self.source.deeper {
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => {
+                        below.push(path);
+                        continue;
+                    }
+                    Ok(t) if session || !t.is_symlink() => {}
+                    _ => {
+                        self.out.unlisted += 1;
+                        continue;
+                    }
                 }
+            }
+            if !session {
                 continue;
             }
             self.out.files += 1;
@@ -1766,13 +1781,18 @@ mod tests {
         std::fs::write(t.file("2026/stray.jsonl"), codex_meta("/invented/c9")).unwrap();
         std::fs::create_dir(day.join("deeper")).unwrap();
         std::fs::write(day.join("deeper/stray.jsonl"), codex_meta("/invented/c8")).unwrap();
+        // A link where a day's folder would be is not followed, and is a folder not listed.
+        std::os::unix::fs::symlink(&day, t.file("2026/11/20")).unwrap();
 
         let read = t.read_as(&SOURCES[1], &BTreeMap::new(), later(10));
 
         let mut expected = zst_folders();
         expected.extend(["/invented/c0", "/invented/c1"].map(String::from));
         assert_eq!(read.folders, expected);
-        assert_eq!((read.files, read.unreadable, read.unparsed), (3, 1, 0));
+        assert_eq!(
+            (read.files, read.unreadable, read.unparsed, read.unlisted),
+            (3, 1, 0, 1)
+        );
         // Claude Code's sessions are not Codex's: the same folder read as Claude Code's finds
         // no working folder where Claude Code states one.
         assert!(t.read(&BTreeMap::new(), later(10)).folders.is_empty());
@@ -2198,9 +2218,10 @@ mod tests {
         // and a workflow's two folders deeper. Their working folder may be stated nowhere else.
         let t = Trial::new("subagents");
         deep(&t, "-invented-a/s1.jsonl", &turn("/invented/w0", 1));
+        // A folder is entered whatever its name, one named like a session file too.
         deep(
             &t,
-            "-invented-a/s1/subagents/agent-x.jsonl",
+            "-invented-a/s1/subagents.jsonl/agent-x.jsonl",
             &turn("/invented/w1", 1),
         );
         let workflow = "-invented-a/s1/subagents/workflows/wf1";
@@ -2298,10 +2319,13 @@ mod tests {
         std::os::unix::fs::symlink(folder, t.file("-invented-a/s1/subagents")).unwrap();
         // A link in place of a session is a session file that could not be read.
         std::os::unix::fs::symlink(&real, t.file("-invented-b/s2/agent-l.jsonl")).unwrap();
+        // A link in place of a project's folder is not entered either. Each link where a
+        // folder would be is a folder not listed, so the reading is partial.
+        std::os::unix::fs::symlink(t.file("-invented-b"), t.file("-invented-c")).unwrap();
 
         let read = t.read(&BTreeMap::new(), later(10));
 
-        assert_eq!((read.files, read.unreadable), (2, 1));
+        assert_eq!((read.files, read.unreadable, read.unlisted), (2, 1, 2));
         assert_eq!(read.held.keys().collect::<Vec<_>>(), [&real]);
         assert_eq!(folders(&read), ["/invented/w0"]);
     }
