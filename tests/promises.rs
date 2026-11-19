@@ -8881,6 +8881,7 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             ".cursor/mcp.json of each checkout, the part that runs by itself",
             ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
             ".gemini/settings.json of each checkout, the part that runs by itself",
+            ".husky/_/h, .husky/pre-commit, .husky/pre-merge-commit, .husky/prepare-commit-msg, .husky/commit-msg, .husky/post-commit, .husky/applypatch-msg, .husky/pre-applypatch, .husky/post-applypatch, .husky/pre-rebase, .husky/post-rewrite, .husky/post-checkout, .husky/post-merge, .husky/pre-push, .husky/pre-auto-gc of each checkout, the part that runs by itself",
             ".mcp.json of each checkout, the part that runs by itself",
             ".pnpmfile.cjs, .pnpmfile.mjs of each checkout, the part that runs by itself",
             ".vscode/mcp.json of each checkout, the part that runs by itself",
@@ -9435,9 +9436,10 @@ fn status_json(store: &Path) -> serde_json::Value {
 /// The causes that hold on every Mac: the limits of this version, which no reading of this Mac
 /// raises (`covered::LIMITS`), and the places not checked on this macOS while none is checked on
 /// any version.
-const EVERY_MAC: [&str; 4] = [
+const EVERY_MAC: [&str; 5] = [
     "autorun-not-checked-on-this-macos",
     "persistence-not-read",
+    "run-in-turn-not-read",
     "vulnerabilities-not-compared",
     "package-managers-elsewhere-not-found",
 ];
@@ -10249,6 +10251,14 @@ fn unknown_is_never_given_as_zero_or_full() {
     assert!(
         none["cannot_judge"].as_array().unwrap().contains(
             &"no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet".into()
+        ),
+        "{none}"
+    );
+    // What a hook, a file the terminal runs at start or a startup item runs in turn is said
+    // to be not read, by name.
+    assert!(
+        none["cannot_judge"].as_array().unwrap().contains(
+            &"what a file that starts by itself runs in turn is not read: a script that a Git hook, a file the terminal runs at start or a startup item calls or sources can change with no finding, except the scripts Husky keeps, which are read".into()
         ),
         "{none}"
     );
