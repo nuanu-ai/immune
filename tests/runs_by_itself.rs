@@ -603,6 +603,29 @@ fn a_project_a_run_did_not_look_into_keeps_the_ways_it_holds_and_the_readings_sa
     assert_eq!(e.rows(removed), ["checkout:machine:mac/dev/shop"]);
 }
 
+#[test]
+fn a_reading_that_was_not_read_is_said_once_with_its_reason() {
+    let e = Estate::new("ways-said-once");
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(".npmrc"), "ignore-scripts=false\n");
+    e.run();
+    let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
+        .args(["project", "checkout:machine:mac/dev/shop", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let line = text.lines().find(|l| l.contains(OTHERS_KIND)).unwrap();
+    assert!(
+        line.contains(&format!(
+            "{OTHERS_KIND} on mac: not read: .npmrc in 1 checkout;"
+        )),
+        "{line}"
+    );
+    assert_eq!(line.matches("not read").count(), 1, "{line}");
+}
+
 const CHECKOUTS_KIND: &str = "checkouts under the home folder";
 
 /// What `immunity project` says of a project here: held, gone or unknown.
