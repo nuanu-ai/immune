@@ -44,7 +44,7 @@ const INSIDE: &str = "a single path inside a project is not judged on its own: t
 const GUARDED: &str = "the path leads through a link into a folder macOS asks permission for, which is not looked into";
 
 /// What `immunity project` takes as a project.
-const WHAT: &str = "immunity project takes a path on this Mac, absolute or beginning with ~/, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:";
+const WHAT: &str = "immunity project takes a path on this Mac, absolute, beginning with ~/ or relative to the folder it is started in, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:. A word is an id when what comes before its first colon is a type of id the store knows; anything else is a path";
 
 /// `immunity project <what>`.
 pub struct ProjectArgs {
@@ -53,6 +53,9 @@ pub struct ProjectArgs {
     /// What was asked for, as given.
     pub asked: String,
     pub what: What,
+    /// For a word neither absolute nor beginning with `~/`, the word as a path relative to the
+    /// folder the command was started in, in the form of `What::Path`: what is not an id is it.
+    pub relative: Option<String>,
     /// The home folder: checkout ids name a path inside it relative to it.
     pub home: PathBuf,
 }
@@ -76,16 +79,17 @@ pub fn parse(
     let [asked] = <[String; 1]>::try_from(words).map_err(|_| WHAT.to_string())?;
     let home = crate::user_home()?;
     let word = contract::unescape(&asked);
-    let what = match known::path_of(&word, &home) {
-        Some(rel) => What::Path(rel),
-        None if word.contains(':') => What::Id(word),
-        None => return Err(WHAT.to_string()),
+    let (what, relative) = match known::path_of(&word, &home) {
+        Some(rel) => (What::Path(rel), None),
+        None if word.is_empty() => return Err(WHAT.to_string()),
+        None => (What::Id(word.clone()), known::relative_of(&word, &home)),
     };
     Ok(ProjectArgs {
         store: options.store()?,
         form: options.form(),
         asked,
         what,
+        relative,
         home,
     })
 }
@@ -114,6 +118,11 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
             let mut id_spelled = false;
             let what = match &args.what {
                 What::Path(rel) => What::Path(rel.clone()),
+                // What is not an id is a path relative to the folder the command was started in.
+                What::Id(id) if !known::is_id(conn, id)? => match &args.relative {
+                    Some(rel) => What::Path(rel.clone()),
+                    None => return Ok(Err(not_an_id(id))),
+                },
                 What::Id(id) => match (known::type_of(conn, id)?.as_deref(), path(id)) {
                     // A project the store knows is answered for as it is named.
                     (Some(checkouts::TYPE), _) => What::Id(id.clone()),

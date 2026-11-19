@@ -586,17 +586,20 @@ fn a_failure_to_answer_is_never_taken_for_an_answer() {
             &Value::from("store_unreadable")
         )
     );
-    // A relative path names no folder on this Mac.
-    let out = h.project("dev/shop", &[]);
+    // Two projects in one question are a misuse.
+    let out = h.project("dev/shop", &["dev/cli"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
-    let out = h.project("dev/shop", &["--json"]);
+    let out = h.project("dev/shop", &["dev/cli", "--json"]);
     assert_eq!(out.status.code(), Some(2));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["errors"][0]["code"], "usage");
     // Parsed as an answer all the same, neither failure is one: it has no format, and reads
     // as format 0, which a reader stops at.
-    for args in [&["--json"][..], &["--json", "--store", "elsewhere.db"][..]] {
+    for args in [
+        &["dev/cli", "--json"][..],
+        &["--json", "--store", "elsewhere.db"][..],
+    ] {
         for what in ["dev/shop", "~/dev/shop"] {
             let out = h.ask("project", Some(what), args);
             assert_ne!(out.status.code(), Some(0));
@@ -752,6 +755,59 @@ fn a_path_inside_a_known_project_answers_for_the_nearest_project_that_holds_it()
         assert_eq!(k.asked_text, asked);
     }
     assert_eq!(h.known("~/dev/shopping").presence(), v1::Presence::Unknown);
+}
+
+/// The promise to an agent standing in a project's folder: `immunity project .` answers for that
+/// project. A word that is not an id is a path relative to the folder the command is started in,
+/// put into the one form an absolute path is put into, so it answers as that path does. A word
+/// is an id only when what comes before its first colon is a type of id the store knows.
+#[test]
+fn a_path_relative_to_the_folder_the_command_is_started_in_answers_as_the_absolute_one() {
+    let h = Home::new("relative");
+    h.checkout("dev/shop");
+    h.checkout("dev/cli");
+    h.checkout("dev/x:y");
+    h.put("dev/shop/src/lib.rs", "");
+    h.run(&[]);
+    let known_in = |folder: &str, what: &str| {
+        let out = h
+            .immunity()
+            .current_dir(h.path().join(folder))
+            .args(["project", what, "--proto", "--store"])
+            .arg(h.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{folder} {what}");
+        let mut k = v1::Known::decode(out.stdout.as_slice()).unwrap();
+        assert_eq!(k.asked_text, what);
+        k.asked_text.clear();
+        k
+    };
+    let absolute = |what: &str| {
+        let mut k = h.known(what);
+        k.asked_text.clear();
+        k
+    };
+    for (folder, what, same_as) in [
+        ("dev/shop", ".", "~/dev/shop"),
+        ("dev", "shop", "~/dev/shop"),
+        ("dev", "./shop/src", "~/dev/shop/src"),
+        ("dev/shop/src", "..", "~/dev/shop"),
+        ("dev", "x:y", "~/dev/x:y"),
+        ("dev", "nothing/here", "~/dev/nothing/here"),
+    ] {
+        assert_eq!(known_in(folder, what), absolute(same_as), "{folder} {what}");
+    }
+    let shop = known_in("dev/shop", ".");
+    assert_eq!(shop.presence(), v1::Presence::Held);
+    assert_eq!(shop.thing.unwrap().id_text, "checkout:machine:mac/dev/shop");
+    assert_eq!(
+        known_in("dev", "nothing/here").presence(),
+        v1::Presence::Unknown
+    );
+    // An id is an id wherever the command is started.
+    let cli = "checkout:machine:mac/dev/cli";
+    assert_eq!(known_in("dev/shop", cli).thing.unwrap().id_text, cli);
 }
 
 /// The promise against false calm for the same folder spelled another way: on a volume that
