@@ -743,7 +743,14 @@ fn not_full_lines(screen: &Screen, k: &v1::Known, not_full: &[&v1::Coverage]) ->
             format!(" on {}", name_of(&c.scope_text))
         };
         let why = view::shown(&why_said(c));
-        let said = view::shown(&format!("{}{on}: {}, ", c.kind, completeness_said(c)));
+        // A reason that already says how much was read is not preceded by the same words.
+        let words = completeness_said(c);
+        let words = if why.starts_with(words) {
+            String::new()
+        } else {
+            format!("{words}, ")
+        };
+        let said = view::shown(&format!("{}{on}: {words}", c.kind));
         // On a terminal a reading takes two lines at most: the first clause of its reason, the
         // rest cut with the mark, escaped before it is cut. The pipe form keeps it whole.
         let said = match screen.fits() {
@@ -1752,6 +1759,27 @@ mod tests {
             text.contains("in part, not supported yet: yarn.lock…\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_reading_not_full_says_how_much_was_read_once_whether_or_not_its_reason_says_it() {
+        for (completeness, words) in [
+            (v1::Completeness::None, "not read"),
+            (v1::Completeness::Partial, "in part"),
+            (v1::Completeness::Unspecified, "not full"),
+        ] {
+            let mut k = project("~/dev/shop", v1::Presence::Held, true);
+            let own = format!("{words}: .npmrc in 1 checkout");
+            k.coverage.push(reading("one", completeness, Some(&own)));
+            k.coverage
+                .push(reading("two", completeness, Some("the file is gone")));
+            let text = known(&k, &Screen::pipe());
+            assert!(text.contains(&format!("one: {own}\n")), "{text}");
+            assert!(
+                text.contains(&format!("two: {words}, the file is gone\n")),
+                "{text}"
+            );
+        }
     }
 
     #[test]
