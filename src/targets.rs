@@ -39,6 +39,7 @@ const GUARDED: &str = "startup programs in a folder macOS asks permission for";
 const FAILED: &str = "startup programs that could not be opened";
 const ITEMS: &str = "startup items that could not be read and whose programs are kept as last read";
 const ARGUMENTS: &str = "files that startup items name in their arguments";
+const NOT_THERE: &str = "startup programs watched as another kind and not read there";
 /// What the reading names and is no gap in it.
 const ELSEWHERE: &str = "startup programs watched as another kind and judged there";
 const ABSENT: &str = "startup programs named and not there";
@@ -323,13 +324,16 @@ pub fn read(
     for (unit, by) in named {
         let id = format!("{prefix}{unit}");
         look.read(unit.clone());
-        // A file another kind of this Mac read in this run keeps its content there
-        // (`judged_elsewhere`); one it could not read is read here.
-        let watched = (others.iter().flat_map(|l| &l.entries))
-            .any(|e| e.unit == unit && e.content.literal().is_some());
-        let (content, link) = if watched {
-            t.count(ELSEWHERE);
-            (Content::Unread(Cause::NoReader, ELSEWHERE.into()), None)
+        // A file another kind knows is that kind's alone: a note if it read the bytes, else a gap.
+        let theirs = others.iter().find_map(|l| {
+            let entry = l.entries.iter().find(|e| e.unit == unit);
+            let read = entry.map(|e| matches!(e.content, Content::Hash(_) | Content::Value(_)));
+            read.or_else(|| l.not_read().any(|(u, _)| *u == unit).then_some(false))
+        });
+        let (content, link) = if let Some(read) = theirs {
+            let why = if read { ELSEWHERE } else { NOT_THERE };
+            t.count(why);
+            (Content::Unread(Cause::NoReader, why.into()), None)
         } else {
             let before = previous(tx, &id)?;
             let mut resolve = || guarded::real(&on_disk(roots, &unit.path), &homes);
@@ -719,7 +723,7 @@ mod tests {
     #[test]
     fn the_name_of_what_the_reading_does_not_read_fits_a_list_of_names_as_it_is() {
         let names = [
-            NOT_FULL, IN_BUNDLE, NOT_FILE, GUARDED, FAILED, ITEMS, ARGUMENTS,
+            NOT_FULL, IN_BUNDLE, NOT_FILE, GUARDED, FAILED, ITEMS, ARGUMENTS, NOT_THERE,
         ];
         for name in names.into_iter().chain(NOTES).chain([watched::OVER_CAP]) {
             assert!(!name.contains([',', ':']), "{name}");

@@ -7483,7 +7483,7 @@ fn a_program_that_is_also_a_watched_file_is_judged_by_its_own_kind_alone() {
 }
 
 #[test]
-fn a_program_another_kind_watches_and_cannot_read_is_read_and_judged_as_a_program() {
+fn a_program_another_kind_watches_and_did_not_read_is_not_read_here_and_leaves_this_partial() {
     let e = Estate::new("target-elsewhere-unread");
     // Past what a watched file is read up to, without taking the space: a file with a hole.
     let profile = e.system().join("etc/zshrc");
@@ -7500,14 +7500,41 @@ fn a_program_another_kind_watches_and_cannot_read_is_read_and_judged_as_a_progra
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
          <key>LoginHook</key><string>/etc/zshrc</string></dict></plist>\n",
     );
+    // A folder another kind watches only for whether it is there.
+    let plugin = "/Library/Security/SecurityAgentPlugins/Example.bundle";
+    std::fs::create_dir_all(e.system().join(&plugin[1..])).unwrap();
+    launch_item(&e.agent("plugin"), &[plugin]);
+    // A file its kind could not look at: its folder lists and does not open.
+    use std::os::unix::fs::PermissionsExt;
+    let daemons = e.system().join("Library/LaunchDaemons");
+    put(
+        &daemons.join("org.example.d.plist"),
+        "<plist><dict/></plist>\n",
+    );
+    launch_item(
+        &e.agent("daemon"),
+        &["/Library/LaunchDaemons/org.example.d.plist"],
+    );
+    let mode = |m| std::fs::set_permissions(&daemons, std::fs::Permissions::from_mode(m));
+    mode(0o444).unwrap();
     e.run();
-    e.run();
-    assert!(e.rules().is_empty(), "{:?}", e.rules());
-    use std::os::unix::fs::FileExt;
-    let file = std::fs::File::options().write(true).open(&profile).unwrap();
-    file.write_all_at(b"export EXAMPLE=1\n", 0).unwrap();
-    e.run();
-    assert_eq!(e.rules(), [TARGET_RULE]);
+    mode(0o755).unwrap();
+    assert_eq!(
+        e.coverage(TARGET_KIND),
+        format!(
+            "partial|not read in full: \
+             startup items that could not be read and whose programs are kept as last read: 1; \
+             startup programs watched as another kind and not read there: 3; {AT_CHECKS}"
+        )
+    );
+    // The profile's own kind still says why it did not read it.
+    assert_eq!(
+        e.rows(
+            "SELECT completeness, cause FROM coverage WHERE scope = 'file:machine:mac//etc/zshrc'
+               AND kind = 'content of a watched file' ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|no_reader"]
+    );
 }
 
 #[test]
