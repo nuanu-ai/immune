@@ -131,6 +131,8 @@ Not read: `ZDOTDIR`, fish, files pulled in by `Include` in the SSH configuration
 - launchd jobs with no file on disk, which only launchd itself could list;
 - the applications reopened at login, which macOS rewrites at every logout.
 
+What a file that starts by itself runs in turn is not read either. Immunity Core reads a Git hook, a file the terminal runs at start and a startup item. A script that one of them calls or sources can change with no finding. `cannot_judge` and `not_covered` (`run-in-turn-not-read`) say so.
+
 StartupItems and periodic scripts are not watched because current macOS no longer runs them: SystemStarter, which ran StartupItems, was removed in OS X 10.10, and `periodic` in macOS 15.
 
 ## What runs by itself

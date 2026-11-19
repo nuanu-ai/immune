@@ -3424,6 +3424,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
             "vulnerability-data-old",
             "autorun-not-checked-on-this-macos",
             "persistence-not-read",
+            "run-in-turn-not-read",
             "vulnerabilities-not-compared",
             "package-managers-elsewhere-not-found"
         ],

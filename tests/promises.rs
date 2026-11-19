@@ -9409,9 +9409,10 @@ fn status_json(store: &Path) -> serde_json::Value {
 /// The causes that hold on every Mac: the limits of this version, which no reading of this Mac
 /// raises (`covered::LIMITS`), and the places not checked on this macOS while none is checked on
 /// any version.
-const EVERY_MAC: [&str; 4] = [
+const EVERY_MAC: [&str; 5] = [
     "autorun-not-checked-on-this-macos",
     "persistence-not-read",
+    "run-in-turn-not-read",
     "vulnerabilities-not-compared",
     "package-managers-elsewhere-not-found",
 ];
@@ -10223,6 +10224,14 @@ fn unknown_is_never_given_as_zero_or_full() {
     assert!(
         none["cannot_judge"].as_array().unwrap().contains(
             &"no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet".into()
+        ),
+        "{none}"
+    );
+    // What a hook, a file the terminal runs at start or a startup item runs in turn is said
+    // to be not read, by name.
+    assert!(
+        none["cannot_judge"].as_array().unwrap().contains(
+            &"what a file that starts by itself runs in turn is not read: a script that a Git hook, a file the terminal runs at start or a startup item calls or sources can change with no finding".into()
         ),
         "{none}"
     );
