@@ -2493,7 +2493,7 @@ fn a_background_watcher_reports_live_only_after_its_first_read_and_while_its_hea
     let mut watcher = mac.watch_with(&["--background", "--alive-every", "1"]);
     watcher.next("watching");
     assert_eq!(mac.status()["this_mac"]["live"], false);
-    drop(reading);
+    common::release(reading);
     watcher.next("read");
     assert_eq!(mac.status()["this_mac"]["live"], true);
     let duplicate = mac.watch_cmd().arg("--background").output().unwrap();
@@ -3553,7 +3553,7 @@ fn a_sample_waits_for_a_full_run_and_a_stop_while_it_waits_is_a_clean_one() {
     assert!(w.lines("sample").is_empty(), "{:?}", w.seen);
     w.signal(libc::SIGTERM);
     assert!(w.exit().success());
-    drop(held);
+    common::release(held);
     assert!(
         mac.rows("SELECT id FROM finding").is_empty(),
         "a stopped watcher raised a finding"

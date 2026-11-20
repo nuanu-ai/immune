@@ -1470,10 +1470,13 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The real reading, on this test process and a child it starts in a session of its own.
+    /// The real reading, on this test process and a child it starts.
+    ///
+    /// The tests here start their children by `posix_spawn`, never by `fork`: in a test binary
+    /// whose other threads are busy, a forked child can die in libSystem's fork handlers
+    /// before it execs, and `spawn` still returns its pid.
     #[test]
     fn the_reading_of_the_system_sees_this_process_its_child_with_code_and_its_connection() {
-        use std::os::unix::process::CommandExt;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -1482,34 +1485,22 @@ mod tests {
         let six = std::net::TcpListener::bind("[::1]:0").unwrap();
         let six_port = six.local_addr().unwrap().port();
         let six_stream = std::net::TcpStream::connect(("::1", six_port)).unwrap();
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 30; :"]).stdin(Stdio::null());
-        // SAFETY: setsid is safe to call in the child before exec.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        let mut child = cmd.spawn().unwrap();
-        // `/bin/sh` is a stub that starts the shell it is set to be: while it does, its
-        // arguments cannot be read. Asked again until it has started, with a deadline loose
-        // enough for a loaded machine: it only ends a wait that would otherwise not end.
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30; :"])
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
         let given = strings(&["/bin/sh", "-c", "sleep 30; :"]);
-        let mut r = read_system(1);
-        for _ in 0..500 {
-            let kid = r.processes.iter().find(|p| p.pid == child.id() as i32);
-            if kid.and_then(|k| k.args.as_ref()) == Some(&given) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            r = read_system(1);
-        }
-        // What the argument area held is zeroed once it is read.
+        let r = reading_where(child.id(), &given, || {
+            format!("; the child: {:?}", child.try_wait())
+        });
+        // What the argument area held is zeroed once it is read. Read of this process, whose
+        // arguments stay put: the child's cannot be read while the stub starts the shell, which
+        // may come after the reading above.
         let mut area = vec![0u8; argmax()];
         assert_eq!(
-            arguments(child.id() as i32, &mut area).map(|a| a.1),
-            Some(given)
+            arguments(std::process::id() as i32, &mut area).map(|a| a.1),
+            Some(std::env::args().collect())
         );
         assert!(area.iter().all(|&b| b == 0));
         let me = std::process::id() as i32;
@@ -1528,11 +1519,9 @@ mod tests {
             .find(|p| p.pid == child.id() as i32)
             .unwrap();
         assert_eq!(kid.parent, me);
-        assert!(!kid.terminal);
-        assert_eq!(
-            kid.args.as_deref(),
-            Some(&strings(&["/bin/sh", "-c", "sleep 30; :"])[..])
-        );
+        // A controlling terminal is the one `/dev/tty` opens, and the child shares this one's.
+        let terminal = std::fs::File::open("/dev/tty").is_ok();
+        assert_eq!((this.terminal, kid.terminal), (terminal, terminal));
         let to_listener = r
             .connections
             .iter()
@@ -1586,34 +1575,22 @@ mod tests {
     /// A shell that its parent left behind is detached: its parent is launchd now.
     #[test]
     fn the_reading_of_the_system_sees_a_process_its_parent_left_as_detached() {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args([
-            "-c",
-            "/bin/sh -c 'sleep 30; :' </dev/null >/dev/null 2>&1 & echo $!",
-        ]);
-        // SAFETY: setsid is safe to call in the child before exec.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        let out = cmd.output().unwrap();
-        let pid: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
-        // The shell left behind may not have started its own program yet; asked again, with
-        // the same loose deadline as above.
-        let started = strings(&["/bin/sh", "-c", "sleep 30; :"]);
-        let mut reading = read_system(1);
-        for _ in 0..500 {
-            let p = reading.processes.iter().find(|p| p.pid == pid).unwrap();
-            if p.args.as_ref() == Some(&started) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            reading = read_system(1);
-        }
-        let s = derive(reading);
+        let out = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "/bin/sh -c 'sleep 30; :' </dev/null >/dev/null 2>&1 & echo $!",
+            ])
+            .output()
+            .unwrap();
+        let pid: i32 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("{e}: {out:?}"));
+        let s = derive(reading_where(
+            pid as u32,
+            &strings(&["/bin/sh", "-c", "sleep 30; :"]),
+            String::new,
+        ));
         // SAFETY: a plain signal to the shell this test started.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let left = s.processes.iter().find(|p| p.pid == pid).unwrap();
@@ -1621,6 +1598,28 @@ mod tests {
         assert_eq!(left.shape, Some(INLINE_CODE));
         // `/bin/sh` is a stub that starts the shell it is set to be.
         assert_eq!(left.interpreter.map(|i| i.kind), Some("shell"));
+    }
+
+    /// A reading of the system in which the process `pid` has the arguments `args`, read again
+    /// until it has them, for ten seconds: loose enough for a loaded machine, it only ends a wait
+    /// that would otherwise not end. `/bin/sh` is a stub that starts the shell it is set to be:
+    /// the stub's arguments can be read, then not while it starts the shell, then the shell's.
+    fn reading_where(pid: u32, args: &[String], mut also: impl FnMut() -> String) -> Reading {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let r = read_system(1);
+            let seen = r.processes.iter().find(|p| p.pid == pid as i32);
+            if seen.and_then(|p| p.args.as_deref()) == Some(args) {
+                return r;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "process {pid} was not read with {args:?} in ten seconds; last seen (executable, arguments): {:?}{}",
+                seen.map(|p| (&p.executable, &p.args)),
+                also()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]

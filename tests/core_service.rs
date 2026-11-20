@@ -92,6 +92,13 @@ impl Login {
         );
     }
 
+    /// Lets go of the watcher lock that `hold_watcher` took, if there is one.
+    fn stop_watcher(&mut self) {
+        if let Some(lock) = self.watcher.take() {
+            common::release(lock);
+        }
+    }
+
     /// Takes the store's watcher lock and writes what a watcher in this state writes in it: its
     /// start a moment ago, `heartbeat`, and the state on a third line, none while it starts.
     fn hold_watcher(&self, state: &str) -> fs::File {
@@ -601,7 +608,7 @@ fn one_of_the_two_commands_runs_at_a_time() {
     }
     assert_eq!(login.calls(), Vec::<Vec<String>>::new());
     assert_eq!(login.snapshot(), before);
-    drop(held);
+    common::release(held);
     assert!(service(&login.run("on", &[])).loaded);
 }
 
@@ -747,13 +754,13 @@ fn nothing_on_stages_is_in_launch_agents_so_no_check_finds_it() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(names(&login.agents), [format!("{LABEL}.plist")]);
-    login.watcher = None;
+    login.stop_watcher();
     login.make_store();
     login.watcher = Some(login.hold_watcher("ready"));
     fs::write(login.scratch.join("go"), "").unwrap();
     assert!(service(&child.wait_with_output().unwrap()).loaded);
     assert_eq!(names(&login.agents), [format!("{LABEL}.plist")]);
-    login.watcher = None;
+    login.stop_watcher();
     login.make_store();
     let findings = Command::new(CORE)
         .args(["findings", "--json", "--store"])
@@ -1199,7 +1206,7 @@ fn an_app_without_a_usable_bundle_identifier_uses_the_core_identifier() {
 #[test]
 fn a_watcher_on_its_first_check_is_started_and_not_yet_watching() {
     let mut login = Login::new("core-service-starting");
-    login.watcher = None;
+    login.stop_watcher();
     login.watcher = Some(login.hold_watcher(""));
     let m = service(&login.run("on", &[]));
     assert_eq!((m.started, m.watching), (Some(true), Some(false)));
@@ -1213,7 +1220,7 @@ fn a_watcher_on_its_first_check_is_started_and_not_yet_watching() {
 fn a_job_whose_process_never_took_the_lock_is_never_reported_as_started() {
     // launchd loaded the job and no watcher holds the store.
     let mut login = Login::new("core-service-never");
-    login.watcher = None;
+    login.stop_watcher();
     let m = service(&login.run("on", &[]));
     assert_eq!(
         (m.loaded, m.started, m.watching, m.watcher_note.as_deref()),
@@ -1271,7 +1278,7 @@ fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
     let (installed, text) = said(&login);
     assert_eq!(installed, json!(true));
     assert!(!text.contains("not running"), "{text}");
-    login.watcher = None;
+    login.stop_watcher();
     let (installed, text) = said(&login);
     assert_eq!(installed, json!(true));
     assert!(
@@ -1374,7 +1381,7 @@ fn off_that_stopped_a_job_leaves_one_turned_off_entry_and_one_that_found_nothing
     // A check that holds the store: `off` still succeeds, and says it was not recorded and why.
     let m = service(&login.run("off", &[]));
     assert_eq!(m.not_recorded, Some(v1::NotRecorded::Busy as i32));
-    drop(held);
+    common::release(held);
     // A job launchd has with its property list gone is turned off all the same.
     service(&login.run("on", &[]));
     fs::remove_file(&login.plist).unwrap();
@@ -1472,7 +1479,7 @@ fn after_off_then_on_the_job_s_watcher_says_on_once_and_a_job_gone_after_is_not_
     for verb in ["on", "off", "on"] {
         service(&login.run(verb, &[]));
     }
-    login.watcher = None;
+    login.stop_watcher();
     // A run or a watcher by hand says nothing of it.
     login.make_store();
     first_reading(&login, false);

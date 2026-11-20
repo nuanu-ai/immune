@@ -2023,7 +2023,7 @@ mod tests {
         assert_eq!(restarting_since(&dir, left - RESTARTING_FOR - 1), None);
         let held = store::lock_watch(&dir).unwrap().unwrap();
         assert_eq!(restarting_since(&dir, left + 5), None);
-        drop(held);
+        crate::common::release(held);
         for text in [
             "1800000000\nheartbeat\nready",
             "1800000000\nheartbeat\ncore-replaced 1800000100\nmore",
@@ -2073,7 +2073,7 @@ mod tests {
         // One that left for a new core a moment ago is restarting, until the time is over.
         let left = format!("{since}\nheartbeat\ncore-replaced {}", crate::now_secs());
         put_lock(&lock, &left);
-        drop(lock);
+        crate::common::release(lock);
         assert_eq!(seen(&store_path), Some(Seen::Restarting));
         let path = dir.join(store::WATCH_LOCK);
         std::fs::write(&path, format!("{since}\nheartbeat\nready")).unwrap();

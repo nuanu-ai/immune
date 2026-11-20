@@ -1054,10 +1054,21 @@ esac
         (launchctl, home)
     }
 
-    fn done(result: Result<v1::Service, Failed>) -> v1::Service {
-        match result {
-            Ok(m) => m,
-            Err(f) => panic!("{}: {} {}", f.code, f.message, f.detail),
+    /// The answer of `call`, asked again for a while when it is refused as busy. Nothing opens a
+    /// test's own home but the test, so what holds its lock then is the test's own lock of a
+    /// call before: a child that another test's thread is starting holds every descriptor of
+    /// this process until it execs, and a flock belongs to the open file. A busy refusal changes
+    /// nothing, so asking again weakens no promise.
+    fn done(mut call: impl FnMut() -> Result<v1::Service, Failed>) -> v1::Service {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match call() {
+                Ok(m) => return m,
+                Err(f) if f.code == "busy" && Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(f) => panic!("{}: {} {}", f.code, f.message, f.detail),
+            }
         }
     }
 
@@ -1079,18 +1090,18 @@ esac
         let copy = folder.join(BIN).join(PROGRAM);
         let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
 
-        let m = done(on(&launchctl, Some(&home), |_| false));
+        let m = done(|| on(&launchctl, Some(&home), |_| false));
         assert_eq!((m.in_place, m.watching), (Some(false), Some(true)));
         assert!(copy.is_file());
         let core = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-        let m = done(on(&launchctl, Some(&home), |_| true));
+        let m = done(|| on(&launchctl, Some(&home), |_| true));
         assert_eq!((m.in_place, m.loaded), (Some(true), true));
         assert_eq!(Path::new(&m.program_path_text), core);
         let named = plist_string(&plist, "ProgramArguments.0").ok().unwrap();
         assert_eq!(Path::new(&named), core);
         assert!(!copy.exists() && !folder.join(BIN).exists());
 
-        let m = done(off(&launchctl, Some(&home), |_| true));
+        let m = done(|| off(&launchctl, Some(&home), |_| true));
         assert_eq!((m.installed, m.in_place), (false, Some(true)));
         assert_eq!(Path::new(&m.program_path_text), core);
         assert!(core.is_file() && !plist.exists() && !dir.join("loaded").exists());
@@ -1109,7 +1120,7 @@ esac
         fs::write(&other, "not the core").unwrap();
         let core = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         for (in_place, program) in [(false, copy.clone()), (true, core)] {
-            let _ = on(&launchctl, Some(&home), |_| in_place);
+            done(|| on(&launchctl, Some(&home), |_| in_place));
             let named = other.to_str().unwrap();
             plutil(
                 &["-replace", "ProgramArguments.0", "-string", named],
@@ -1117,7 +1128,7 @@ esac
             )
             .unwrap();
 
-            let m = done(off(&launchctl, Some(&home), |_| in_place));
+            let m = done(|| off(&launchctl, Some(&home), |_| in_place));
             assert_eq!(
                 (m.in_place, Path::new(&m.program_path_text)),
                 (Some(in_place), &*program)
