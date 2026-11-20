@@ -82,6 +82,14 @@ fn open(path: &Path) {
     }
 }
 
+/// Releases the flock this test holds on `lock`, at once. Dropping the file alone may leave it
+/// held for a moment: a child that another thread is starting, by `fork` or by `posix_spawn`,
+/// holds a copy of every descriptor of this process until it execs, and a flock belongs to the
+/// open file, so it lasts until the last copy closes. An unlock releases it on every copy.
+pub fn release(lock: std::fs::File) {
+    lock.unlock().unwrap();
+}
+
 /// Waits until the clock is in a later second than when this was called. The store keeps
 /// times in whole seconds, so what a test does after it falls in a later second than all it
 /// did before: the guarantee a fixed sleep of 1.1 s gives, at half its cost on average.

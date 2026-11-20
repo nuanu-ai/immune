@@ -5670,7 +5670,7 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                drop(held);
+                crate::common::release(held);
             });
             assert!(take_store(&dir, std::time::Duration::from_secs(10)).is_ok());
         });

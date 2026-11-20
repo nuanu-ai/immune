@@ -1765,7 +1765,7 @@ fn two_processes_that_send_the_same_id_at_once_record_it_once_and_both_answer_wi
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(700));
-    drop(folder);
+    common::release(folder);
     let answers: Vec<Value> = children
         .into_iter()
         .map(|c| {
@@ -3601,7 +3601,7 @@ fn a_verdict_or_an_answer_while_another_writer_holds_the_store_fails_as_one_to_a
     assert_eq!(out.status.code(), Some(4));
     let said: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(said["errors"][0]["code"], "run_in_progress");
-    drop(folder);
+    common::release(folder);
     // A writer without the run lock holds the store's write lock: the same code.
     let mut db = rusqlite::Connection::open(mac.store()).unwrap();
     let held = db

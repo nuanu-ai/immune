@@ -10049,7 +10049,7 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     folder.try_lock_shared().unwrap();
     let release = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        drop(folder);
+        common::release(folder);
     });
     ok(&mut run(&quick));
     release.join().unwrap();
