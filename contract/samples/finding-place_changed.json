@@ -1,7 +1,7 @@
 {
   "advice": "If you did not, open the file and look at its last lines.",
   "answer": null,
-  "answered_at": 1795097219,
+  "answered_at": 1795156975,
   "answered_together": [],
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
@@ -20,14 +20,14 @@
     "state": "open",
     "urgent": false
   },
-  "first_seen_at": 1795097218,
+  "first_seen_at": 1795156974,
   "folder_text": null,
   "format": 1,
   "group": null,
-  "journal_seq": 36,
+  "journal_seq": 44,
   "kind": "shell profile",
   "kind_title": "Shell startup file",
-  "last_seen_at": 1795097218,
+  "last_seen_at": 1795156974,
   "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
   "rests_on": [
     {
@@ -37,14 +37,14 @@
       "old_value_text": "sha256:5a2dd1f378a67a0883bfb4290feefd00d3e30811fb5d31f5bb605411de3f131a",
       "predicate": "has_content",
       "reader": "watched-places",
-      "recorded_at": 1795097218,
-      "run_id": "1795097218-250162000",
-      "seq": 23,
+      "recorded_at": 1795156974,
+      "run_id": "1795156974-350620000",
+      "seq": 31,
       "subject_text": "file:machine:mac/.zshrc"
     }
   ],
   "short_title": "File your terminal runs at start changed",
-  "store_id": "84fa1e6461f287eb06a12800a164f1d7",
+  "store_id": "338a987fa39cb8b24bed54d362de4c48",
   "technique_text": "T1546.004",
   "thing": null,
   "title": "A file your terminal runs every time it starts was added, changed or removed.",
