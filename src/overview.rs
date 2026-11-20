@@ -1921,9 +1921,13 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
         });
         // Under a rule's name, the findings of one group (`group`, equal and present) that share
         // urgency and state are one line: drawing only, every finding still named by its id.
-        // A line of several says their folder, so one without it is never folded.
+        // A line of several says their folder, so one without it is never folded; one with a
+        // verdict of the response layer stays a row of its own, as on the pages.
         let key = |l: &v1::ListedFinding| {
-            let group = l.group.clone().filter(|_| l.folder_text.is_some())?;
+            let group = l
+                .group
+                .clone()
+                .filter(|_| l.folder_text.is_some() && l.verdicts.is_none())?;
             Some((group, urgent(l), state_of(l)))
         };
         let lines_of: Vec<Vec<Vec<&v1::ListedFinding>>> = groups
@@ -2011,24 +2015,20 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
             ));
             for line in folded {
                 let drawn = lines.next().unwrap_or_default();
+                out.push(drawn);
                 if line.len() == 1 {
-                    out.push(drawn);
                     continue;
                 }
-                // Every id whole: after the line in a pipe, wrapped under it on a terminal.
+                // Every id whole, under the line, so the folder ends its own line as a path does
+                // and the ids' lines hold nothing from the Mac: one line in a pipe, wrapped on a
+                // terminal.
                 let ids: Vec<String> = line
                     .iter()
                     .map(|l| l.finding.as_ref().map_or(String::new(), |r| r.id.clone()))
                     .collect();
-                let ids = ids.join(", ");
-                match screen.fits() {
-                    None => out.push(format!("{drawn}  {}", screen.paint(PLAIN, &ids))),
-                    Some(w) => {
-                        out.push(drawn);
-                        for l in screen::wrap(&ids, Some(w.saturating_sub(6))) {
-                            out.push(format!("      {}", screen.paint(DIM, &l)));
-                        }
-                    }
+                let width = screen.fits().map(|w| w.saturating_sub(6));
+                for l in screen::wrap(&ids.join(", "), width) {
+                    out.push(format!("      {}", screen.paint(DIM, &l)));
                 }
             }
         }
@@ -3285,26 +3285,35 @@ mod tests {
                 let id = &l.finding.as_ref().unwrap().id;
                 assert_eq!(text.matches(id.as_str()).count(), 1, "{id}\n{text}");
             }
-            let at = text
-                .find("14 findings  added  ~/dev/shop/.git/hooks")
-                .unwrap();
-            let named = text[at..]
-                .split("\n    f")
-                .next()
-                .unwrap()
-                .matches("f00000000")
-                .count();
-            assert_eq!(named, 14, "{text}");
+            // The folder ends its line, as a path does; the ids are on the lines under it and
+            // nothing else is, one line in a pipe.
+            let lines: Vec<&str> = text.lines().collect();
+            let k = lines
+                .iter()
+                .position(|l| *l == "    14 findings  added  ~/dev/shop/.git/hooks")
+                .unwrap_or_else(|| panic!("{text}"));
+            let under: Vec<&str> = lines[k + 1..]
+                .iter()
+                .take_while(|l| l.starts_with("      f"))
+                .copied()
+                .collect();
+            let named: Vec<&str> = under
+                .iter()
+                .flat_map(|l| l.split([',', ' ']))
+                .filter(|s| !s.is_empty())
+                .collect();
+            let ids: Vec<String> = (0..14).map(|i| format!("f{i:010x}")).collect();
+            assert_eq!(named, ids, "{text}");
+            if !screen.terminal {
+                assert_eq!(under.len(), 1, "{text}");
+            }
             // The group of one: its own id first on its row, with its own place.
             assert!(
                 holding(&text, "f0000000014")[0]
                     .starts_with("    f0000000014  added  ~/dev/shop/.git/hooks/h20"),
                 "{text}"
             );
-            // In a pipe the folded line holds every id; nothing on it answers.
-            if !screen.terminal {
-                assert_eq!(holding(&text, "f0000000000"), holding(&text, "f000000000d"));
-            }
+            // Nothing on it answers.
             assert!(!text.contains("--with"), "{text}");
         }
     }
@@ -3316,6 +3325,11 @@ mod tests {
         if let Some(r) = seen.finding.as_mut() {
             r.state = v1::FindingState::Seen as i32;
         }
+        // With the response layer's verdicts, counted, or naming its own finding about it.
+        let judged = |i: usize, verdicts: v1::Verdicts| v1::ListedFinding {
+            verdicts: Some(verdicts),
+            ..hook(i, Some("g1"), folder, false)
+        };
         let f = list_of(vec![
             hook(0, Some("g1"), folder, false),
             hook(1, Some("g1"), folder, true),
@@ -3328,6 +3342,20 @@ mod tests {
             hook(8, Some("g3"), None, false),
             seen,
             hook(9, Some("g1"), folder, false),
+            judged(
+                10,
+                v1::Verdicts {
+                    total: 1,
+                    ..Default::default()
+                },
+            ),
+            judged(
+                11,
+                v1::Verdicts {
+                    verdict_finding: Some(v1::FindingRef::default()),
+                    ..Default::default()
+                },
+            ),
         ]);
         for screen in [Screen::pipe(), Screen::terminal(80, false)] {
             let text = findings(&f, true, &screen);
@@ -3353,8 +3381,15 @@ mod tests {
             // The answered one of the group apart from the open ones.
             let row = |id: &str| holding(&text, id)[0].starts_with(&format!("    {id}  "));
             assert!(row("f0000000007"), "{text}");
-            // Without a key, or without a folder to say, each its own row.
-            for id in ["f0000000004", "f0000000005", "f0000000006", "f0000000008"] {
+            // Without a key, without a folder to say, or with a verdict, each its own row.
+            for id in [
+                "f0000000004",
+                "f0000000005",
+                "f0000000006",
+                "f0000000008",
+                "f000000000a",
+                "f000000000b",
+            ] {
                 assert!(row(id), "{text}");
             }
         }

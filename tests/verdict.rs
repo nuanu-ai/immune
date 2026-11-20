@@ -5548,7 +5548,14 @@ fn the_list_says_the_change_the_finding_says_for_every_change_in_a_group_or_alon
             .and_then(|rest| rest.trim_start().split(", ").next())
             .unwrap_or_else(|| panic!("{detail}"));
         assert_eq!(word, *said, "{detail}");
-        let line = listed.lines().find(|l| l.contains(id.as_str())).unwrap();
+        // Its row, or the folded line its id is named under.
+        let lines: Vec<&str> = listed.lines().collect();
+        let at = lines.iter().position(|l| l.contains(id.as_str())).unwrap();
+        let line = lines[..=at]
+            .iter()
+            .rev()
+            .find(|l| !l.starts_with("      "))
+            .unwrap();
         assert!(line.contains(&format!("  {said}  ")), "{id}: {listed}");
     }
     // A finding whose evidence is not a place that changed says no change.
@@ -5569,15 +5576,22 @@ fn the_page_draws_a_group_as_one_row_of_its_folder_and_counts_each_finding() {
         "case-page-2",
     ));
     // Two hooks in a folder whose name a page would read as markup.
-    let odd: Vec<String> = ["pre-commit", "pre-push", "commit-msg", "post-merge"]
-        .iter()
-        .enumerate()
-        .map(|(k, name)| {
-            let about = format!("file:machine:mac/dev/<i>odd</i>/.git/hooks/{name}");
-            finding_row(&mac, 0xe0 + k as u64, HOOK, &about, "changed")
-        })
-        .collect();
-    // Two of those answered: they are drawn apart from the open ones, in a row of their own.
+    let odd: Vec<String> = [
+        "pre-commit",
+        "pre-push",
+        "commit-msg",
+        "post-merge",
+        "pre-rebase",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(k, name)| {
+        let about = format!("file:machine:mac/dev/<i>odd</i>/.git/hooks/{name}");
+        finding_row(&mac, 0xe0 + k as u64, HOOK, &about, "changed")
+    })
+    .collect();
+    // Two of those seen: they are drawn apart from the open ones, in a row of their own; one
+    // expected is apart from those, so the answer a row shows is every member's.
     let seq = read(&mac);
     let with = ["seen", "--with", &odd[3], "--reason", "invented: mine"];
     given(
@@ -5585,13 +5599,15 @@ fn the_page_draws_a_group_as_one_row_of_its_folder_and_counts_each_finding() {
         &odd[2],
         &[&with[..], &["--journal-seq", &seq]].concat(),
     );
+    given(&mac, &odd[4], &["expected", "--reason", "invented: a tool"]);
     let page = mac.page();
     let (said, drawn) = said_and_drawn(&mac, &page);
     assert_eq!(said, drawn, "{page}");
-    // Eight hooks and the pair as one: eight findings, in five rows.
-    assert_eq!(said[4], 8, "{page}");
+    // Nine hooks and the pair as one: nine findings, in six rows.
+    assert_eq!(said[4], 9, "{page}");
     let rows = drawn_rows(&page);
-    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert_eq!(rows.len(), 6, "{rows:?}");
+    assert!(rows.contains(&vec![odd[4].clone()]), "{rows:?}");
     assert!(rows.contains(&vec![ids[0].clone(), partner]), "{rows:?}");
     assert!(rows.contains(&vec![ids[1].clone()]), "{rows:?}");
     assert!(rows.contains(&ids[2..].to_vec()), "{rows:?}");
@@ -5616,4 +5632,41 @@ fn the_page_draws_a_group_as_one_row_of_its_folder_and_counts_each_finding() {
         "{page}"
     );
     assert!(!page.contains("<i>odd"), "{page}");
+}
+
+#[test]
+fn a_row_holding_the_response_layer_s_finding_is_never_folded_so_that_finding_stays_on_the_page() {
+    let (mac, ids) = hooks("group-pair-kept");
+    // An urgent finding of the response layer about the first hook; the hook seen, then found
+    // again: its new occurrence has no verdict of its own and is the one the pair is drawn with.
+    let partner = partner_of(&mac, &ids[0], "case-kept");
+    given(&mac, &ids[0], &["seen", "--reason", "invented: mine"]);
+    let about: String = rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .query_row("SELECT about FROM finding WHERE id = ?1", [&ids[0]], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let again = "f00000000f0";
+    rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .execute(
+            "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                                  first_seen_run, last_seen_at, last_seen_run)
+             VALUES (?1, ?2, ?3, 2, 'open', 'new', 1, 'r', 1, 'r')",
+            rusqlite::params![again, HOOK, about],
+        )
+        .unwrap();
+    let page = mac.page();
+    let (said, drawn) = said_and_drawn(&mac, &page);
+    assert_eq!(said, drawn, "{page}");
+    // It needs the person now, and it is on the page under its own anchor.
+    assert_eq!(said[0], 1, "{page}");
+    assert!(
+        page.contains(&format!("<div class=\"also\" id=\"{partner}\">")),
+        "{page}"
+    );
+    let rows = drawn_rows(&page);
+    assert!(rows.contains(&vec![again.to_string(), partner]), "{rows:?}");
+    assert!(rows.contains(&ids[1..].to_vec()), "{rows:?}");
 }

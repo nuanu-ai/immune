@@ -276,8 +276,8 @@ struct FindingRow<'a> {
     item: &'a findings::Item,
     open: bool,
     under: Vec<(&'a findings::Item, bool)>,
-    /// The other findings of the item's group (`findings::group`) drawn in this row, as open
-    /// and as urgent as it, none with a verdict: the row is their folder.
+    /// The other findings of the item's group (`findings::group`) drawn in this row, in its
+    /// state and as urgent as it, none with a verdict or a pair: the row is their folder.
     siblings: Vec<&'a findings::Item>,
 }
 
@@ -344,13 +344,15 @@ fn finding_rows<'a>(
                 .collect(),
             siblings: Vec::new(),
         });
-    // A row of a group, as open as the first row of that group, goes into the first's row; a
-    // row with the response layer's word, a pair's included, stays its own. Its urgency is the
-    // first's: a group is of one rule, and a finding of the core with no verdict has its rule's
-    // levels.
-    fn key<'b>(r: &FindingRow<'b>) -> Option<([&'b str; 4], bool)> {
-        let group = findings::group(r.item).filter(|_| verdict_word(r.item).is_none())?;
-        Some((group, r.open))
+    // A row of a group in the same state as the first row of that group goes into the first's
+    // row, so the answer its summary shows is every member's. A row with anything under it or
+    // with the response layer's word is never folded nor folded into, so every finding stays in
+    // exactly one row. Its urgency is the first's: a group is of one rule, and a finding of the
+    // core with no verdict has its rule's levels.
+    fn key<'b>(r: &FindingRow<'b>) -> Option<([&'b str; 4], &'b str)> {
+        let alone = r.under.is_empty() && verdict_word(r.item).is_none();
+        let group = findings::group(r.item).filter(|_| alone)?;
+        Some((group, r.item.state.as_str()))
     }
     let mut out: Vec<FindingRow> = Vec::new();
     for row in rows {
