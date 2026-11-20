@@ -894,6 +894,60 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
 }
 
 #[test]
+fn every_command_for_an_agent_on_the_summary_has_one_fixed_hidden_copy_button_and_the_page_one_script()
+ {
+    let mac = Mac::new("page-copy");
+    mac.append(&dd(1));
+    mac.run();
+    let padding = mac.latest(PADDING).unwrap();
+    let raised = mac.send(&about_finding(
+        &mac.store_id(),
+        &padding,
+        "suspicious",
+        "case-1",
+    ));
+    let own = raised["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = mac.page();
+    // Each finding's line ends with its command and one button, the same fixed markup for
+    // every finding: hidden until the one script shows it, and nothing from the store in it.
+    let lines: Vec<&str> = page.split("<div class=\"fxb\">").skip(1).collect();
+    assert!(lines.len() >= 2, "{page}");
+    let mut buttons = std::collections::BTreeSet::new();
+    for line in &lines {
+        let line = &line[..line.find("</div>").unwrap()];
+        // The command and the button in one wrapper, so they never wrap apart.
+        assert!(
+            line.contains("<span class=\"cmd\"><span class=\"mono\">")
+                && line.ends_with("</button></span></span>"),
+            "{line}"
+        );
+        let at = line
+            .find("</span><button")
+            .unwrap_or_else(|| panic!("{line}"));
+        buttons.insert(&line[at + "</span>".len()..line.find("</button>").unwrap()]);
+    }
+    let button = buttons.first().unwrap();
+    assert!(
+        buttons.len() == 1
+            && button.starts_with("<button class=\"copy\" type=\"button\"")
+            && button[..button.find('>').unwrap()].ends_with(" hidden")
+            && !button.contains(&padding)
+            && !button.contains(&own),
+        "{buttons:?}"
+    );
+    assert!(page.contains(&format!(
+        "<span class=\"cmd\"><span class=\"mono\">immunity finding {own} --json</span><button"
+    )));
+    // One script, the fixed one, and no handler written into the markup.
+    assert_eq!(page.matches("<script").count(), 1, "{page}");
+    assert!(page.contains("<script src=\"view/happens.js\"></script>"));
+    assert!(!page.to_lowercase().contains(" onclick"), "{page}");
+}
+
+#[test]
 fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one_and_a_verdict_never_takes_either_out_of_open()
  {
     let mac = Mac::new("page-pair");

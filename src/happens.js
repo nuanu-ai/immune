@@ -8,6 +8,57 @@
 // count, found by its id; every rule's title stays as the page wrote it. Without the file, or with
 // scripting off, the section is the page as it was made, and says when. It also shows what a
 // technique's square is about, in a pop-up (`tips`).
+//
+// It also shows the button beside each finding's command for an agent and copies that command,
+// read from the text beside the button when it is clicked: by the clipboard when the browser
+// gives one, else by selecting it and copying, else it is left selected for Cmd+C.
+(function () {
+  "use strict";
+  var buttons = document.querySelectorAll("button.copy");
+  for (var i = 0; i < buttons.length; i++) buttons[i].hidden = false;
+  function said(b, words) {
+    b.title = words;
+    b.setAttribute("aria-label", words);
+  }
+  function done(b) {
+    b.classList.add("done");
+    said(b, "Copied");
+    setTimeout(function () {
+      b.classList.remove("done");
+      said(b, "Copy the command");
+    }, 1500);
+  }
+  function select(el) {
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("button.copy");
+    var cmd = b && b.previousElementSibling;
+    if (!cmd) return;
+    function fallback() {
+      select(cmd);
+      var ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (err) {}
+      if (!ok) return;
+      window.getSelection().removeAllRanges();
+      done(b);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(cmd.textContent).then(function () {
+        done(b);
+      }, fallback);
+    } else {
+      fallback();
+    }
+  });
+})();
+
 (function () {
   "use strict";
   var EVERY = 10000; // milliseconds between loads
