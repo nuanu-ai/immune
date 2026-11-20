@@ -1,8 +1,9 @@
 //! The view: a small summary page that answers what the app answers, and pages of details
 //! next to it with the big tables. It only reads. Nothing from the network: plain HTML,
 //! `<details>` and inline CSS. One script, fixed in the program and named by one fixed tag,
-//! keeps the numbers of "As it happens" fresh while the summary is open (`happens.rs`); no
-//! other page has one, and nothing from the store ever becomes script.
+//! keeps the numbers of "As it happens" fresh while the summary is open (`happens.rs`) and
+//! copies a finding's command for an agent; no other page has one, and nothing from the store
+//! ever becomes script.
 //!
 //! Invariant: every piece of text that comes from the store goes through `esc`
 //! before it enters the page. Names, versions, reasons and source references are
@@ -2203,7 +2204,21 @@ dl.facts dd .w { font: 12px/20px var(--font); }
 .quote { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--t3); font: var(--data); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fxb { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; font: var(--caption); color: var(--t2);
   padding-top: 12px; border-top: 1px solid var(--sep); }
-.fxb .mono { color: var(--t1); margin-left: 6px; }
+.fxb .mono { color: var(--t1); }
+/* The command and its copy button never part; "For your agent" may wrap away from them. */
+.fxb .cmd { margin-left: 3px; white-space: nowrap; }
+/* The copy button beside it (src/happens.js): two overlapping squares in the line's height, no
+   box; a check mark for a moment once it copied. */
+.copy { position: relative; width: 14px; height: 16px; margin: 0 0 0 4px; padding: 0; border: 0; background: none;
+  color: var(--t2); cursor: pointer; vertical-align: top; border-radius: 4px; }
+.copy:hover { color: var(--t1); }
+.copy:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.copy::before, .copy::after { content: ""; position: absolute; width: 8px; height: 8px; border: 1.2px solid currentColor; border-radius: 2px; }
+.copy::before { left: 1px; top: 2px; }
+.copy::after { left: 4px; top: 5px; background: var(--fill); }
+.copy.done { color: var(--calm-ink); }
+.copy.done::before { display: none; }
+.copy.done::after { left: 4px; top: 2px; width: 5px; height: 9px; border-width: 0 1.5px 1.5px 0; border-radius: 0; background: none; transform: rotate(45deg); }
 .empty, .more { padding: 24px 12px; color: var(--t2); margin: 0; border-bottom: 1px solid var(--sep); }
 .more { padding: 12px; }
 #you-can-fix .empty { border-bottom: 0; }
