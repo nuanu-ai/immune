@@ -894,6 +894,60 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
 }
 
 #[test]
+fn every_command_for_an_agent_on_the_summary_has_one_fixed_hidden_copy_button_and_the_page_one_script()
+ {
+    let mac = Mac::new("page-copy");
+    mac.append(&dd(1));
+    mac.run();
+    let padding = mac.latest(PADDING).unwrap();
+    let raised = mac.send(&about_finding(
+        &mac.store_id(),
+        &padding,
+        "suspicious",
+        "case-1",
+    ));
+    let own = raised["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = mac.page();
+    // Each finding's line ends with its command and one button, the same fixed markup for
+    // every finding: hidden until the one script shows it, and nothing from the store in it.
+    let lines: Vec<&str> = page.split("<div class=\"fxb\">").skip(1).collect();
+    assert!(lines.len() >= 2, "{page}");
+    let mut buttons = std::collections::BTreeSet::new();
+    for line in &lines {
+        let line = &line[..line.find("</div>").unwrap()];
+        // The command and the button in one wrapper, so they never wrap apart.
+        assert!(
+            line.contains("<span class=\"cmd\"><span class=\"mono\">")
+                && line.ends_with("</button></span></span>"),
+            "{line}"
+        );
+        let at = line
+            .find("</span><button")
+            .unwrap_or_else(|| panic!("{line}"));
+        buttons.insert(&line[at + "</span>".len()..line.find("</button>").unwrap()]);
+    }
+    let button = buttons.first().unwrap();
+    assert!(
+        buttons.len() == 1
+            && button.starts_with("<button class=\"copy\" type=\"button\"")
+            && button[..button.find('>').unwrap()].ends_with(" hidden")
+            && !button.contains(&padding)
+            && !button.contains(&own),
+        "{buttons:?}"
+    );
+    assert!(page.contains(&format!(
+        "<span class=\"cmd\"><span class=\"mono\">immunity finding {own} --json</span><button"
+    )));
+    // One script, the fixed one, and no handler written into the markup.
+    assert_eq!(page.matches("<script").count(), 1, "{page}");
+    assert!(page.contains("<script src=\"view/happens.js\"></script>"));
+    assert!(!page.to_lowercase().contains(" onclick"), "{page}");
+}
+
+#[test]
 fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one_and_a_verdict_never_takes_either_out_of_open()
  {
     let mac = Mac::new("page-pair");
@@ -1056,7 +1110,19 @@ fn said_and_drawn(mac: &Mac, page: &str) -> ([usize; 5], [usize; 5]) {
     let mut expected: Vec<&String> = needs.keys().chain(answered.iter()).collect();
     expected.sort();
     assert_eq!(every, expected, "every finding drawn once: {page}");
-    let count = |f: &dyn Fn(&String) -> bool| rows.iter().filter(|r| r.iter().any(f)).count();
+    // A row weighs its findings, the response layer's own finding with its pair as one: a
+    // group's row counts each finding of the group.
+    let verdicts: std::collections::BTreeSet<String> = mac.json(&["findings", "--all"])["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["finding"]["rule"] == VERDICT_RULE)
+        .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
+        .collect();
+    let weight = |r: &Vec<String>| r.iter().filter(|id| !verdicts.contains(*id)).count().max(1);
+    let count = |f: &dyn Fn(&String) -> bool| -> usize {
+        rows.iter().filter(|r| r.iter().any(f)).map(weight).sum()
+    };
     let now = count(&|id| needs.get(id) == Some(&true));
     let open = count(&|id| needs.contains_key(id));
     let drawn = [
@@ -1064,7 +1130,7 @@ fn said_and_drawn(mac: &Mac, page: &str) -> ([usize; 5], [usize; 5]) {
         open - now,
         open,
         count(&|id| answered.contains(id)),
-        rows.len(),
+        count(&|_| true),
     ];
     (said, drawn)
 }
@@ -5471,4 +5537,190 @@ fn the_group_key_is_equal_for_siblings_and_differs_by_folder_machine_rule_and_ch
         .find(|i| i["id"] == ids[0].as_str())
         .unwrap();
     assert_eq!(shown["group"], list[&ids[0]]["group"]);
+}
+
+/// The text a command prints for a person, in a pipe.
+fn text(mac: &Mac, args: &[&str]) -> String {
+    let out = mac.command(args).output().unwrap();
+    assert!(out.status.success(), "{args:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn the_list_says_the_change_the_finding_says_for_every_change_in_a_group_or_alone() {
+    let mac = Mac::new("change-words");
+    mac.run();
+    let mut n = 0xd0;
+    let mut ids: Vec<(String, &str)> = Vec::new();
+    for (change, said) in [
+        ("new", "added"),
+        ("changed", "changed"),
+        ("gone", "removed"),
+        ("not read", "could not be read"),
+    ] {
+        let name = change.replace(' ', "-");
+        // Two hooks of one folder, so the list folds them, and a startup item alone.
+        let abouts = [
+            (
+                HOOK,
+                format!("file:machine:mac/dev/{name}/.git/hooks/pre-commit"),
+            ),
+            (
+                HOOK,
+                format!("file:machine:mac/dev/{name}/.git/hooks/pre-push"),
+            ),
+            (
+                "watched.autostart",
+                format!("file:machine:mac/Library/LaunchAgents/{name}.plist"),
+            ),
+        ];
+        for (rule, about) in abouts {
+            n += 1;
+            ids.push((finding_row(&mac, n, rule, &about, change), said));
+        }
+    }
+    let partner = partner_of(&mac, &ids[0].0, "case-change");
+    let list: std::collections::BTreeMap<String, Value> = mac.findings()["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["finding"]["id"].as_str().unwrap().to_string(), f.clone()))
+        .collect();
+    let listed = text(&mac, &["findings"]);
+    for (id, said) in &ids {
+        // The message: the list's change is the evidence's.
+        let whole = mac.finding(id);
+        assert_eq!(
+            list[id]["change"], whole["evidence"]["place_changed"]["change"],
+            "{id}"
+        );
+        // The text: the list's word is the detail's.
+        let detail = text(&mac, &["finding", id]);
+        let word = detail
+            .lines()
+            .find_map(|l| l.trim_start().strip_prefix("Change "))
+            .and_then(|rest| rest.trim_start().split(", ").next())
+            .unwrap_or_else(|| panic!("{detail}"));
+        assert_eq!(word, *said, "{detail}");
+        // Its row, or the folded line its id is named under.
+        let lines: Vec<&str> = listed.lines().collect();
+        let at = lines.iter().position(|l| l.contains(id.as_str())).unwrap();
+        let line = lines[..=at]
+            .iter()
+            .rev()
+            .find(|l| !l.starts_with("      "))
+            .unwrap();
+        assert!(line.contains(&format!("  {said}  ")), "{id}: {listed}");
+    }
+    // A finding whose evidence is not a place that changed says no change.
+    assert!(list[&partner]["change"].is_null(), "{:#}", list[&partner]);
+    assert!(mac.finding(&partner)["evidence"]["place_changed"].is_null());
+}
+
+#[test]
+fn the_page_draws_a_group_as_one_row_of_its_folder_and_counts_each_finding() {
+    let (mac, ids) = hooks("group-page");
+    // One of them has the response layer's own finding, and one a harmless verdict: each keeps a
+    // row of its own, so its word is never hidden in a folder's row.
+    let partner = partner_of(&mac, &ids[0], "case-page");
+    mac.send(&about_finding(
+        &mac.store_id(),
+        &ids[1],
+        "harmless",
+        "case-page-2",
+    ));
+    // Two hooks in a folder whose name a page would read as markup.
+    let odd: Vec<String> = [
+        "pre-commit",
+        "pre-push",
+        "commit-msg",
+        "post-merge",
+        "pre-rebase",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(k, name)| {
+        let about = format!("file:machine:mac/dev/<i>odd</i>/.git/hooks/{name}");
+        finding_row(&mac, 0xe0 + k as u64, HOOK, &about, "changed")
+    })
+    .collect();
+    // Two of those seen: they are drawn apart from the open ones, in a row of their own; one
+    // expected is apart from those, so the answer a row shows is every member's.
+    let seq = read(&mac);
+    let with = ["seen", "--with", &odd[3], "--reason", "invented: mine"];
+    given(
+        &mac,
+        &odd[2],
+        &[&with[..], &["--journal-seq", &seq]].concat(),
+    );
+    given(&mac, &odd[4], &["expected", "--reason", "invented: a tool"]);
+    let page = mac.page();
+    let (said, drawn) = said_and_drawn(&mac, &page);
+    assert_eq!(said, drawn, "{page}");
+    // Nine hooks and the pair as one: nine findings, in six rows.
+    assert_eq!(said[4], 9, "{page}");
+    let rows = drawn_rows(&page);
+    assert_eq!(rows.len(), 6, "{rows:?}");
+    assert!(rows.contains(&vec![odd[4].clone()]), "{rows:?}");
+    assert!(rows.contains(&vec![ids[0].clone(), partner]), "{rows:?}");
+    assert!(rows.contains(&vec![ids[1].clone()]), "{rows:?}");
+    assert!(rows.contains(&ids[2..].to_vec()), "{rows:?}");
+    assert!(rows.contains(&odd[..2].to_vec()), "{rows:?}");
+    let answered: Vec<String> = rows.into_iter().find(|r| r.contains(&odd[2])).unwrap();
+    assert_eq!(answered.len(), 2, "{answered:?}");
+    // An answered finding is reached by its answered anchor, as everywhere on the page.
+    assert!(
+        page.contains(&format!(
+            "<div class=\"also\" id=\"answered-{}\">",
+            answered[1]
+        )),
+        "{page}"
+    );
+    assert!(
+        page.contains("<span class=\"fw\">~/dev/shop/.git/hooks</span><span class=\"fk\">Git hook · added · 2 findings</span>"),
+        "{page}"
+    );
+    // The folder is data, escaped as every name is.
+    assert!(
+        page.contains("<span class=\"fw\">~/dev/&lt;i&gt;odd&lt;/i&gt;/.git/hooks</span><span class=\"fk\">Git hook · changed · 2 findings</span>"),
+        "{page}"
+    );
+    assert!(!page.contains("<i>odd"), "{page}");
+}
+
+#[test]
+fn a_row_holding_the_response_layer_s_finding_is_never_folded_so_that_finding_stays_on_the_page() {
+    let (mac, ids) = hooks("group-pair-kept");
+    // An urgent finding of the response layer about the first hook; the hook seen, then found
+    // again: its new occurrence has no verdict of its own and is the one the pair is drawn with.
+    let partner = partner_of(&mac, &ids[0], "case-kept");
+    given(&mac, &ids[0], &["seen", "--reason", "invented: mine"]);
+    let about: String = rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .query_row("SELECT about FROM finding WHERE id = ?1", [&ids[0]], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let again = "f00000000f0";
+    rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .execute(
+            "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                                  first_seen_run, last_seen_at, last_seen_run)
+             VALUES (?1, ?2, ?3, 2, 'open', 'new', 1, 'r', 1, 'r')",
+            rusqlite::params![again, HOOK, about],
+        )
+        .unwrap();
+    let page = mac.page();
+    let (said, drawn) = said_and_drawn(&mac, &page);
+    assert_eq!(said, drawn, "{page}");
+    // It needs the person now, and it is on the page under its own anchor.
+    assert_eq!(said[0], 1, "{page}");
+    assert!(
+        page.contains(&format!("<div class=\"also\" id=\"{partner}\">")),
+        "{page}"
+    );
+    let rows = drawn_rows(&page);
+    assert!(rows.contains(&vec![again.to_string(), partner]), "{rows:?}");
+    assert!(rows.contains(&ids[1..].to_vec()), "{rows:?}");
 }

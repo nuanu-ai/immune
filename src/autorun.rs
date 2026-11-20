@@ -583,7 +583,7 @@ const AUTH_PLUGINS: &str =
 /// added later is read for the first time on a store that already exists: what it holds is
 /// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
-pub static POINTS: [Point; 88] = [
+pub static POINTS: [Point; 103] = [
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD) },
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD) },
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD) },
@@ -632,31 +632,43 @@ pub static POINTS: [Point; 88] = [
     Point { watch: Watch::Hourly(NO_FIXED_NAME), ..row(&["*.code-workspace"], Select(CommentsAndCommas, WORKSPACE), OpenInEditor, "VS Code and its forks", DependsOnSetting, (EVENT, "high", "low"), "https://maccarita.com/posts/idesaster") },
     row(&[".vscode/mcp.json"], Select(CommentsAndCommas, &["/servers/*"]), StartAgent, "VS Code", OncePerContent, (EVENT, "high", "medium"), "https://code.visualstudio.com/docs/agents/reference/mcp-configuration"),
     row(&[".idea"], Present, OpenInEditor, "JetBrains IDEs", OncePerFolder, (EVENT, "high", "low"), "https://www.jetbrains.com/help/idea/project-security.html"),
-    row(&[".zed/settings.json"], Present, OpenInEditor, "Zed", NotKnown, (EVENT, "high", "low"), "https://maccarita.com/posts/idesaster"),
-    row(&[".nvim.lua", ".nvimrc", ".exrc"], Present, OpenInEditor, "Vim, Neovim", OncePerContent, (EVENT, "high", "medium"), ""),
+    row(&[".zed/settings.json"], Present, OpenInEditor, "Zed", OncePerFolder, (EVENT, "high", "low"), "https://zed.dev/docs/worktree-trust"),
+    row(&[".nvim.lua", ".nvimrc", ".exrc"], Present, OpenInEditor, "Vim, Neovim", OncePerContent, (EVENT, "high", "medium"), "https://github.com/neovim/neovim/blob/master/runtime/doc/options.txt"),
     row(&[".dir-locals.el"], Present, OpenInEditor, "Emacs", OncePerContent, (EVENT, "high", "low"), "https://www.gnu.org/software/emacs/manual/html_node/emacs/Safe-File-Variables.html"),
+    // Configuration that is itself code, loaded by an editor's extension when the folder opens.
+    // VS Code keeps each of these extensions off until the folder is trusted.
+    row(&["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts"], Present, OpenInEditor, "ESLint for VS Code", DependsOnSetting, (EVENT, "high", "low"), "https://github.com/microsoft/vscode-eslint/blob/main/package.json; https://eslint.org/docs/latest/use/configure/configuration-files"),
+    row(&["tailwind.config.js", "tailwind.config.cjs", "tailwind.config.mjs", "tailwind.config.ts", "tailwind.config.cts", "tailwind.config.mts"], Present, OpenInEditor, "Tailwind CSS IntelliSense", DependsOnSetting, (EVENT, "high", "low"), "https://github.com/tailwindlabs/tailwindcss-intellisense/blob/main/packages/tailwindcss-language-server/src/lib/constants.ts"),
+    row(&["CMakeLists.txt"], Present, OpenInEditor, "CMake Tools", DependsOnSetting, (EVENT, "high", "low"), "https://github.com/microsoft/vscode-cmake-tools/blob/main/package.json"),
+    // Evaluated in a folder that also has `Gemfile.lock`.
+    row(&["Gemfile"], Present, OpenInEditor, "Ruby LSP", DependsOnSetting, (EVENT, "high", "low"), "https://github.com/Shopify/ruby-lsp/blob/main/lib/ruby_lsp/setup_bundler.rb"),
     row(&["build.rs"], Present, BuildOrTest, "Cargo, rust-analyzer", Never, (EVENT, "high", "low"), "https://doc.rust-lang.org/cargo/reference/build-scripts.html"),
     row(&[".claude/settings.json"], Select(Strict, CLAUDE), StartAgent, "Claude Code", OncePerFolder, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings"),
     Point { apart: Some(ALLOWED), ..row(&[".claude/settings.local.json"], Select(Strict, CLAUDE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings") },
     row(&[".mcp.json"], Select(Strict, MCP_SERVERS), StartAgent, "Claude Code", DependsOnSetting, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/mcp"),
     row(&[".claude/skills", ".claude/commands", ".claude/agents"], Present, AgentEvent, "Claude Code", Never, (EVENT, "high", "low"), "https://github.com/osquery/osquery/blob/master/specs/ai_agent_skills.table"),
-    row(&["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursor/rules", ".github/copilot-instructions.md"], Present, AgentEvent, "coding agents", Never, (None, "medium", "low"), "https://pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents"),
+    row(&["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md", ".claude/rules", "AGENTS.md", "GEMINI.md", ".cursor/rules", ".github/copilot-instructions.md"], Present, AgentEvent, "coding agents", Never, (None, "medium", "low"), "https://pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents"),
     row(&[".cursor/mcp.json"], Select(CommentsAndCommas, MCP_SERVERS), StartAgent, "Cursor", OncePerContent, (EVENT, "high", "medium"), "https://cursor.com/docs/context/mcp"),
     row(&[".cursor/hooks.json"], Select(CommentsAndCommas, &["/hooks"]), StartAgent, "Cursor", DependsOnSetting, (EVENT, "high", "medium"), "https://cursor.com/docs/agent/hooks"),
-    row(&[".codex/config.toml"], Present, StartAgent, "Codex", OncePerFolder, (EVENT, "high", "medium"), "https://learn.chatgpt.com/docs/config-file/config-reference"),
+    row(&[".codex/config.toml", ".codex/hooks.json"], Present, StartAgent, "Codex", OncePerFolder, (EVENT, "high", "medium"), "https://learn.chatgpt.com/docs/config-file/config-reference; https://learn.chatgpt.com/docs/hooks"),
     row(&[".gemini/settings.json"], Select(Comments, GEMINI), StartAgent, "Gemini CLI", DependsOnSetting, (EVENT, "high", "medium"), "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/trusted-folders.md"),
     row(&[".env", ".gemini/.env"], Present, StartAgent, "Gemini CLI", DependsOnSetting, (EVENT, "medium", "low"), "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/trusted-folders.md"),
     row(&[".kiro/hooks"], Present, AgentEvent, "Kiro", Never, (EVENT, "high", "medium"), "https://kiro.dev/docs/hooks/"),
     row(&["package.json"], Select(Strict, PACKAGE_SCRIPTS), InstallPackages, "npm, pnpm, Yarn, Bun", Never, (INSTALLER, "high", "low"), "https://docs.npmjs.com/cli/v11/using-npm/scripts"),
     row(&[".npmrc"], Present, EveryCommand, "npm", Never, (EVENT, "high", "low"), "https://docs.npmjs.com/cli/v11/using-npm/config"),
     row(&[".yarnrc.yml"], Present, EveryCommand, "Yarn", Never, (EVENT, "high", "low"), "https://yarnpkg.com/configuration/yarnrc"),
+    // The release `yarnPath` runs in place of Yarn, and the loaders Plug'n'Play generates.
+    row(&[".yarn/releases", ".pnp.cjs", ".pnp.loader.mjs"], Present, EveryCommand, "Yarn", Never, (EVENT, "high", "low"), "https://yarnpkg.com/getting-started/qa; https://yarnpkg.com/configuration/yarnrc; https://yarnpkg.com/features/pnp"),
     row(&[".pnpmfile.cjs", ".pnpmfile.mjs"], Bytes, InstallPackages, "pnpm", Never, (INSTALLER, "high", "low"), "https://pnpm.io/pnpmfile"),
     row(&["bunfig.toml"], Present, BuildOrTest, "Bun", Never, (EVENT, "high", "low"), "https://bun.sh/docs/runtime/bunfig"),
     row(&[".venv/lib/*/site-packages/*.pth"], Present, InterpreterStart, "Python", Never, (EVENT, "high", "medium"), "https://docs.python.org/3/library/site.html"),
-    row(&["conftest.py"], Present, BuildOrTest, "pytest", Never, (EVENT, "high", "low"), "https://docs.pytest.org/en/stable/how-to/writing_plugins.html"),
+    row(&["conftest.py", "test*/conftest.py"], Present, BuildOrTest, "pytest", Never, (EVENT, "high", "low"), "https://docs.pytest.org/en/stable/how-to/writing_plugins.html"),
     row(&[".cargo/config.toml", ".cargo/config"], Present, BuildOrTest, "Cargo", Never, (EVENT, "high", "low"), "https://doc.rust-lang.org/cargo/reference/config.html"),
-    row(&["rust-toolchain.toml"], Present, EveryCommand, "rustup", Never, (EVENT, "high", "low"), "https://rust-lang.github.io/rustup/overrides.html"),
-    row(&["gradlew", "gradle/wrapper", "*.gradle", "*.gradle.kts"], Present, BuildOrTest, "Gradle, IntelliJ", DependsOnSetting, (EVENT, "high", "low"), "https://docs.gradle.org/current/userguide/gradle_wrapper.html"),
+    // `rust-toolchain` wins over `rust-toolchain.toml` in the same folder.
+    row(&["rust-toolchain.toml", "rust-toolchain"], Present, EveryCommand, "rustup", Never, (EVENT, "high", "low"), "https://rust-lang.github.io/rustup/overrides.html"),
+    row(&["gradlew", "gradle/wrapper", "*.gradle", "*.gradle.kts", "buildSrc"], Present, BuildOrTest, "Gradle, IntelliJ", DependsOnSetting, (EVENT, "high", "low"), "https://docs.gradle.org/current/userguide/gradle_wrapper.html; https://docs.gradle.org/current/userguide/sharing_build_logic_between_subprojects.html"),
+    row(&["pom.xml", ".mvn/extensions.xml", ".mvn/jvm.config", ".mvn/maven.config"], Present, BuildOrTest, "Maven", Never, (EVENT, "high", "low"), "https://maven.apache.org/configure.html; https://maven.apache.org/guides/introduction/introduction-to-the-lifecycle.html"),
+    row(&["Directory.Build.props", "Directory.Build.targets"], Present, BuildOrTest, "MSBuild", Never, (EVENT, "high", "low"), "https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory"),
     row(&["composer.json"], Present, InstallPackages, "Composer", Never, (INSTALLER, "high", "low"), "https://getcomposer.org/doc/articles/scripts.md"),
     row(&["*.xcodeproj"], Present, BuildOrTest, "Xcode", NotKnown, (EVENT, "high", "low"), "https://attack.mitre.org/techniques/T1546/"),
     Point { place: Some(watched::HOOKS), ..row(&[".git/hooks"], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
@@ -666,9 +678,27 @@ pub static POINTS: [Point; 88] = [
     row(&[".pre-commit-config.yaml"], Present, GitCommand, "pre-commit", Never, (EVENT, "medium", "low"), "https://pre-commit.com/"),
     // As git's own hooks, whose rule tells it: no technique, medium and low.
     row(HUSKY, Bytes, GitCommand, "Husky", Never, (None, "medium", "low"), "https://typicode.github.io/husky/how-to.html"),
+    // Hook managers whose commands live in a file of a fixed name, named and not read.
+    row(&["lint-staged.config.js", "lint-staged.config.mjs", "lint-staged.config.mts", "lint-staged.config.ts", "lint-staged.config.cjs", "lint-staged.config.cts", ".lintstagedrc.js", ".lintstagedrc.mjs", ".lintstagedrc.mts", ".lintstagedrc.ts", ".lintstagedrc.cjs", ".lintstagedrc.cts"], Present, GitCommand, "lint-staged", Never, (EVENT, "medium", "low"), "https://github.com/lint-staged/lint-staged/blob/main/lib/configFiles.js"),
+    // Overcommit asks again for a configuration or hook whose signature changed, unless
+    // `verify_signatures` is off, and a change to that setting is asked about too.
+    row(&[".overcommit.yml", ".local-overcommit.yml", ".git-hooks"], Present, GitCommand, "Overcommit", OncePerContent, (EVENT, "medium", "low"), "https://github.com/sds/overcommit/blob/main/README.md"),
+    row(&["captainhook.json"], Present, GitCommand, "CaptainHook", Never, (EVENT, "medium", "low"), "https://github.com/captainhook-git/captainhook/blob/main/src/Config.php"),
+    row(&["grumphp.yml", "grumphp.yaml", "grumphp.yml.dist", "grumphp.yaml.dist", "grumphp.dist.yml", "grumphp.dist.yaml"], Present, GitCommand, "GrumPHP", Never, (EVENT, "medium", "low"), "https://github.com/phpro/grumphp/blob/v2.x/src/Locator/GuessedPathsLocator.php"),
+    // Lefthook's folders of scripts; its configuration files are not named here.
+    row(&[".lefthook", ".lefthook-local"], Present, GitCommand, "lefthook", Never, (EVENT, "medium", "low"), "https://github.com/evilmartians/lefthook/blob/v2.2.2/docs/configuration/Scripts.md"),
+    row(&[".simple-git-hooks.cjs", ".simple-git-hooks.js", ".simple-git-hooks.mjs", "simple-git-hooks.cjs", "simple-git-hooks.js", "simple-git-hooks.mjs"], Present, GitCommand, "simple-git-hooks", Never, (EVENT, "medium", "low"), "https://github.com/toplenboren/simple-git-hooks/blob/master/simple-git-hooks.js"),
     row(&[".envrc"], Present, EnterInShell, "direnv", OncePerContent, (EVENT, "high", "medium"), "https://direnv.net/"),
-    row(&["mise.toml", ".mise.toml"], Present, EnterInShell, "mise", OncePerFolder, (EVENT, "high", "medium"), "https://mise.jdx.dev/cli/trust.html"),
+    // What `use flake` and `use nix` in `.envrc` load. direnv asks again when `.envrc` changes,
+    // not when these do, so they are a row of their own.
+    row(&["flake.nix", "shell.nix", "default.nix"], Present, EnterInShell, "direnv with Nix", Never, (EVENT, "high", "medium"), "https://github.com/direnv/direnv/blob/master/man/direnv-stdlib.1.md"),
+    // As the page lists them, with each `conf.d` folder named whole, `.mise.toml` and
+    // `.mise.local.toml`, and `mise.<env>.toml`.
+    row(&["mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml", "mise.*.toml", "mise/config.toml", "mise/conf.d", ".mise/config.toml", ".mise/conf.d", ".config/mise.toml", ".config/mise/mise.toml", ".config/mise/config.toml", ".config/mise/conf.d", ".tool-versions"], Present, EnterInShell, "mise", OncePerFolder, (EVENT, "high", "medium"), "https://mise.jdx.dev/configuration.html; https://mise.jdx.dev/cli/trust.html"),
     row(&[".devcontainer/devcontainer.json", ".devcontainer.json"], Select(CommentsAndCommas, DEVCONTAINER), OpenInEditor, "Dev Containers", DependsOnSetting, (EVENT, "high", "low"), "https://containers.dev/implementors/json_reference/"),
+    // A dev container in a folder of its own, one level down: no fixed name to subscribe to,
+    // so it is named and not read.
+    row(&[".devcontainer/*/devcontainer.json"], Present, OpenInEditor, "Dev Containers", DependsOnSetting, (EVENT, "high", "low"), "https://containers.dev/implementors/spec/"),
     row(&[".github/workflows"], Present, GitCommand, "a self-hosted runner", Never, (EVENT, "high", "low"), "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"),
     home(&[".claude/settings.json"], Select(Strict, CLAUDE_USER), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings-reference"),
     Point { watch: Watch::Hourly(REWRITTEN), ..home(&[".claude.json"], Select(Strict, CLAUDE_STATE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/mcp") },
@@ -742,10 +772,17 @@ impl Asks {
 }
 
 impl Point {
-    /// The row's name: its names joined with commas. The store keeps it as the row's identifier;
-    /// a list for a person is made of `names`, so that each name is a name of its own.
+    /// The row's name: its names joined with commas, or for a row of more than `IN_FULL` names
+    /// its first and how many other names it has, so that one file present does not fill a
+    /// line. The store keeps it as the row's identifier; a list for a person is made of
+    /// `names_of`, so that each name is a name of its own.
     pub fn name(&self) -> String {
-        self.names().join(", ")
+        match self.names().as_slice() {
+            [first, others @ ..] if others.len() >= IN_FULL => {
+                format!("{first} or {} other names", others.len())
+            }
+            names => names.join(", "),
+        }
     }
 
     /// The row's names: its paths, from the home folder with `~/`, or where another file names
@@ -792,17 +829,16 @@ impl Point {
     }
 
     /// The coverage kind of the reading of this row: of its kind of place, or of this row in
-    /// every checkout or in the home folder.
+    /// every checkout or in the home folder. It holds every name, never the shortened one, so
+    /// that a store keeps the history of a row read by content under the kind it had.
     pub fn kind(&self) -> String {
+        let all = self.names().join(", ");
         match (self.kept, self.part, self.scope) {
             _ if self.place.is_some() => self.place.unwrap_or_default().1.to_string(),
             (Some(k), _, _) => k.kind.to_string(),
-            (_, Folders(_), _) => format!("{}, every folder by name", self.name()),
-            (_, _, Scope::Home) => format!("{}, the part that runs by itself", self.name()),
-            _ => format!(
-                "{} of each checkout, the part that runs by itself",
-                self.name()
-            ),
+            (_, Folders(_), _) => format!("{all}, every folder by name"),
+            (_, _, Scope::Home) => format!("{all}, the part that runs by itself"),
+            _ => format!("{all} of each checkout, the part that runs by itself"),
         }
     }
 
@@ -883,12 +919,20 @@ pub fn ways() -> impl Iterator<Item = (&'static Point, Way)> {
 }
 
 /// The names of the way the store keeps as `name` (`Point::name`), each a name of its own; a
-/// name this build has no row for is one name, as it was kept.
+/// way of more names than are named in full is its one shortened name, and a name this build
+/// has no row for is one name, as it was kept.
 pub fn names_of(name: &str) -> Vec<String> {
-    ways()
-        .find(|(p, _)| p.name() == name)
-        .map_or_else(|| vec![name.to_string()], |(p, _)| p.names())
+    ways().find(|(p, _)| p.name() == name).map_or_else(
+        || vec![name.to_string()],
+        |(p, _)| match p.names() {
+            names if names.len() > IN_FULL => vec![p.name()],
+            names => names,
+        },
+    )
 }
+
+/// The most names a row is named by in full; one of more is named by its first.
+const IN_FULL: usize = 3;
 
 /// The rows the watched places reader reads, each with its kind, in the order of the view and
 /// the report.
@@ -1842,11 +1886,25 @@ mod tests {
             assert_eq!(is, was);
         }
         assert_eq!(now.lines().count(), before.lines().count());
-        // 37 watched places, 42 ways in a project and 11 in the home folder: one table.
+        // 37 watched places, 57 ways in a project and 11 in the home folder: one table.
         assert_eq!(
             (places().count(), ways().count(), POINTS.len()),
-            (37, 53, 88)
+            (37, 68, 103)
         );
+        // The reference states the same counts.
+        let ((project_read, project), (home_read, home)) = (counts(false), counts(true));
+        let reference = include_str!("../docs/reference.md");
+        for said in [
+            format!(
+                "{project_read} of the {project} known ways in a project and {home_read} of the {home} known places in the home folder are read"
+            ),
+            format!("{} rows of the table of autorun points", places().count()),
+            format!("There are {project} ways in a project and {home} places in the home folder."),
+            format!("Read in a project ({project_read} of {project}):"),
+            format!("Read in the home folder ({home_read} of {home}):"),
+        ] {
+            assert!(reference.contains(&said), "docs/reference.md: {said}");
+        }
     }
 
     #[test]
@@ -1975,7 +2033,6 @@ mod tests {
                 "/etc/ssh/sshd_config",
                 "/etc/ssh/ssh_config.d",
                 "/etc/ssh/sshd_config.d",
-                ".nvim.lua, .nvimrc, .exrc",
             ]
         );
     }

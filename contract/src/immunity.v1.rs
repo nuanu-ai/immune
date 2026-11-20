@@ -1705,6 +1705,15 @@ pub struct ListedFinding {
     /// Absent when `group` is. Since 1.22.0.
     #[prost(string, optional, tag = "16")]
     pub folder_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// What happened to the place, for a finding whose evidence is a place that changed: always
+    /// the value `PlaceChanged.change` has in `immunity finding <id>`, so a list can say which
+    /// change it was. Absent for every other finding. Since 1.23.0.
+    #[prost(enumeration = "Change", optional, tag = "17")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Change, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Change, _>"
+    )]
+    pub change: ::core::option::Option<i32>,
 }
 /// The answer to `immunity finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]

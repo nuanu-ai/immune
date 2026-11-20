@@ -276,9 +276,17 @@ struct FindingRow<'a> {
     item: &'a findings::Item,
     open: bool,
     under: Vec<(&'a findings::Item, bool)>,
+    /// The other findings of the item's group (`findings::group`) drawn in this row, in its
+    /// state and as urgent as it, none with a verdict or a pair: the row is their folder.
+    siblings: Vec<&'a findings::Item>,
 }
 
 impl FindingRow<'_> {
+    /// How many findings the row counts as: a pair is one thing, each finding of a group one.
+    fn weight(&self) -> usize {
+        1 + self.siblings.len()
+    }
+
     /// The row is in Open while any finding in it is open, and in Answered while any is
     /// answered: a verdict never takes a finding out of Open.
     fn open(&self) -> bool {
@@ -321,7 +329,8 @@ fn finding_rows<'a>(
             under.entry(n).or_default().push(k);
         }
     }
-    all.iter()
+    let rows = all
+        .iter()
         .enumerate()
         .filter(|(n, _)| !nested.contains(n))
         .map(|(n, (i, open))| FindingRow {
@@ -333,8 +342,29 @@ fn finding_rows<'a>(
                 .flatten()
                 .map(|k| all[*k])
                 .collect(),
-        })
-        .collect()
+            siblings: Vec::new(),
+        });
+    // A row of a group in the same state as the first row of that group goes into the first's
+    // row, so the answer its summary shows is every member's. A row with anything under it or
+    // with the response layer's word is never folded nor folded into, so every finding stays in
+    // exactly one row. Its urgency is the first's: a group is of one rule, and a finding of the
+    // core with no verdict has its rule's levels.
+    fn key<'b>(r: &FindingRow<'b>) -> Option<([&'b str; 4], &'b str)> {
+        let alone = r.under.is_empty() && verdict_word(r.item).is_none();
+        let group = findings::group(r.item).filter(|_| alone)?;
+        Some((group, r.item.state.as_str()))
+    }
+    let mut out: Vec<FindingRow> = Vec::new();
+    for row in rows {
+        match out
+            .iter_mut()
+            .find(|o| key(&row).is_some() && key(o) == key(&row))
+        {
+            Some(first) => first.siblings.push(row.item),
+            None => out.push(row),
+        }
+    }
+    out
 }
 
 /// Every row of the table, from the state's open and answered findings.
@@ -344,7 +374,8 @@ fn rows_of(st: &crate::status::State) -> Vec<FindingRow<'_>> {
 
 /// What the band and the tabs count: things, as the rows show them. A finding and the response
 /// layer's own finding about the same thing are one row, so one thing to the person; the store's
-/// totals count them as two. `now` and `look` are the open rows in the two groups; `open`,
+/// totals count them as two. A row of a group's folder counts each finding of the group
+/// (`FindingRow::weight`). `now` and `look` are the open rows in the two groups; `open`,
 /// `answered` and `all` are the rows under each tab, a row with one finding open and one
 /// answered under both.
 #[derive(Debug, PartialEq)]
@@ -358,14 +389,20 @@ struct Shown {
 
 /// The one count of what the page shows, which the band and the tabs both say.
 fn shown(rows: &[FindingRow]) -> Shown {
-    let now = rows.iter().filter(|r| r.urgent()).count();
-    let open = rows.iter().filter(|r| r.open()).count();
+    let counted = |keep: &dyn Fn(&FindingRow) -> bool| {
+        rows.iter()
+            .filter(|r| keep(r))
+            .map(FindingRow::weight)
+            .sum()
+    };
+    let now = counted(&|r| r.urgent());
+    let open = counted(&|r| r.open());
     Shown {
         now,
         look: open - now,
         open,
-        answered: rows.iter().filter(|r| r.answered()).count(),
-        all: rows.len(),
+        answered: counted(&|r| r.answered()),
+        all: counted(&|_| true),
     }
 }
 
@@ -423,9 +460,12 @@ fn findings_table(
             }
         }
     }
-    if counts.open > ITEMS_SHOWN {
+    // What is not drawn, in findings as the tabs count them.
+    let weight = |rows: &[&FindingRow]| rows.iter().map(|r| r.weight()).sum::<usize>();
+    let urgent = weight(&now_rows[open_cut..]);
+    let hidden = urgent + weight(&look[look_cut..]);
+    if hidden > 0 {
         // Urgent ones come first, so the rest are the mildest unless urgent ones overflow.
-        let urgent = now_rows.len() - open_cut;
         let which = match urgent {
             0 => "the mildest".to_string(),
             u => format!("{} of them urgent", grouped(u as i64)),
@@ -433,14 +473,15 @@ fn findings_table(
         writeln!(
             out,
             "<p class=\"meta more open\">{} more, {which}; <span class=\"mono\">immunity findings</span> lists them.</p>",
-            grouped((counts.open - ITEMS_SHOWN) as i64)
+            grouped(hidden as i64)
         )?;
     }
-    if done.len() > ITEMS_SHOWN {
+    let answered_hidden = weight(&done[done.len().min(ITEMS_SHOWN)..]);
+    if answered_hidden > 0 {
         writeln!(
             out,
             "<p class=\"meta more answered\">{} more answered; <span class=\"mono\">immunity findings --all</span> lists them.</p>",
-            grouped((done.len() - ITEMS_SHOWN) as i64)
+            grouped(answered_hidden as i64)
         )?;
     }
     out.push_str("</section>\n");
@@ -534,10 +575,24 @@ fn finding_row(
         format!("answered-{}", esc(&i.id))
     };
     // The kind in the words a person reads, the same as the app's (`findings::kind_title`).
+    // What happened to a place, in the words of the list and the finding.
     let mut kind = findings::kind_title(i.kind).to_string();
-    if let Some(change) = &i.change {
+    let change = match crate::finding_answer::place_change(&i.rule, i.change.as_deref()) {
+        Some(c) => Some(crate::finding_text::change_said(c)),
+        None => i.change.as_deref(),
+    };
+    if let Some(change) = change {
         kind.push_str(" · ");
         kind.push_str(change);
+    }
+    // A group's row is its folder, with how many findings it holds.
+    let members: Vec<&findings::Item> = std::iter::once(i).chain(row.siblings.clone()).collect();
+    let folder = findings::group_folder(i).filter(|_| members.len() > 1);
+    if folder.is_some() {
+        kind.push_str(&format!(
+            " · {}",
+            counted(members.len() as i64, "finding", "findings")
+        ));
     }
     let answer = i.answer.as_ref().filter(|_| !row.open).map(|a| {
         let said = match a.until {
@@ -561,7 +616,9 @@ fn finding_row(
             Some("Harmless") => " harmless",
             _ => "",
         },
-        esc(&thing_of(i, whole.as_ref())),
+        esc(&folder
+            .clone()
+            .unwrap_or_else(|| thing_of(i, whole.as_ref()))),
         esc(&kind),
         answer.unwrap_or_default(),
         verdict_word(i).map_or("<span class=\"none\">—</span>".to_string(), |w| format!(
@@ -569,7 +626,25 @@ fn finding_row(
         )),
         i.last_seen.map_or(String::new(), |t| view::when(t, now)),
     )?;
-    finding_body(out, i, whole.as_ref(), &where_of(i, mac), now)?;
+    if folder.is_none() {
+        finding_body(out, i, whole.as_ref(), &where_of(i, mac), now)?;
+    }
+    // Each finding of a group under its own thing, the first by the row's own id.
+    for (k, m) in members.iter().enumerate().filter(|_| folder.is_some()) {
+        let anchor = match k {
+            0 => String::new(),
+            _ if row.open => format!(" id=\"{}\"", esc(&m.id)),
+            _ => format!(" id=\"answered-{}\"", esc(&m.id)),
+        };
+        let whole = crate::finding_answer::of(conn, found, &m.id, now)?;
+        writeln!(
+            out,
+            "<div class=\"also\"{anchor}>\n<p class=\"wsh2\">{}</p>",
+            esc(&thing_of(m, whole.as_ref()))
+        )?;
+        finding_body(out, m, whole.as_ref(), &where_of(m, mac), now)?;
+        out.push_str("</div>\n");
+    }
     for (c, open) in &row.under {
         let id = if *open {
             esc(&c.id)
@@ -665,11 +740,16 @@ fn finding_body(
     let command = format!("immunity finding {} --json", i.id);
     writeln!(
         out,
-        "<div class=\"fxb\"><span>{seen}</span><span>For your agent<span class=\"mono\">{}</span></span></div>",
+        "<div class=\"fxb\"><span>{seen}</span><span>For your agent <span class=\"cmd\"><span class=\"mono\">{}</span>{COPY}</span></span></div>",
         esc(&command)
     )?;
     Ok(())
 }
+
+/// The button beside the command an agent reads a finding with, fixed: the one script shows it
+/// and copies the text of the command beside it (`src/happens.js`), so without the script there
+/// is no button. Its icon is drawn by the style sheet, so a summary with many findings stays small.
+const COPY: &str = "<button class=\"copy\" type=\"button\" aria-label=\"Copy the command\" title=\"Copy the command\" hidden></button>";
 
 /// One voice of "Who said what": who, what they said and a quieter line, all safe HTML, and a
 /// quote of their own words, escaped when it is written.
@@ -761,14 +841,10 @@ fn evidence(f: &v1::Finding, facts: &mut Vec<(&str, String)>, voices: &mut Vec<V
     let word = |s: &str| format!("<span class=\"w\">{}</span>", esc(s));
     match f.evidence.as_ref().and_then(|e| e.body.as_ref()) {
         Some(Body::PlaceChanged(p)) => {
-            let change = match v1::Change::try_from(p.change) {
-                Ok(v1::Change::New) => "appeared",
-                Ok(v1::Change::Gone) => "went",
-                Ok(v1::Change::FirstRead) => "read for the first time",
-                Ok(v1::Change::NotRead) => "could not be read",
-                _ => "changed",
-            };
-            facts.push(("What happened", word(change)));
+            facts.push((
+                "What happened",
+                word(crate::finding_text::change_said(p.change)),
+            ));
             if p.presence_only == Some(true) {
                 facts.push((
                     "Watched",
@@ -3271,5 +3347,40 @@ mod tests {
                 r.id
             );
         }
+    }
+
+    #[test]
+    fn the_command_for_an_agent_stays_escaped_with_the_fixed_copy_button_right_after_it() {
+        let rules = findings::rules();
+        let r = rules.first().unwrap();
+        let i = findings::Item {
+            id: "<b>\"x".to_string(),
+            kind: r.kind,
+            rule: r.id.to_string(),
+            technique: None,
+            severity: None,
+            confidence: None,
+            state: "open".to_string(),
+            change: None,
+            first_seen: None,
+            last_seen: None,
+            words: r.words,
+            value: None,
+            place: None,
+            thing: None,
+            about: String::new(),
+            answer: None,
+            verdicts: None,
+            subject: None,
+        };
+        let mut out = String::new();
+        finding_body(&mut out, &i, None, "", 0).unwrap();
+        let line = &out[out.find("<div class=\"fxb\">").unwrap()..];
+        assert!(
+            line.contains(&format!(
+                "For your agent <span class=\"cmd\"><span class=\"mono\">immunity finding &lt;b&gt;&quot;x --json</span>{COPY}</span></span>"
+            )) && !line.contains("<b>"),
+            "{line}"
+        );
     }
 }
