@@ -602,7 +602,16 @@ fn one_of_the_two_commands_runs_at_a_time() {
     assert_eq!(login.calls(), Vec::<Vec<String>>::new());
     assert_eq!(login.snapshot(), before);
     drop(held);
-    assert!(service(&login.run("on", &[])).loaded);
+    // A child another test's thread is starting holds every descriptor of this process until it
+    // execs, `held` among them, and a flock belongs to the open file: the lock may outlive `held`
+    // for a moment.
+    let until = Instant::now() + Duration::from_secs(10);
+    let mut out = login.run("on", &[]);
+    while !out.status.success() && failure(&out, "on").0 == "busy" && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+        out = login.run("on", &[]);
+    }
+    assert!(service(&out).loaded);
 }
 
 #[test]
