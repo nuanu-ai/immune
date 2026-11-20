@@ -14,8 +14,9 @@
 //! the pages, loads it every ten seconds and redraws the numbers in place; the header says how
 //! fresh they are, or "not updating: no watcher is running" once the file is a minute old. It is
 //! the page's only script, and it adds no text but its own words and numbers and, in a pop-up
-//! over a technique's square, what the square carries as data. Without it the section is
-//! complete as made, and says when it was made.
+//! over a technique's square, what the square carries as data. It also shows the button beside
+//! each finding's command for an agent and copies the command's text, as the page wrote it.
+//! Without it the section is complete as made, and says when it was made, and there is no button.
 //!
 //! No false calm, the project's first invariant. Nothing is drawn as watching unless the event
 //! level's latest state is `running`: while it is not, one named line says so in place of the
@@ -1361,6 +1362,7 @@ sec.querySelectorAll = function (sel) {{
   return e ? [e] : [];
 }};
 var document = {{
+  querySelectorAll: function () {{ return []; }}, addEventListener: function () {{}},
   getElementById: function (id) {{ return id === "as-it-happens" ? sec : null; }},
   createElement: function () {{ return {{ remove: function () {{}} }}; }},
   head: {{ appendChild: function (s) {{
@@ -1631,6 +1633,56 @@ print(JSON.stringify({{ shown: out, touch_hidden: touch, mouse_hidden: tip.hidde
         assert_eq!(
             (&v["touch_hidden"], &v["mouse_hidden"]),
             (&false.into(), &true.into())
+        );
+    }
+
+    #[test]
+    fn the_copy_button_is_shown_and_copies_the_command_beside_it_with_or_without_a_clipboard() {
+        // A page opened as a file may have no clipboard: the command is then selected and
+        // copied, and when that fails too it stays selected for Cmd+C and the button never says
+        // "Copied". With a clipboard, the text beside the button is what is written.
+        let stand_in = format!(
+            r#"var window = globalThis;
+var cls = {{}};
+var cmd = {{ textContent: "immunity finding f0 --json" }};
+var b = {{ hidden: true, title: "", a: {{}}, previousElementSibling: cmd,
+  setAttribute: function (n, v) {{ this.a[n] = v; }},
+  classList: {{ add: function (c) {{ cls[c] = 1; }}, remove: function (c) {{ delete cls[c]; }} }},
+  closest: function () {{ return b; }} }};
+var on, selected = null, copies = 0, works = false, written = [];
+var navigator = {{}};
+var document = {{
+  querySelectorAll: function () {{ return [b]; }},
+  addEventListener: function (t, f) {{ on = f; }},
+  getElementById: function () {{ return null; }},
+  createRange: function () {{ return {{ selectNodeContents: function (n) {{ this.n = n; }} }}; }},
+  execCommand: function () {{ copies++; return works; }} }};
+window.getSelection = function () {{
+  return {{ removeAllRanges: function () {{ selected = null; }}, addRange: function (r) {{ selected = r.n; }} }};
+}};
+function setTimeout() {{}}
+{SCRIPT}
+var out = {{ shown: !b.hidden }};
+on({{ target: b }});
+out.failed = {{ selected: selected === cmd, copies: copies, said: b.title }};
+works = true;
+on({{ target: b }});
+out.copied = {{ selected: selected, said: b.title, label: b.a["aria-label"], done: !!cls.done }};
+navigator.clipboard = {{ writeText: function (t) {{ written.push(t); return {{ then: function (ok) {{ ok(); }} }}; }} }};
+on({{ target: b }});
+out.written = written;
+print(JSON.stringify(out));
+"#
+        );
+        let v = run_js(&stand_in);
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "shown": true,
+                "failed": { "selected": true, "copies": 1, "said": "" },
+                "copied": { "selected": null, "said": "Copied", "label": "Copied", "done": true },
+                "written": ["immunity finding f0 --json"],
+            })
         );
     }
 }

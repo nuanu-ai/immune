@@ -665,11 +665,16 @@ fn finding_body(
     let command = format!("immunity finding {} --json", i.id);
     writeln!(
         out,
-        "<div class=\"fxb\"><span>{seen}</span><span>For your agent<span class=\"mono\">{}</span></span></div>",
+        "<div class=\"fxb\"><span>{seen}</span><span>For your agent <span class=\"cmd\"><span class=\"mono\">{}</span>{COPY}</span></span></div>",
         esc(&command)
     )?;
     Ok(())
 }
+
+/// The button beside the command an agent reads a finding with, fixed: the one script shows it
+/// and copies the text of the command beside it (`src/happens.js`), so without the script there
+/// is no button. Its icon is drawn by the style sheet, so a summary with many findings stays small.
+const COPY: &str = "<button class=\"copy\" type=\"button\" aria-label=\"Copy the command\" title=\"Copy the command\" hidden></button>";
 
 /// One voice of "Who said what": who, what they said and a quieter line, all safe HTML, and a
 /// quote of their own words, escaped when it is written.
@@ -3271,5 +3276,40 @@ mod tests {
                 r.id
             );
         }
+    }
+
+    #[test]
+    fn the_command_for_an_agent_stays_escaped_with_the_fixed_copy_button_right_after_it() {
+        let rules = findings::rules();
+        let r = rules.first().unwrap();
+        let i = findings::Item {
+            id: "<b>\"x".to_string(),
+            kind: r.kind,
+            rule: r.id.to_string(),
+            technique: None,
+            severity: None,
+            confidence: None,
+            state: "open".to_string(),
+            change: None,
+            first_seen: None,
+            last_seen: None,
+            words: r.words,
+            value: None,
+            place: None,
+            thing: None,
+            about: String::new(),
+            answer: None,
+            verdicts: None,
+            subject: None,
+        };
+        let mut out = String::new();
+        finding_body(&mut out, &i, None, "", 0).unwrap();
+        let line = &out[out.find("<div class=\"fxb\">").unwrap()..];
+        assert!(
+            line.contains(&format!(
+                "For your agent <span class=\"cmd\"><span class=\"mono\">immunity finding &lt;b&gt;&quot;x --json</span>{COPY}</span></span>"
+            )) && !line.contains("<b>"),
+            "{line}"
+        );
     }
 }
