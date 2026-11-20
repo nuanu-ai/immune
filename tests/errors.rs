@@ -264,7 +264,10 @@ fn a_store_another_process_holds_is_one_to_ask_again_in_every_form_and_never_unr
     // A sample of a reading that is not one makes the store and records nothing.
     std::fs::write(e.dir().join("bad.json"), "not a reading").unwrap();
     e.on(&store, &["sample", "--sample-input", "bad.json"]);
-    let db = rusqlite::Connection::open(&store).unwrap();
+    // Opened without making it: the store held is the one the sample made.
+    let db =
+        rusqlite::Connection::open_with_flags(&store, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap();
     db.execute_batch("BEGIN EXCLUSIVE").unwrap();
     // Each command waits out SQLite's busy timeout of five seconds, so they wait side by side.
     let asked: [&[&str]; 7] = [

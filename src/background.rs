@@ -279,13 +279,13 @@ mod tests {
         };
         let mut checks = Checks::new(command("exit 4"));
         checks.tick(10);
-        reaped(&mut checks, 10);
-        // Five minutes later, as the documents say.
-        assert!(checks.tick(309).is_none());
+        reaped(&mut checks, 100);
+        // Five minutes after the watcher saw it end, as the documents say, not after its start.
+        assert!(checks.tick(399).is_none());
         assert!(checks.running.is_none());
-        assert!(checks.tick(310).is_none());
+        assert!(checks.tick(400).is_none());
         assert!(checks.running.is_some());
-        reaped(&mut checks, 310);
+        reaped(&mut checks, 400);
         // A check already due sooner, here by a clock moved back, is not put off by the retry.
         let mut checks = Checks::new(command("exit 4"));
         checks.tick(10_000);
