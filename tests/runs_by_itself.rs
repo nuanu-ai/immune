@@ -505,6 +505,9 @@ fn a_way_not_read_with_two_names_is_named_as_two_names_in_the_report_and_the_sta
     // With Vim's way, of three files, there are five names: every one is given, not a first
     // three that would leave a way out unsaid.
     put(&e.checkout("dev/cli").join(".nvimrc"), "set number\n");
+    // A way of more than three files is named once, by its first and the count of the others,
+    // so that one file of it does not fill the line.
+    put(&e.checkout("dev/tool").join("mise.dev.toml"), "\n");
     let out = e
         .command(Some(&e.home()), &e.0.join("empty"))
         .output()
@@ -521,9 +524,16 @@ fn a_way_not_read_with_two_names_is_named_as_two_names_in_the_report_and_the_sta
         .unwrap();
     assert_eq!(
         u["examples_text"],
-        serde_json::json!([".env", ".gemini/.env", ".nvim.lua", ".nvimrc", ".exrc"])
+        serde_json::json!([
+            ".env",
+            ".gemini/.env",
+            ".nvim.lua",
+            ".nvimrc",
+            ".exrc",
+            "mise.toml or 13 other names"
+        ])
     );
-    assert_eq!(u["count"], 2);
+    assert_eq!(u["count"], 3);
     let text = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_immunity"))
             .args(args)
