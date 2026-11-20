@@ -1919,17 +1919,56 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
                 g.rule.clone(),
             )
         });
-        // One table for every row, so the columns line up down the page.
-        let rows: Vec<Vec<Cell>> = groups
+        // Under a rule's name, the findings of one group (`group`, equal and present) that share
+        // urgency and state are one line: drawing only, every finding still named by its id.
+        // A line of several says their folder, so one without it is never folded; one with a
+        // verdict of the response layer stays a row of its own, as on the pages.
+        let key = |l: &v1::ListedFinding| {
+            let group = l
+                .group
+                .clone()
+                .filter(|_| l.folder_text.is_some() && l.verdicts.is_none())?;
+            Some((group, urgent(l), state_of(l)))
+        };
+        let lines_of: Vec<Vec<Vec<&v1::ListedFinding>>> = groups
             .iter()
-            .flat_map(|g| g.rows.iter())
-            .map(|l| {
+            .map(|g| {
+                let mut lines: Vec<Vec<&v1::ListedFinding>> = Vec::new();
+                for l in &g.rows {
+                    match lines
+                        .iter_mut()
+                        .find(|line| key(l).is_some() && key(line[0]) == key(l))
+                    {
+                        Some(line) => line.push(l),
+                        None => lines.push(vec![l]),
+                    }
+                }
+                lines
+            })
+            .collect();
+        let with_change = listed.iter().any(|l| l.change.is_some());
+        // One table for every line, so the columns line up down the page.
+        let rows: Vec<Vec<Cell>> = lines_of
+            .iter()
+            .flatten()
+            .map(|line| {
+                let (l, n) = (line[0], line.len() as u64);
                 let r = l.finding.clone().unwrap_or_default();
-                let mut row = vec![Cell::new(r.id.clone(), DIM)];
+                let mut row = vec![match n {
+                    1 => Cell::new(r.id.clone(), DIM),
+                    n => Cell::new(count(n, "finding", "findings"), BOLD),
+                }];
                 if with_state {
                     row.push(Cell::plain(words::<v1::FindingState>(r.state)));
                 }
-                row.push(telling(l));
+                if with_change {
+                    let said = l.change.map_or("", crate::finding_text::change_said);
+                    row.push(Cell::plain(said));
+                }
+                row.push(match &l.folder_text {
+                    Some(folder) if n > 1 => Cell::plain(folder.clone()),
+                    _ => telling(l),
+                });
                 row.push(Cell::new(if r.urgent { "urgent" } else { "" }, RED));
                 row
             })
@@ -1938,10 +1977,13 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
         if with_state {
             columns_of.push(Column::new(Cut::Never));
         }
+        if with_change {
+            columns_of.push(Column::new(Cut::Never));
+        }
         columns_of.extend([Column::new(Cut::Middle), Column::new(Cut::Never)]);
         let mut lines = screen.table(4, &columns_of, None, &rows).into_iter();
         let mut last_level: Option<String> = None;
-        for g in &groups {
+        for (g, folded) in groups.iter().zip(&lines_of) {
             if last_level.as_deref() != Some(g.level.0.as_str()) {
                 if last_level.is_some() {
                     out.push(String::new());
@@ -1949,7 +1991,15 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
                 out.push(screen.paint(g.level.1.bold(), &g.level.0));
                 last_level = Some(g.level.0.clone());
             }
-            let n = grouped(g.rows.len() as u64);
+            // Findings, never lines; with folded lines under it, both.
+            let n = match folded.len() {
+                l if l == g.rows.len() => grouped(l as u64),
+                l => format!(
+                    "{} in {}",
+                    count(g.rows.len() as u64, "finding", "findings"),
+                    count(l as u64, "line", "lines")
+                ),
+            };
             // A title from a core that gives no short one is a sentence, cut to fit on a terminal.
             let title = match screen.fits() {
                 Some(w) => screen::cut_end(
@@ -1963,7 +2013,24 @@ pub fn findings(f: &v1::Findings, all: bool, screen: &Screen) -> String {
                 screen.paint(PLAIN, &title),
                 screen.paint(BOLD, &n)
             ));
-            out.extend(lines.by_ref().take(g.rows.len()));
+            for line in folded {
+                let drawn = lines.next().unwrap_or_default();
+                out.push(drawn);
+                if line.len() == 1 {
+                    continue;
+                }
+                // Every id whole, under the line, so the folder ends its own line as a path does
+                // and the ids' lines hold nothing from the Mac: one line in a pipe, wrapped on a
+                // terminal.
+                let ids: Vec<String> = line
+                    .iter()
+                    .map(|l| l.finding.as_ref().map_or(String::new(), |r| r.id.clone()))
+                    .collect();
+                let width = screen.fits().map(|w| w.saturating_sub(6));
+                for l in screen::wrap(&ids.join(", "), width) {
+                    out.push(format!("      {}", screen.paint(DIM, &l)));
+                }
+            }
         }
     }
     if shown.len() > FINDINGS_SHOWN {
@@ -2363,15 +2430,25 @@ mod tests {
             ..listed(7, v1::Level::High, true, "example-host".to_string())
         });
         for i in 8..40 {
-            list.push(listed(
-                i,
-                v1::Level::High,
-                i % 2 == 0,
-                format!("~/dev/{odd}-{i}/.git/hooks/pre-commit"),
-            ));
+            list.push(v1::ListedFinding {
+                change: Some(v1::Change::Changed as i32),
+                ..listed(
+                    i,
+                    v1::Level::High,
+                    i % 2 == 0,
+                    format!("~/dev/{odd}-{i}/.git/hooks/pre-commit"),
+                )
+            });
         }
         for i in 40..60 {
-            list.push(listed(i, v1::Level::Medium, false, format!("{LONG}/{i}")));
+            let mut l = listed(i, v1::Level::Medium, false, format!("{LONG}/{i}"));
+            // Ten of one group, folded under their folder, which holds `odd` too.
+            if i >= 50 {
+                l.group = Some("g1".to_string());
+                l.folder_text = Some(format!("~/dev/{odd}/.git/hooks"));
+                l.change = Some(v1::Change::NotRead as i32);
+            }
+            list.push(l);
         }
         let mut seen = listed(60, v1::Level::Low, false, "~/.zshrc".to_string());
         if let Some(r) = seen.finding.as_mut() {
@@ -3132,7 +3209,7 @@ mod tests {
             let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("    f")).collect();
             assert_eq!(rows.len(), 6, "{text}");
             assert!(
-                rows[0].contains("f0000000004") && rows[0].ends_with("urgent"),
+                rows[0].starts_with("    f0000000004  ~/dev/p4/x") && rows[0].ends_with("urgent"),
                 "{text}"
             );
             assert!(rows[1].contains("f0000000001") && rows[3].contains("f0000000005"));
@@ -3151,6 +3228,171 @@ mod tests {
         let text = findings(&long, false, &Screen::terminal(80, false));
         let row = text.lines().find(|l| l.starts_with("    f")).unwrap();
         assert!(screen::columns(row) >= 70, "{text}");
+    }
+
+    /// A new hook of a group in `folder`, as the core lists it.
+    fn hook(
+        i: usize,
+        group: Option<&str>,
+        folder: Option<&str>,
+        urgent: bool,
+    ) -> v1::ListedFinding {
+        v1::ListedFinding {
+            group: group.map(str::to_string),
+            folder_text: folder.map(str::to_string),
+            change: Some(v1::Change::New as i32),
+            ..listed(
+                i,
+                v1::Level::Medium,
+                urgent,
+                format!("~/dev/shop/.git/hooks/h{i}"),
+            )
+        }
+    }
+
+    fn list_of(findings: Vec<v1::ListedFinding>) -> v1::Findings {
+        v1::Findings {
+            answered_at: NOW,
+            latest_run_at: Some(CHECKED),
+            findings,
+            ..Default::default()
+        }
+    }
+
+    /// The lines of a text that hold `id`.
+    fn holding<'a>(text: &'a str, id: &str) -> Vec<&'a str> {
+        text.lines().filter(|l| l.contains(id)).collect()
+    }
+
+    #[test]
+    fn a_folded_line_counts_the_findings_it_names_and_names_each_by_its_whole_id() {
+        let folder = Some("~/dev/shop/.git/hooks");
+        let mut list: Vec<v1::ListedFinding> = (0..14)
+            .map(|i| hook(i, Some("g1"), folder, false))
+            .collect();
+        // A group of one is an ordinary row.
+        list.push(hook(20, Some("g2"), Some("~/dev/cart/.git/hooks"), false));
+        let f = list_of(list);
+        for screen in screens() {
+            let text = visible(&findings(&f, false, &screen));
+            // The heading counts findings, and says the lines too.
+            assert!(
+                text.contains("Script git runs by itself changed   15 findings in 2 lines"),
+                "{text}"
+            );
+            // Every id whole, once; the folded line says how many, and no more nor fewer.
+            for l in &f.findings {
+                let id = &l.finding.as_ref().unwrap().id;
+                assert_eq!(text.matches(id.as_str()).count(), 1, "{id}\n{text}");
+            }
+            // The folder ends its line, as a path does; the ids are on the lines under it and
+            // nothing else is, one line in a pipe.
+            let lines: Vec<&str> = text.lines().collect();
+            let k = lines
+                .iter()
+                .position(|l| *l == "    14 findings  added  ~/dev/shop/.git/hooks")
+                .unwrap_or_else(|| panic!("{text}"));
+            let under: Vec<&str> = lines[k + 1..]
+                .iter()
+                .take_while(|l| l.starts_with("      f"))
+                .copied()
+                .collect();
+            let named: Vec<&str> = under
+                .iter()
+                .flat_map(|l| l.split([',', ' ']))
+                .filter(|s| !s.is_empty())
+                .collect();
+            let ids: Vec<String> = (0..14).map(|i| format!("f{i:010x}")).collect();
+            assert_eq!(named, ids, "{text}");
+            if !screen.terminal {
+                assert_eq!(under.len(), 1, "{text}");
+            }
+            // The group of one: its own id first on its row, with its own place.
+            assert!(
+                holding(&text, "f0000000014")[0]
+                    .starts_with("    f0000000014  added  ~/dev/shop/.git/hooks/h20"),
+                "{text}"
+            );
+            // Nothing on it answers.
+            assert!(!text.contains("--with"), "{text}");
+        }
+    }
+
+    #[test]
+    fn findings_fold_only_by_a_group_key_present_and_equal_and_never_across_urgency_or_state() {
+        let folder = Some("~/dev/shop/.git/hooks");
+        let mut seen = hook(7, Some("g1"), folder, false);
+        if let Some(r) = seen.finding.as_mut() {
+            r.state = v1::FindingState::Seen as i32;
+        }
+        // With the response layer's verdicts, counted, or naming its own finding about it.
+        let judged = |i: usize, verdicts: v1::Verdicts| v1::ListedFinding {
+            verdicts: Some(verdicts),
+            ..hook(i, Some("g1"), folder, false)
+        };
+        let f = list_of(vec![
+            hook(0, Some("g1"), folder, false),
+            hook(1, Some("g1"), folder, true),
+            hook(2, Some("g1"), folder, false),
+            hook(3, Some("g1"), folder, true),
+            // The same folder, no key; a key with no folder.
+            hook(4, None, folder, false),
+            hook(5, None, folder, false),
+            hook(6, Some("g3"), None, false),
+            hook(8, Some("g3"), None, false),
+            seen,
+            hook(9, Some("g1"), folder, false),
+            judged(
+                10,
+                v1::Verdicts {
+                    total: 1,
+                    ..Default::default()
+                },
+            ),
+            judged(
+                11,
+                v1::Verdicts {
+                    verdict_finding: Some(v1::FindingRef::default()),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        for screen in [Screen::pipe(), Screen::terminal(80, false)] {
+            let text = findings(&f, true, &screen);
+            // The urgent two apart from the others, on a line that says it.
+            let urgent = holding(&text, "f0000000001");
+            assert_eq!(urgent, holding(&text, "f0000000003"), "{text}");
+            let other = holding(&text, "f0000000000");
+            assert_eq!(other, holding(&text, "f0000000009"), "{text}");
+            assert_ne!(urgent, other, "{text}");
+            // The folded line an id is named under.
+            let line = |id: &str| {
+                let at = text.find(id).unwrap();
+                let head = text[..at].rfind("findings").unwrap();
+                text[text[..head].rfind('\n').unwrap()..]
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+            };
+            assert!(line("f0000000001").contains("2 findings"), "{text}");
+            assert!(line("f0000000001").contains("urgent"), "{text}");
+            assert!(line("f0000000000").contains("3 findings"), "{text}");
+            assert!(!line("f0000000000").contains("urgent"), "{text}");
+            // The answered one of the group apart from the open ones.
+            let row = |id: &str| holding(&text, id)[0].starts_with(&format!("    {id}  "));
+            assert!(row("f0000000007"), "{text}");
+            // Without a key, without a folder to say, or with a verdict, each its own row.
+            for id in [
+                "f0000000004",
+                "f0000000005",
+                "f0000000006",
+                "f0000000008",
+                "f000000000a",
+                "f000000000b",
+            ] {
+                assert!(row(id), "{text}");
+            }
+        }
     }
 
     /// A status with only these causes of what is not covered.

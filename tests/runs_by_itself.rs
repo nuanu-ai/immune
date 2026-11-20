@@ -5805,7 +5805,7 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
     let page = e.page("view.html");
     assert!(
         page.contains(
-            "<span class=\"fw\">1 project</span><span class=\"fk\">Read for the first time · first read</span>"
+            "<span class=\"fw\">1 project</span><span class=\"fk\">Read for the first time · read for the first time</span>"
         ),
         "{page}"
     );

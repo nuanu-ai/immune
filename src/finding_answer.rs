@@ -198,6 +198,7 @@ pub fn listed(
         finding: Some(known::finding_ref(i)),
         group: findings::group_key(i),
         folder_text: findings::group_folder(i).as_deref().map(whole),
+        change: place_change(&i.rule, i.change.as_deref()),
         kind: i.kind.to_string(),
         title: i.words.title.to_string(),
         where_text: whole(i.place.as_deref().unwrap_or_default()),
@@ -252,13 +253,15 @@ pub fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evi
             events,
         })));
     }
+    if let Some(change) = place_change(&f.rule, f.change.as_deref()) {
+        return Ok(Some(Body::PlaceChanged(v1::PlaceChanged {
+            change,
+            presence_only: crate::watched::last_presence_only(conn, &f.about)?,
+        })));
+    }
     let became = || f.became.as_deref().map(whole);
     Ok(Some(
         match f.rule.split_once('.').map(|(family, _)| family) {
-            Some("watched" | "autorun") => Body::PlaceChanged(v1::PlaceChanged {
-                change: change(f.change.as_deref()),
-                presence_only: crate::watched::last_presence_only(conn, &f.about)?,
-            }),
             Some("integrity") => Body::ChangedInPlace(v1::ChangedInPlace {
                 became_text: became(),
             }),
@@ -270,6 +273,17 @@ pub fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evi
             _ => return Ok(None),
         },
     ))
+}
+
+/// What happened to the place a finding is about, for a rule whose evidence is a place that
+/// changed (`watched.*` and `autorun.*`); `None` for every other rule. The one source of
+/// `PlaceChanged.change` and `ListedFinding.change`, so a list and a finding never disagree.
+pub fn place_change(rule: &str, word: Option<&str>) -> Option<i32> {
+    matches!(
+        rule.split_once('.').map(|(family, _)| family),
+        Some("watched" | "autorun")
+    )
+    .then(|| change(word))
 }
 
 /// A change as the store words it, with spaces written as underscores in the contract.

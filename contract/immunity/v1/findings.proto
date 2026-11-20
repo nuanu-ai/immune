@@ -103,6 +103,10 @@ message ListedFinding {
   // The folder of the group, as `where_text` gives a place, `~` for the home folder itself.
   // Absent when `group` is. Since 1.22.0.
   optional string folder_text = 16;
+  // What happened to the place, for a finding whose evidence is a place that changed: always
+  // the value `PlaceChanged.change` has in `immunity finding <id>`, so a list can say which
+  // change it was. Absent for every other finding. Since 1.23.0.
+  optional Change change = 17;
 }
 
 // The answer to `immunity finding <id>`: one finding whole.
