@@ -5485,6 +5485,48 @@ fn the_group_key_is_equal_for_siblings_and_differs_by_folder_machine_rule_and_ch
     assert_eq!(shown["group"], list[&ids[0]]["group"]);
 }
 
+#[test]
+fn only_the_hooks_of_a_hooks_folder_share_a_group_and_a_file_a_hook_manager_keeps_has_none() {
+    // A group is the files of one hooks folder, which one tool writes as a whole. A hook
+    // manager's configuration at a checkout's root, Husky's script in `.husky`, its dispatcher
+    // beside the hooks in `.husky/_` and its startup file in the home folder are each a row of
+    // their own, though they are found by the same rule, with the same change, side by side.
+    let (mac, ids) = hooks("group-rows");
+    let husky = "file:machine:mac/dev/shop/.husky/_";
+    let stubs = [
+        finding_row(&mac, 0xe0, HOOK, &format!("{husky}/pre-commit"), "new"),
+        finding_row(&mac, 0xe1, HOOK, &format!("{husky}/pre-push"), "new"),
+    ];
+    let alone = [
+        "file:machine:mac/dev/shop/.pre-commit-config.yaml",
+        "file:machine:mac/dev/shop/lefthook.yml",
+        "file:machine:mac/dev/shop/.husky/pre-commit",
+        &format!("{husky}/h"),
+        "file:machine:mac/.huskyrc",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(k, about)| finding_row(&mac, 0xe8 + k as u64, HOOK, about, "new"))
+    .collect::<Vec<_>>();
+    let list: std::collections::BTreeMap<String, Value> = mac.findings()["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["finding"]["id"].as_str().unwrap().to_string(), f.clone()))
+        .collect();
+    let group = |id: &str| {
+        let f = &list[id];
+        (f["group"].as_str(), f["folder_text"].as_str())
+    };
+    assert!(group(&ids[0]).0.is_some());
+    assert_eq!(group(&ids[1]), group(&ids[0]));
+    assert_eq!(group(&stubs[0]).1, Some("~/dev/shop/.husky/_"));
+    assert_eq!(group(&stubs[1]), group(&stubs[0]));
+    for id in &alone {
+        assert_eq!(group(id), (None, None), "{id}");
+    }
+}
+
 /// The text a command prints for a person, in a pipe.
 fn text(mac: &Mac, args: &[&str]) -> String {
     let out = mac.command(args).output().unwrap();

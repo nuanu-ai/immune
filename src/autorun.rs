@@ -1184,6 +1184,17 @@ pub fn levels(watched_as: &str) -> (Option<&'static str>, &'static str, &'static
         .unwrap_or((None, "medium", "low"))
 }
 
+/// Whether a file, as ids name it from the home folder, is one a row of this table reads as a
+/// file git runs code from: its path ends as the path of such a row. A hook whose name ends as
+/// one counts too; no hook name Git runs does.
+pub fn read_as_git_command(unit: &str) -> bool {
+    POINTS
+        .iter()
+        .filter(|p| p.finds(GIT_COMMAND.0) || p.finds(GIT_COMMAND_HOME.0))
+        .flat_map(|p| p.paths.iter())
+        .any(|path| unit.ends_with(path))
+}
+
 /// Whether what a run saw is a new or changed entry watched as `watched_as`, or a file of such
 /// entries that was read before and could not be read now.
 pub fn fires(place: &str, change: &str, watched_as: &str) -> bool {

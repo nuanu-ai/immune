@@ -870,12 +870,18 @@ const GROUPED: [&str; 1] = ["watched.git-hook"];
 /// kind of change and the folder that holds the file (`baseline::parent`). `None` for a finding
 /// of a rule not in `GROUPED`, the response layer's included, and for one whose subject holds
 /// `#` anywhere: the store's id joins a path and a part of a file with `#` and does not escape
-/// one in a name, so where such a subject splits is not known.
+/// one in a name, so where such a subject splits is not known. `None` too for a file a row of
+/// the table reads, such as a hook manager's configuration or Husky's script: only a hook of a
+/// hooks folder is in a group. The finding does not keep which reader read its file, so its
+/// path says it (`autorun::read_as_git_command`).
 pub fn group(i: &Item) -> Option<[&str; 4]> {
     if i.about.contains('#') {
         return None;
     }
     let (machine, unit) = crate::known::place_of(&i.about)?;
+    if autorun::read_as_git_command(unit) {
+        return None;
+    }
     let rule = GROUPED.into_iter().find(|r| *r == i.rule)?;
     let change = i.change.as_deref()?;
     Some([rule, machine, change, crate::baseline::parent(unit)])
