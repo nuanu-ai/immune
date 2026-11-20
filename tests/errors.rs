@@ -257,6 +257,53 @@ fn a_failure_has_the_documented_json_and_protobuf_fields() {
     }
 }
 
+#[test]
+fn a_store_another_process_holds_is_one_to_ask_again_in_every_form_and_never_unreadable() {
+    let e = Estate::new("held");
+    let store = e.dir().join("held.db");
+    // A sample of a reading that is not one makes the store and records nothing.
+    std::fs::write(e.dir().join("bad.json"), "not a reading").unwrap();
+    e.on(&store, &["sample", "--sample-input", "bad.json"]);
+    // Opened without making it: the store held is the one the sample made.
+    let db =
+        rusqlite::Connection::open_with_flags(&store, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap();
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    // Each command waits out SQLite's busy timeout of five seconds, so they wait side by side.
+    let asked: [&[&str]; 7] = [
+        &["status", "--json"],
+        &["findings", "--proto"],
+        &["vulnerabilities"],
+        &["owner", "--json"],
+        &["rules", "--json"],
+        &["matches", "--json", "--system-root", "."],
+        &["sample", "--json", "--sample-input", "bad.json"],
+    ];
+    let outs: Vec<Output> = std::thread::scope(|s| {
+        let waits: Vec<_> = asked.iter().map(|a| s.spawn(|| e.on(&store, a))).collect();
+        waits.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    db.execute_batch("ROLLBACK").unwrap();
+    for (args, out) in asked.iter().zip(&outs) {
+        assert_eq!(out.status.code(), Some(4), "{args:?}: {}", stderr(out));
+        let code = match args.get(1) {
+            Some(&"--proto") => v1::Failure::decode(&out.stdout[..]).unwrap().errors[0]
+                .code
+                .clone(),
+            Some(_) => {
+                let said: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+                said["errors"][0]["code"].as_str().unwrap().to_string()
+            }
+            None => {
+                let said = one_error(out, &format!("{args:?}"));
+                assert!(said.contains("another check is running"), "{said}");
+                "run_in_progress".to_string()
+            }
+        };
+        assert_eq!(code, "run_in_progress", "{args:?}");
+    }
+}
+
 /// The one wording, as the text for a person shows it in a pipe.
 const NO_STORE: &str = "there is no store here yet";
 const NO_STORE_FIX: &str = "immunity run makes one, or immunity on, which also keeps it checked.";

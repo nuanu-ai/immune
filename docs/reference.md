@@ -216,7 +216,7 @@ Reserved: `copy_of`, `reachable_from`.
 
 Every command except `immunity servers`, `immunity view` and `immunity watch` answers with one message of the contract, and fails with the message `Failure` (see [the contract](#the-contract)). `immunity servers` and `immunity view` print text for a person, and `immunity watch` prints its own JSON lines. Commands that accept `--store <path>` can use another store.
 
-A command that only reads the store opens it read-only and creates nothing next to it. When a check or a watcher was killed in the middle of a write, the first such command rolls that unfinished write back, as SQLite does for any writer, so the store holds what was last committed, and then reads. Where it cannot write in the store's folder it leaves the store as it is and fails with exit 3 until a check or a watcher opens the store.
+A command that only reads the store opens it read-only and creates nothing next to it. When a check or a watcher was killed in the middle of a write, the first such command rolls that unfinished write back, as SQLite does for any writer, so the store holds what was last committed, and then reads. Where it cannot write in the store's folder it leaves the store as it is and fails with exit 3 until a check or a watcher opens the store. Beside a writer that is alive, a reader waits up to five seconds for the store. If the writer still holds it then, the command fails with exit 4 and the code `run_in_progress`, and the caller asks again.
 
 | Exit | Means |
 |---|---|
@@ -224,7 +224,7 @@ A command that only reads the store opens it read-only and creates nothing next 
 | 1 | the event log cannot be read: `immunity matches`, `immunity rules --over-log` and `immunity verdict`; `immunity on` or `immunity off` refused or did not finish, and the failure's `code` says which |
 | 2 | a misuse or an unknown id |
 | 3 | an unreadable store |
-| 4 | a check holds the store; ask again |
+| 4 | a check or another writer holds the store; ask again |
 | 5 | another watcher has the store: `immunity watch` |
 
 | Command | Does |

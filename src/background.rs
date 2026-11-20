@@ -7,6 +7,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const EVERY: i64 = 60 * 60;
+/// How soon a full check that could not get the store, another run or process holding it, is
+/// tried again: within minutes, not at the next hour.
+const RETRY: i64 = 5 * 60;
 const LIMIT: i64 = 30 * 60;
 pub const CHECK_ARG: &str = "--background-check";
 
@@ -115,6 +118,7 @@ impl Checks {
                     let expired = Self::expired(running, now);
                     self.running = None;
                     if status.code() == Some(crate::EXIT_RUN_IN_PROGRESS.into()) {
+                        self.next = self.next.min(now.saturating_add(RETRY));
                         return None;
                     }
                     return Some(if status.success() {
@@ -264,17 +268,31 @@ mod tests {
     }
 
     #[test]
-    fn a_check_skipped_because_another_run_holds_the_store_is_not_a_failure() {
+    fn a_full_check_that_could_not_get_the_store_is_no_failure_and_is_tried_again_within_minutes() {
+        let reaped = |checks: &mut Checks, now: i64| {
+            let end = Instant::now() + Duration::from_secs(10);
+            while checks.running.is_some() {
+                assert!(checks.tick(now).is_none());
+                assert!(Instant::now() < end, "the skipped check was not reaped");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
         let mut checks = Checks::new(command("exit 4"));
         checks.tick(10);
-        let end = Instant::now() + Duration::from_secs(10);
-        while checks.running.is_some() {
-            assert!(checks.tick(10).is_none());
-            assert!(Instant::now() < end, "the skipped check was not reaped");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(checks.tick(11).is_none());
+        reaped(&mut checks, 100);
+        // Five minutes after the watcher saw it end, as the documents say, not after its start.
+        assert!(checks.tick(399).is_none());
         assert!(checks.running.is_none());
+        assert!(checks.tick(400).is_none());
+        assert!(checks.running.is_some());
+        reaped(&mut checks, 400);
+        // A check already due sooner, here by a clock moved back, is not put off by the retry.
+        let mut checks = Checks::new(command("exit 4"));
+        checks.tick(10_000);
+        reaped(&mut checks, 5_000);
+        assert!(checks.tick(5_000).is_none());
+        assert!(checks.running.is_some());
+        reaped(&mut checks, 5_000);
     }
 
     #[test]

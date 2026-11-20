@@ -9956,7 +9956,7 @@ fn a_read_only_command_in_a_folder_it_cannot_write_fails_on_a_hot_journal_and_ch
 #[test]
 fn a_read_only_command_beside_a_live_writer_waits_out_the_busy_timeout_and_rolls_nothing_back() {
     // A journal whose writer is alive is not hot. A reader waits out the busy timeout of five
-    // seconds and gives up; one that the writer's commit reaches within it answers with what
+    // seconds and gives up as one to ask again; one that the writer's commit reaches within it answers with what
     // the writer committed. Only the least it waits is pinned: SQLite counts the timeout in the
     // sleeps it asks for, and on a loaded machine they run long. That busy is not taken for a
     // hot journal is pinned in `store`, where no clock is read.
@@ -9972,9 +9972,9 @@ fn a_read_only_command_beside_a_live_writer_waits_out_the_busy_timeout_and_rolls
     let (code, stdout, stderr) = status_out(&store, &["--json"]);
     let waited = started.elapsed().as_secs_f64();
     assert!(waited >= 5.0, "waited {waited} s");
-    assert_eq!(code, Some(3), "{stderr}");
+    assert_eq!(code, Some(4), "{stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(v["errors"][0]["code"], "store_unreadable");
+    assert_eq!(v["errors"][0]["code"], "run_in_progress");
 
     let status = immunity_cmd(w.home())
         .args(["status", "--json", "--store"])

@@ -733,12 +733,42 @@ const EXIT_STORE: u8 = 3;
 const EXIT_RUN_IN_PROGRESS: u8 = 4;
 
 /// A failure an agent can act on, with its own code and exit code.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Stop {
     /// The store cannot be opened or read, with what was said.
     Store(String),
-    /// Another run holds the run lock.
+    /// Another run holds the run lock, or another process held the store past the busy timeout.
     RunInProgress,
+}
+
+impl Stop {
+    /// A failure met on the store, as the one rule tells it for every command: SQLite's busy or
+    /// locked code, another process holding the store past the busy timeout, is a run in
+    /// progress, asked again; anything else is a store that cannot be read. Told by the code,
+    /// never by the words of the message. A `Stop` already made passes as it is.
+    fn of(e: &(dyn Error + 'static)) -> Stop {
+        use rusqlite::ErrorCode::{DatabaseBusy, DatabaseLocked};
+        if let Some(stop) = e.downcast_ref::<Stop>() {
+            return stop.clone();
+        }
+        let sqlite = e.downcast_ref::<rusqlite::Error>();
+        match sqlite.and_then(rusqlite::Error::sqlite_error_code) {
+            Some(DatabaseBusy | DatabaseLocked) => Stop::RunInProgress,
+            _ => Stop::Store(e.to_string()),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for Stop {
+    fn from(e: rusqlite::Error) -> Stop {
+        Stop::of(&e)
+    }
+}
+
+impl From<Box<dyn Error>> for Stop {
+    fn from(e: Box<dyn Error>) -> Stop {
+        Stop::of(&*e)
+    }
 }
 
 impl std::fmt::Display for Stop {
@@ -946,7 +976,7 @@ fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
     store_folder(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
     // `immunity sample` makes the store where there is none; a watcher's sample only opens it.
-    drop(store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?);
+    drop(store::open_or_make(&args.store).map_err(Stop::from)?);
     let (report, _) = sample_held(
         &args.store,
         args.input.as_deref(),
@@ -970,7 +1000,7 @@ pub fn sample_held(
         now.as_secs(),
         now.subsec_nanos()
     );
-    let mut conn = store::open(path).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open(path).map_err(Stop::from)?;
     let took = std::time::Instant::now();
     let reading = match input {
         Some(file) => processes::Reading::from_json(&std::fs::read_to_string(file)?)?,
@@ -1057,7 +1087,7 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<EventsRead, B
         now.as_secs(),
         now.subsec_nanos()
     );
-    let mut conn = store::open(path).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open(path).map_err(Stop::from)?;
     let tx = conn.transaction()?;
     let machine = this_machine_or_named(&tx)?;
     store::put_entity(&tx, &machine)?;
@@ -1088,12 +1118,8 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         if !args.store.exists() {
             return Ok((None, None));
         }
-        let unreadable = |e: rusqlite::Error| Stop::Store(e.to_string());
-        let conn = store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
-        Ok((
-            events::level(&conn, now).map_err(unreadable)?,
-            Some(store::id(&conn).map_err(unreadable)?),
-        ))
+        let conn = store::open_read_only(&args.store)?;
+        Ok((events::level(&conn, now)?, Some(store::id(&conn)?)))
     })();
     let (level, store_id) = match read {
         Ok(read) => read,
@@ -1219,27 +1245,23 @@ fn status_answer(store: &Path, now: i64) -> Result<contract::v1::Status, Stop> {
     if !store.exists() {
         // No journal holds a start, so no check of this store is said to be running.
         let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-        return status::message(None, None, false, &path, now)
-            .map_err(|e| Stop::Store(e.to_string()));
+        return status::message(None, None, false, &path, now).map_err(Stop::from);
     }
     status_read(store, now).map(|(_, m)| m)
 }
 
 /// What the store holds and the contract's `Status` built from it, of one state of the store.
 fn status_read(store: &Path, now: i64) -> Result<(status::State, contract::v1::Status), Stop> {
-    let unreadable = |e: Box<dyn Error>| Stop::Store(e.to_string());
     let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-    let conn = store::open_read_only(store).map_err(unreadable)?;
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| Stop::Store(e.to_string()))?;
-    let st = status::state(&tx, &home(store), now).map_err(unreadable)?;
+    let conn = store::open_read_only(store)?;
+    let tx = conn.unchecked_transaction()?;
+    let st = status::state(&tx, &home(store), now)?;
     // Running is said only of the latest start this state of the store holds, by its own lock.
     let running = match &st.last {
-        Some(l) => osv::check_in_progress(&home(store), &l.id).map_err(|e| unreadable(e.into()))?,
+        Some(l) => osv::check_in_progress(&home(store), &l.id).map_err(|e| Stop::of(&e))?,
         None => false,
     };
-    let m = status::message(Some(&tx), Some(&st), running, &path, now).map_err(unreadable)?;
+    let m = status::message(Some(&tx), Some(&st), running, &path, now)?;
     Ok((st, m))
 }
 
@@ -1325,9 +1347,8 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     } else {
         "vulnerabilities"
     };
-    let failed = |detail: String| {
-        let (error, exit) =
-            answer::stopped(&Stop::Store(detail), "immunity vulnerabilities --json");
+    let failed = |e: &(dyn Error + 'static)| {
+        let (error, exit) = answer::stopped(&Stop::of(e), "immunity vulnerabilities --json");
         answer::fail(op, args.form, error, exit)
     };
     let now = now_secs();
@@ -1335,7 +1356,7 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
         false => None,
         true => match store::open_read_only(&args.store) {
             Ok(conn) => Some(conn),
-            Err(e) => return failed(e.to_string()),
+            Err(e) => return failed(&*e),
         },
     };
     match &args.id {
@@ -1343,13 +1364,13 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
             Ok(m) => answer::print(op, args.form, &m, |m| {
                 answers_text::vulnerabilities(m, &screen::Screen::of_stdout())
             }),
-            Err(e) => failed(e.to_string()),
+            Err(e) => failed(&e),
         },
         Some(id) => match vulnerabilities::one(conn.as_ref(), id, now) {
             Ok(m) => answer::print(op, args.form, &m, |m| {
                 answers_text::vulnerability(m, &screen::Screen::of_stdout())
             }),
-            Err(e) => failed(e.to_string()),
+            Err(e) => failed(&e),
         },
     }
 }
@@ -1533,16 +1554,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         Ok(Err(refused)) => answer::fail("finding", args.form, refused.error(), EXIT_USAGE),
         Err(e) => match e.downcast::<findings::RefusedError>() {
             Ok(r) => refusal(r.0),
-            Err(e) => match e.downcast::<rusqlite::Error>() {
-                Ok(e) => match verdict::Refusal::from(*e) {
-                    r if r.code == "run_in_progress" => busy(r),
-                    r => store_failed(&Stop::Store(r.detail)),
-                },
-                Err(e) => match e.downcast_ref::<Stop>() {
-                    Some(stop) => store_failed(stop),
-                    None => store_failed(&Stop::Store(e.to_string())),
-                },
-            },
+            Err(e) => store_failed(&Stop::of(&*e)),
         },
     }
 }
@@ -2166,8 +2178,8 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             exit,
         )
     };
-    let failed = |e: &dyn std::fmt::Display| {
-        let (error, exit) = answer::stopped(&Stop::Store(e.to_string()), "immunity owner --json");
+    let failed = |e: &(dyn Error + 'static)| {
+        let (error, exit) = answer::stopped(&Stop::of(e), "immunity owner --json");
         answer::fail("owner", args.form, error, exit)
     };
     let store_path = &args.servers.store;
@@ -2194,7 +2206,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
         });
         let (standing, withdrawn, store_id) = match listed {
             Ok(l) => l,
-            Err(e) => return failed(&e),
+            Err(e) => return failed(&*e),
         };
         let m = v1::Statements {
             format: 1,
@@ -2210,7 +2222,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     let run_id = format!("owner-{}-{:09}", now.as_secs(), now.subsec_nanos());
     let mut conn = match store::open(store_path) {
         Ok(c) => c,
-        Err(e) => return failed(&e),
+        Err(e) => return failed(&*e),
     };
     let (entity, machine) = match owner::find(&conn, name) {
         Ok(owner::Found::One(entity, machine)) => (entity, machine),
@@ -2412,7 +2424,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // read. A second run stops here, at the lock on the downloads, and writes nothing.
     // A store this build cannot use is refused before anything is written next to it.
     let read_only = match args.store.exists() {
-        true => Some(store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?),
+        true => Some(store::open_read_only(&args.store).map_err(Stop::from)?),
         false => None,
     };
     let _fetching = osv::lock_fetch(&home)
@@ -2423,7 +2435,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // for that write alone, so that a status says from the first minute when it started.
     {
         let _lock = take_store(&home, store::CHECK_WAIT)?;
-        let conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+        let conn = store::open_or_make(&args.store).map_err(Stop::from)?;
         store::journal_note(&conn, at, &run_id, "run_started", "")?;
     }
     let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
@@ -2431,7 +2443,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     drop(read_only);
     // Held until the run returns. Whoever holds it now is a reading or a command, waited out.
     let _lock = take_store(&home, store::CHECK_WAIT)?;
-    let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open_or_make(&args.store).map_err(Stop::from)?;
 
     let tx = conn.transaction()?;
     // The store keeps this Mac's id; its name now is kept beside it.
@@ -5648,6 +5660,46 @@ fn grouped(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_held_by_another_is_a_run_in_progress_by_sqlite_s_code_and_anything_else_unreadable()
+    {
+        let dir = crate::common::Scratch::new("held-store");
+        let path = dir.join("held.db");
+        let holder = rusqlite::Connection::open(&path).unwrap();
+        holder
+            .execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1); BEGIN EXCLUSIVE")
+            .unwrap();
+        let reader = rusqlite::Connection::open(&path).unwrap();
+        reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let busy = || {
+            reader
+                .query_row("SELECT x FROM t", [], |_| Ok(()))
+                .unwrap_err()
+        };
+        // Locked: a connection drops a table one of its own statements is still reading.
+        let mem = rusqlite::Connection::open_in_memory().unwrap();
+        mem.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1)")
+            .unwrap();
+        let mut read = mem.prepare("SELECT x FROM t").unwrap();
+        let mut rows = read.query([]).unwrap();
+        rows.next().unwrap();
+        let locked = mem.execute_batch("DROP TABLE t").unwrap_err();
+        let missing = mem.execute_batch("SELECT * FROM nowhere").unwrap_err();
+        assert!(matches!(Stop::from(busy()), Stop::RunInProgress));
+        assert!(matches!(Stop::from(locked), Stop::RunInProgress));
+        let boxed: Box<dyn Error> = Box::new(busy());
+        assert!(matches!(Stop::from(boxed), Stop::RunInProgress));
+        assert!(matches!(Stop::from(missing), Stop::Store(_)));
+        // The words of a busy store, said by anything but SQLite, are a store that cannot be read.
+        let words: Box<dyn Error> = "database is locked".into();
+        assert!(matches!(Stop::from(words), Stop::Store(_)));
+        // A `Stop` already made passes as it is, its words without a second prefix.
+        let held: Box<dyn Error> = Box::new(Stop::RunInProgress);
+        assert!(matches!(Stop::from(held), Stop::RunInProgress));
+        let said: Box<dyn Error> = Box::new(Stop::Store("gone".into()));
+        assert!(matches!(Stop::from(said), Stop::Store(w) if w == "gone"));
+    }
 
     #[test]
     fn a_check_waits_out_whoever_holds_the_store_past_two_seconds_and_else_fails_as_a_run() {
