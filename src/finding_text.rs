@@ -501,18 +501,25 @@ fn unread(f: &v1::Finding) -> Option<&str> {
         .and_then(|b| b.new_value_text.as_deref())
 }
 
+/// What happened to a watched place, in the words a person reads wherever the core says it: the
+/// list, the finding and the pages. A value this build does not know is `changed`, as the schema
+/// says.
+pub fn change_said(change: i32) -> &'static str {
+    match v1::Change::try_from(change) {
+        Ok(v1::Change::New) => "added",
+        Ok(v1::Change::Gone) => "removed",
+        Ok(v1::Change::FirstRead) => "read for the first time",
+        Ok(v1::Change::NotRead) => "could not be read",
+        _ => "changed",
+    }
+}
+
 /// The evidence of a watched place: what happened to it in words, and when; how it is watched;
 /// that its content is not kept; why it could not be read; the places read for the first time.
 fn place_lines(s: &Screen, f: &v1::Finding, p: &v1::PlaceChanged) -> Vec<String> {
     let e = |label: &str, parts: &[(&str, Style)]| field(s, 4, EVIDENCE_LABEL, label, parts);
     let change = v1::Change::try_from(p.change).unwrap_or(v1::Change::Unspecified);
-    let said = match change {
-        v1::Change::New => "added",
-        v1::Change::Gone => "removed",
-        v1::Change::FirstRead => "read for the first time",
-        v1::Change::NotRead => "could not be read",
-        v1::Change::Changed | v1::Change::Unspecified => "changed",
-    };
+    let said = change_said(p.change);
     let at = format!(", {}", s.time(f.last_seen_at, f.answered_at));
     // What could not be read keeps its word, in red, and is never dim.
     let style = if change == v1::Change::NotRead {
