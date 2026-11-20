@@ -469,6 +469,9 @@ use Trigger::*;
 pub const REWRITTEN: &str = "its tool rewrites it constantly with its own state";
 /// Why a row is not watched live: a path with a `*` names no one file to subscribe to.
 pub const NO_FIXED_NAME: &str = "its name is not fixed, so there is no one file to subscribe to";
+/// Why a row is not watched live: each of its names would be one more path to subscribe to in
+/// every checkout.
+pub const MANY_NAMES: &str = "its tool takes its configuration under many names, so they are read at each check and not subscribed to";
 
 /// The editor's task file, from the checkout.
 pub const TASKS: &str = ".vscode/tasks.json";
@@ -528,6 +531,12 @@ pub const GIT_COMMAND: Watched = (
     "files in projects that git runs code from",
     "Files in a project that git, or a tool its hooks start, runs code from by itself, such as the scripts a hooks manager keeps.",
 );
+/// The same in the home folder, told by the same rule.
+pub const GIT_COMMAND_HOME: Watched = (
+    "file in the home folder that git runs code from",
+    "files in your home folder that git runs code from",
+    "Files in your home folder that a hooks manager runs at every git hook of every project, such as Husky's startup file.",
+);
 pub const EDITOR_EXTENSION: Watched = (
     "editor extension",
     "editor extensions",
@@ -557,6 +566,42 @@ const HUSKY: &[&str] = &[
     ".husky/pre-auto-gc",
 ];
 
+/// Lefthook's configuration files: its main and its local names, each with every extension it
+/// parses (`MainConfigNames`, `LocalConfigNames` and the extensions in `loader.go` of v2.2.2).
+/// A file `LEFTHOOK_CONFIG` names, those `extends` names and remote ones are not read.
+const LEFTHOOK: &[&str] = &[
+    "lefthook.yml",
+    "lefthook.yaml",
+    "lefthook.json",
+    "lefthook.jsonc",
+    "lefthook.toml",
+    ".lefthook.yml",
+    ".lefthook.yaml",
+    ".lefthook.json",
+    ".lefthook.jsonc",
+    ".lefthook.toml",
+    ".config/lefthook.yml",
+    ".config/lefthook.yaml",
+    ".config/lefthook.json",
+    ".config/lefthook.jsonc",
+    ".config/lefthook.toml",
+    "lefthook-local.yml",
+    "lefthook-local.yaml",
+    "lefthook-local.json",
+    "lefthook-local.jsonc",
+    "lefthook-local.toml",
+    ".lefthook-local.yml",
+    ".lefthook-local.yaml",
+    ".lefthook-local.json",
+    ".lefthook-local.jsonc",
+    ".lefthook-local.toml",
+    ".config/lefthook-local.yml",
+    ".config/lefthook-local.yaml",
+    ".config/lefthook-local.json",
+    ".config/lefthook-local.jsonc",
+    ".config/lefthook-local.toml",
+];
+
 /// The keys of the login window's preferences that name a script it runs as root at every
 /// login and logout (Apple, "Customizing Login and Logout"; KnockKnock's `LogInOutHooks`).
 const LOGIN_HOOK_KEYS: &[&str] = &["LoginHook", "LogoutHook"];
@@ -583,7 +628,7 @@ const AUTH_PLUGINS: &str =
 /// added later is read for the first time on a store that already exists: what it holds is
 /// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
-pub static POINTS: [Point; 103] = [
+pub static POINTS: [Point; 106] = [
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD) },
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD) },
     Point { runs: Some(Runs::Launchd), ..place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD) },
@@ -675,9 +720,12 @@ pub static POINTS: [Point; 103] = [
     row(&[".git/config"], Present, GitCommand, "git", Never, (EVENT, "high", "medium"), "https://git-scm.com/docs/git-config"),
     Point { scope: Scope::NamedBy("core.hooksPath"), place: Some(watched::HOOKS), ..row(&[], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".gitmodules", ".git/modules"], Present, GitCommand, "git", Never, (EVENT, "high", "low"), "https://securitylabs.datadoghq.com/articles/git-arbitrary-file-write/"),
-    row(&[".pre-commit-config.yaml"], Present, GitCommand, "pre-commit", Never, (EVENT, "medium", "low"), "https://pre-commit.com/"),
-    // As git's own hooks, whose rule tells it: no technique, medium and low.
+    // As git's own hooks, whose rule tells it: no technique, medium and low. So are the
+    // other files of hook managers read below, each by checksum.
+    row(&[".pre-commit-config.yaml", ".pre-commit-config.yml", "prek.toml"], Bytes, GitCommand, "pre-commit, prek", Never, (None, "medium", "low"), "https://pre-commit.com/; https://github.com/j178/prek/blob/main/docs/configuration.md"),
     row(HUSKY, Bytes, GitCommand, "Husky", Never, (None, "medium", "low"), "https://typicode.github.io/husky/how-to.html"),
+    // The file every hook of Husky 8 and Husky.Net sources; Husky 9 still writes it.
+    row(&[".husky/_/husky.sh"], Bytes, GitCommand, "Husky 8, Husky.Net", Never, (None, "medium", "low"), "https://github.com/typicode/husky/blob/v8.0.3/husky.sh"),
     // Hook managers whose commands live in a file of a fixed name, named and not read.
     row(&["lint-staged.config.js", "lint-staged.config.mjs", "lint-staged.config.mts", "lint-staged.config.ts", "lint-staged.config.cjs", "lint-staged.config.cts", ".lintstagedrc.js", ".lintstagedrc.mjs", ".lintstagedrc.mts", ".lintstagedrc.ts", ".lintstagedrc.cjs", ".lintstagedrc.cts"], Present, GitCommand, "lint-staged", Never, (EVENT, "medium", "low"), "https://github.com/lint-staged/lint-staged/blob/main/lib/configFiles.js"),
     // Overcommit asks again for a configuration or hook whose signature changed, unless
@@ -685,7 +733,9 @@ pub static POINTS: [Point; 103] = [
     row(&[".overcommit.yml", ".local-overcommit.yml", ".git-hooks"], Present, GitCommand, "Overcommit", OncePerContent, (EVENT, "medium", "low"), "https://github.com/sds/overcommit/blob/main/README.md"),
     row(&["captainhook.json"], Present, GitCommand, "CaptainHook", Never, (EVENT, "medium", "low"), "https://github.com/captainhook-git/captainhook/blob/main/src/Config.php"),
     row(&["grumphp.yml", "grumphp.yaml", "grumphp.yml.dist", "grumphp.yaml.dist", "grumphp.dist.yml", "grumphp.dist.yaml"], Present, GitCommand, "GrumPHP", Never, (EVENT, "medium", "low"), "https://github.com/phpro/grumphp/blob/v2.x/src/Locator/GuessedPathsLocator.php"),
-    // Lefthook's folders of scripts; its configuration files are not named here.
+    // Lefthook's configuration files, read.
+    Point { watch: Watch::Hourly(MANY_NAMES), ..row(LEFTHOOK, Bytes, GitCommand, "lefthook", Never, (None, "medium", "low"), "https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/config/loader.go") },
+    // Lefthook's folders of scripts.
     row(&[".lefthook", ".lefthook-local"], Present, GitCommand, "lefthook", Never, (EVENT, "medium", "low"), "https://github.com/evilmartians/lefthook/blob/v2.2.2/docs/configuration/Scripts.md"),
     row(&[".simple-git-hooks.cjs", ".simple-git-hooks.js", ".simple-git-hooks.mjs", "simple-git-hooks.cjs", "simple-git-hooks.js", "simple-git-hooks.mjs"], Present, GitCommand, "simple-git-hooks", Never, (EVENT, "medium", "low"), "https://github.com/toplenboren/simple-git-hooks/blob/master/simple-git-hooks.js"),
     row(&[".envrc"], Present, EnterInShell, "direnv", OncePerContent, (EVENT, "high", "medium"), "https://direnv.net/"),
@@ -709,6 +759,9 @@ pub static POINTS: [Point; 103] = [
     home(&[".claude/skills", ".claude/commands", ".claude/agents"], Present, AgentEvent, "Claude Code", Never, (EVENT, "high", "low"), "https://code.claude.com/docs/en/settings"),
     home(&[".continue/config.yaml"], Present, StartAgent, "Continue", Never, (EVENT, "high", "medium"), "https://docs.continue.dev/customize/deep-dives/configuration"),
     home(&[".codex/config.toml"], Present, StartAgent, "Codex", Never, (EVENT, "high", "medium"), "https://learn.chatgpt.com/docs/config-file/config-reference"),
+    // What Husky sources before every hook of every checkout: Husky 9 the first, unless
+    // `XDG_CONFIG_HOME` names another folder, and Husky 8 the second.
+    home(&[".config/husky/init.sh", ".huskyrc"], Bytes, GitCommand, "Husky", Never, (None, "medium", "low"), "https://github.com/typicode/husky/blob/v9.1.7/husky; https://github.com/typicode/husky/blob/v8.0.3/husky.sh"),
     home(&[".vscode/extensions"], EXTENSION, OpenInEditor, "VS Code", Never, (IDE_EXTENSION, "medium", "low"), "https://code.visualstudio.com/docs/configure/extensions/extension-marketplace"),
     home(&["Library/Application Support/JetBrains/*/plugins"], Present, OpenInEditor, "JetBrains IDEs", Never, (IDE_EXTENSION, "medium", "low"), "https://attack.mitre.org/techniques/T1176/002/"),
 ];
@@ -854,6 +907,7 @@ impl Point {
             (Scope::Checkout, StartAgent) => Some(AGENT_START),
             // Of git's own rows only those read here: the hooks are a watched place.
             (Scope::Checkout, GitCommand) if self.read_here() => Some(GIT_COMMAND),
+            (Scope::Home, GitCommand) => Some(GIT_COMMAND_HOME),
             (Scope::Home, StartAgent) => Some(AGENT_SETTINGS),
             (Scope::Home, OpenInEditor) => Some(EDITOR_EXTENSION),
             _ => None,
@@ -898,6 +952,7 @@ impl Point {
                     self.paths.join(" or ")
                 )
             }
+            (_, Bytes, Scope::Home) => format!("there is no {}", self.names().join(" or ")),
             (_, Folders(_), _) => format!("no folder in {}", self.name()),
             _ => format!("no checkout has {}", self.name()),
         }
@@ -1127,6 +1182,17 @@ pub fn levels(watched_as: &str) -> (Option<&'static str>, &'static str, &'static
         .find(|(p, _)| p.read_here() && p.watched_as() == Some(watched_as))
         .map(|(_, w)| (w.technique, w.severity, w.confidence))
         .unwrap_or((None, "medium", "low"))
+}
+
+/// Whether a file, as ids name it from the home folder, is one a row of this table reads as a
+/// file git runs code from: its path ends as the path of such a row. A hook whose name ends as
+/// one counts too; no hook name Git runs does.
+pub fn read_as_git_command(unit: &str) -> bool {
+    POINTS
+        .iter()
+        .filter(|p| p.finds(GIT_COMMAND.0) || p.finds(GIT_COMMAND_HOME.0))
+        .flat_map(|p| p.paths.iter())
+        .any(|path| unit.ends_with(path))
 }
 
 /// Whether what a run saw is a new or changed entry watched as `watched_as`, or a file of such
@@ -1886,10 +1952,10 @@ mod tests {
             assert_eq!(is, was);
         }
         assert_eq!(now.lines().count(), before.lines().count());
-        // 37 watched places, 57 ways in a project and 11 in the home folder: one table.
+        // 37 watched places, 59 ways in a project and 12 in the home folder: one table.
         assert_eq!(
             (places().count(), ways().count(), POINTS.len()),
-            (37, 68, 103)
+            (37, 71, 106)
         );
         // The reference states the same counts.
         let ((project_read, project), (home_read, home)) = (counts(false), counts(true));

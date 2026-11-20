@@ -1364,9 +1364,10 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
 const TABLE_PLACES: u64 = 35;
 
 /// The places of the home folder the watcher subscribes to through which a tool's own settings
-/// run code by itself: five files of coding agents' settings and VS Code's extensions folder.
-/// Claude Code's state file is not one: it is rewritten all the time.
-const HOME_PLACES: u64 = 6;
+/// run code by itself: five files of coding agents' settings, Husky's two startup files and
+/// VS Code's extensions folder. Claude Code's state file is not one: it is rewritten all the
+/// time.
+const HOME_PLACES: u64 = 8;
 
 /// Shared Git configuration when there is a checkout to watch: Apple Git's own file in the
 /// developer folder, the system file, the XDG file and `~/.gitconfig`.
@@ -1375,9 +1376,10 @@ const GIT_CONFIG_PLACES: u64 = 4;
 /// The places the watcher subscribes to in each checkout with default hooks. This includes
 /// `.git/config`, `.git/config.worktree`, `.git/commondir`, its hooks folder, the editor's
 /// task file and settings, two dev container paths, `package.json`, two pnpm files, seven
-/// files of coding agents' settings and the 15 files Husky keeps. A workspace file has no
-/// fixed name.
-const CHECKOUT_PLACES: u64 = 33;
+/// files of coding agents' settings, the 16 files Husky keeps and the three names of
+/// pre-commit's and prek's configuration. A workspace file has no fixed name, and lefthook's
+/// 30 names are read at each full check.
+const CHECKOUT_PLACES: u64 = 37;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
