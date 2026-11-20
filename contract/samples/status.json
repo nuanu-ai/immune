@@ -1,11 +1,11 @@
 {
-  "answered_at": 1795097218,
+  "answered_at": 1795156974,
   "answered_outside_app": {
     "items": [
       {
         "answer": {
           "given": "expected",
-          "given_at": 1795097218,
+          "given_at": 1795156974,
           "in_force": true,
           "reason_cuts": [
             {
@@ -15,9 +15,10 @@
             }
           ],
           "reason_text": "invented: my own tool, started as tool --password=\\cut{immunity:flag-value 18}",
-          "until_at": 1797689218,
+          "until_at": 1797748974,
           "via": "agent"
         },
+        "change": null,
         "finding": {
           "about_text": "file:machine:mac//opt/tools/bin/node",
           "confidence": "medium",
@@ -27,12 +28,12 @@
           "state": "expected",
           "urgent": true
         },
-        "first_seen_at": 1795097158,
+        "first_seen_at": 1795156914,
         "folder_text": null,
         "group": null,
         "kind": "interpreter running code from its command line, detached",
         "kind_title": "Script running in the background",
-        "last_seen_at": 1795097158,
+        "last_seen_at": 1795156914,
         "package_text": null,
         "releases_text": [],
         "rule_title_text": null,
@@ -48,13 +49,14 @@
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "cannot_judge": [
     "these places of persistence are not read: login and logout hooks in root's preferences, in ByHost preferences and in Managed Preferences, a PAM policy a device management profile installs, the authorization database, the sudoers file and its folder, login items and background items, crontabs, launchd jobs with no file on disk, and the applications reopened at login",
+    "what a file that starts by itself runs in turn is not read: a script that a Git hook, a file the terminal runs at start or a startup item calls or sources can change with no finding, except the scripts Husky keeps, which are read",
     "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
     "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found",
-    "none of the 87 places where code can be set to run by itself was checked on macOS 27, the version this Mac runs: a place Apple moved or dropped in this version may be read where it no longer is, or not read where it now is"
+    "none of the 88 places where code can be set to run by itself was checked on macOS 27, the version this Mac runs: a place Apple moved or dropped in this version may be read where it no longer is, or not read where it now is"
   ],
   "coverage": {
     "failed": 0,
-    "full": 20,
+    "full": 22,
     "implied_by_unreached": 0,
     "no_reader": 1,
     "none": 1,
@@ -237,6 +239,16 @@
         "examples_text": [
           "machine:mac"
         ],
+        "kind": ".husky/_/h, .husky/pre-commit, .husky/pre-merge-commit, .husky/prepare-commit-msg, .husky/commit-msg, .husky/post-commit, .husky/applypatch-msg, .husky/pre-applypatch, .husky/post-applypatch, .husky/pre-rebase, .husky/post-rewrite, .husky/post-checkout, .husky/post-merge, .husky/pre-push, .husky/pre-auto-gc of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the checkouts checked has .husky/_/h or .husky/pre-commit or .husky/pre-merge-commit or .husky/prepare-commit-msg or .husky/commit-msg or .husky/post-commit or .husky/applypatch-msg or .husky/pre-applypatch or .husky/post-applypatch or .husky/pre-rebase or .husky/post-rewrite or .husky/post-checkout or .husky/post-merge or .husky/pre-push or .husky/pre-auto-gc"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
         "kind": ".mcp.json of each checkout, the part that runs by itself",
         "reader": "watched-places",
         "reason_text": "no checkout's .mcp.json holds any of the keys read"
@@ -327,6 +339,16 @@
         "examples_text": [
           "machine:mac"
         ],
+        "kind": "programs that launch agents, daemons and login hooks run",
+        "reader": "watched-places",
+        "reason_text": "startup programs named and not there: 2; programs are read at each check and not between checks"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
         "kind": "ssh access files",
         "reader": "watched-places",
         "reason_text": "none of these places is on this machine"
@@ -402,9 +424,9 @@
         "reason_text": "none of the keys read is in ~/Library/Application Support/Claude/claude_desktop_config.json"
       }
     ],
-    "problems_total": 34,
-    "read_nothing": 32,
-    "readings": 54,
+    "problems_total": 36,
+    "read_nothing": 34,
+    "readings": 58,
     "unreached": [],
     "unreached_total": 0
   },
@@ -528,7 +550,7 @@
         0,
         2
       ],
-      "ends_at": 1795097218,
+      "ends_at": 1795156974,
       "step_seconds": 3600
     },
     "program_starts_by_minute": {
@@ -594,10 +616,10 @@
         0,
         2
       ],
-      "ends_at": 1795097218,
+      "ends_at": 1795156974,
       "step_seconds": 60
     },
-    "read_at": 1795097218,
+    "read_at": 1795156974,
     "reason_text": null,
     "said_by": null,
     "said_text": null,
@@ -611,7 +633,7 @@
       "last_day": 0,
       "since_check": 0
     },
-    "written_at": 1795097218
+    "written_at": 1795156974
   },
   "format": 1,
   "integrity": {
@@ -654,12 +676,12 @@
     "seals_carried_forward": 0,
     "seals_verified_this_run": 0
   },
-  "journal_seq": 36,
+  "journal_seq": 44,
   "last_finished_run": {
     "check": {
-      "finished_at": 1795097218,
-      "id": "1795097218-250162000",
-      "started_at": 1795097218
+      "finished_at": 1795156974,
+      "id": "1795156974-350620000",
+      "started_at": 1795156974
     },
     "first_run": false,
     "readings": {
@@ -680,9 +702,9 @@
     ]
   },
   "last_run": {
-    "finished_at": 1795097218,
-    "id": "1795097218-250162000",
-    "started_at": 1795097218
+    "finished_at": 1795156974,
+    "id": "1795156974-350620000",
+    "started_at": 1795156974
   },
   "login_job_installed": null,
   "needs_a_look": {
@@ -748,6 +770,7 @@
         },
         "finding": {
           "answer": null,
+          "change": null,
           "finding": {
             "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
             "confidence": "high",
@@ -757,12 +780,12 @@
             "state": "open",
             "urgent": true
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "verdict of the response layer",
           "kind_title": "Response layer",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": null,
           "releases_text": [],
           "rule_title_text": null,
@@ -790,7 +813,7 @@
                     "length": 18
                   }
                 ],
-                "recorded_at": 1795097218,
+                "recorded_at": 1795156974,
                 "verdict": {
                   "case_text": "case-samples",
                   "confidence": "high",
@@ -801,7 +824,7 @@
                   "kind": "suspicious",
                   "reason_text": "invented: the package was published by an account taken over; it ran tool --password=\\cut{immunity:flag-value 18}",
                   "severity": "critical",
-                  "store_id": "84fa1e6461f287eb06a12800a164f1d7",
+                  "store_id": "338a987fa39cb8b24bed54d362de4c48",
                   "verdict_id": null
                 }
               }
@@ -847,6 +870,7 @@
         },
         "finding": {
           "answer": null,
+          "change": null,
           "finding": {
             "about_text": "component:checkout:machine:mac/dev/shop/npm/ansi-regex",
             "confidence": "high",
@@ -856,12 +880,12 @@
             "state": "open",
             "urgent": true
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "lockfile dependency",
           "kind_title": "Package in a project",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": "ansi-regex",
           "releases_text": [
             "6.2.1"
@@ -887,6 +911,7 @@
         },
         "finding": {
           "answer": null,
+          "change": null,
           "finding": {
             "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
             "confidence": "medium",
@@ -896,12 +921,12 @@
             "state": "open",
             "urgent": true
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "installed package changed in place",
           "kind_title": "Package changed in place",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": null,
           "releases_text": [],
           "rule_title_text": null,
@@ -938,6 +963,7 @@
         },
         "finding": {
           "answer": null,
+          "change": null,
           "finding": {
             "about_text": "file:machine:mac/.zshrc",
             "confidence": "high",
@@ -947,12 +973,12 @@
             "state": "open",
             "urgent": true
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "match of an indicator from the list",
           "kind_title": "Indicator match",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": null,
           "releases_text": [],
           "rule_title_text": null,
@@ -1098,6 +1124,7 @@
         },
         "finding": {
           "answer": null,
+          "change": null,
           "finding": {
             "about_text": "machine:mac",
             "confidence": "low",
@@ -1107,12 +1134,12 @@
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "program start matched by a published rule",
           "kind_title": "Program start",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": null,
           "releases_text": [],
           "rule_title_text": "Binary Padding - MacOS",
@@ -1137,6 +1164,7 @@
         },
         "finding": {
           "answer": null,
+          "change": "changed",
           "finding": {
             "about_text": "file:machine:mac/.zshrc",
             "confidence": "low",
@@ -1146,12 +1174,12 @@
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1795097218,
+          "first_seen_at": 1795156974,
           "folder_text": null,
           "group": null,
           "kind": "shell profile",
           "kind_title": "Shell startup file",
-          "last_seen_at": 1795097218,
+          "last_seen_at": 1795156974,
           "package_text": null,
           "releases_text": [],
           "rule_title_text": null,
@@ -1214,8 +1242,8 @@
       "kind": "ways a project runs code by itself that are not read",
       "meaning": "None of the others is present in the projects that were looked at. Not every project was looked at, so the projects not looked at may hold some. Why: only the given folder was walked.",
       "scope": "projects",
-      "since_at": 1795097218,
-      "title": "This version reads 15 of the 41 known ways a project can make code run by itself.",
+      "since_at": 1795156974,
+      "title": "This version reads 16 of the 42 known ways a project can make code run by itself.",
       "value_text": null,
       "who": "nothing"
     },
@@ -1230,7 +1258,7 @@
       "kind": "places in the home folder where a tool's settings run code by itself that are not read",
       "meaning": "None of the others is present on this Mac now.",
       "scope": "this_mac",
-      "since_at": 1795097218,
+      "since_at": 1795156974,
       "title": "This version reads 7 of the 11 known places where a developer tool's own settings can make code run by itself.",
       "value_text": null,
       "who": "nothing"
@@ -1262,8 +1290,8 @@
       "kind": "list of known vulnerabilities not current",
       "meaning": "Why: crates.io: the download failed; what failed is listed with this; npm: its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
       "scope": "threats",
-      "since_at": 1795097218,
-      "title": "The list of known vulnerabilities could not be updated since 2026-11-19 14:06 UTC.",
+      "since_at": 1795156974,
+      "title": "The list of known vulnerabilities could not be updated since 2026-11-20 06:42 UTC.",
       "value_text": "crates.io: cannot read none: No such file or directory (os error 2)",
       "who": "nothing"
     },
@@ -1286,7 +1314,7 @@
     {
       "advice": "Nothing to do. This is a limit of this version.",
       "class": "no_reader",
-      "count": 87,
+      "count": 88,
       "examples": [],
       "examples_text": [],
       "holds_on": "every_mac",
@@ -1295,7 +1323,7 @@
       "meaning": "This Mac runs macOS 27, and no record says these were checked on it. Apple moves and drops such places between versions, so one moved or dropped in this version may be read where it no longer is, or not read where it now is.",
       "scope": "this_mac",
       "since_at": null,
-      "title": "87 places where code can be set to run by itself were not checked on this version of macOS.",
+      "title": "88 places where code can be set to run by itself were not checked on this version of macOS.",
       "value_text": null,
       "who": "nothing"
     },
@@ -1312,6 +1340,22 @@
       "scope": "this_mac",
       "since_at": null,
       "title": "Some places where something can be set to start by itself on this Mac are not checked.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
+      "count": 1,
+      "examples": [],
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "run-in-turn-not-read",
+      "kind": "scripts that a file which starts by itself runs in turn",
+      "meaning": "A Git hook, a file the terminal runs when it starts and a startup item are read. A script one of them calls or sources is not read in this version, so a change to that script goes unseen. The scripts Husky keeps for Git's hooks are the exception: they are read.",
+      "scope": "this_mac",
+      "since_at": null,
+      "title": "Scripts that a file which starts by itself runs in turn are not checked.",
       "value_text": null,
       "who": "nothing"
     },
@@ -1419,9 +1463,9 @@
       }
     ]
   },
-  "store_id": "84fa1e6461f287eb06a12800a164f1d7",
+  "store_id": "338a987fa39cb8b24bed54d362de4c48",
   "this_mac": {
-    "checked_at": 1795097218,
+    "checked_at": 1795156974,
     "fresh": true,
     "fresh_for_seconds": 7200,
     "live": false,
@@ -1438,6 +1482,11 @@
         "count": 1,
         "how": "hourly",
         "what": "shell startup files"
+      },
+      {
+        "count": 2,
+        "how": "hourly",
+        "what": "programs startup items run"
       },
       {
         "count": 1,
@@ -1457,7 +1506,7 @@
     ]
   },
   "threats": {
-    "checked_at": 1795097218,
+    "checked_at": 1795156974,
     "entries": null,
     "first_reading": null,
     "gone": null,
@@ -1502,7 +1551,7 @@
         "ecosystem": "npm",
         "matched": true,
         "not_current_why": "its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check",
-        "read_at": 1795097218,
+        "read_at": 1795156974,
         "source": "osv-npm"
       }
     ],
@@ -1540,7 +1589,7 @@
       {
         "asked_this_run": true,
         "changed_at": null,
-        "checked_at": 1795097218,
+        "checked_at": 1795156974,
         "ecosystem": "crates.io",
         "first_reading": null,
         "malicious_records": null,
@@ -1555,14 +1604,14 @@
       },
       {
         "asked_this_run": true,
-        "changed_at": 1795097218,
-        "checked_at": 1795097218,
+        "changed_at": 1795156974,
+        "checked_at": 1795156974,
         "ecosystem": "npm",
         "first_reading": null,
         "malicious_records": 1,
         "matched": true,
         "outcome": "unchanged",
-        "read_at": 1795097218,
+        "read_at": 1795156974,
         "reason_text": null,
         "records": 1,
         "since_last_reading": null,
@@ -1575,16 +1624,16 @@
   "watched": {
     "changes": [
       {
-        "at": 1795097218,
+        "at": 1795156974,
         "change": "changed",
         "kind": "shell profile",
         "path_text": ".zshrc",
-        "run_id": "1795097218-250162000"
+        "run_id": "1795156974-350620000"
       }
     ],
     "changes_total": 1,
     "content_not_read": 0,
-    "files": 3,
+    "files": 5,
     "first_reading": false,
     "kinds": [
       {
@@ -1664,6 +1713,19 @@
           "partial": 0
         },
         "reason_text": "the checkout has no hooks"
+      },
+      {
+        "coverage": "full",
+        "files": 2,
+        "kind": "program a startup item runs",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": "startup programs named and not there: 2; programs are read at each check and not between checks"
       }
     ],
     "since_last_reading": {
