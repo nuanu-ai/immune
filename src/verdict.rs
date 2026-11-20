@@ -465,21 +465,18 @@ pub fn busy() -> Refusal {
     }
 }
 
-impl From<rusqlite::Error> for Refusal {
-    fn from(e: rusqlite::Error) -> Refusal {
-        match e.sqlite_error_code() {
-            // Another writer held the store past the busy timeout: not a broken store.
-            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => busy(),
-            _ => store_unreadable(e.to_string()),
-        }
+/// A failure met on the store, by the rule every command tells it by (`Stop::of`): busy with
+/// another writer, which is asked again, or unreadable.
+fn failed(e: &(dyn std::error::Error + 'static)) -> Refusal {
+    match Stop::of(e) {
+        Stop::RunInProgress => busy(),
+        Stop::Store(detail) => store_unreadable(detail),
     }
 }
 
-/// The store could not be opened: busy with another writer, which is asked again, or unreadable.
-fn failed(e: Box<dyn std::error::Error>) -> Refusal {
-    match e.downcast::<rusqlite::Error>() {
-        Ok(e) => Refusal::from(*e),
-        Err(e) => store_unreadable(e.to_string()),
+impl From<rusqlite::Error> for Refusal {
+    fn from(e: rusqlite::Error) -> Refusal {
+        failed(&e)
     }
 }
 
@@ -756,7 +753,7 @@ pub fn writing(store: &std::path::Path) -> Result<(std::fs::File, Connection), R
     let lock = store::lock_run(&crate::home(store))
         .map_err(|e| store_unreadable(e.to_string()))?
         .ok_or_else(busy)?;
-    Ok((lock, store::open(store).map_err(failed)?))
+    Ok((lock, store::open(store).map_err(|e| failed(&*e))?))
 }
 
 /// Reads the verdict, records it in one transaction, and gives what was recorded.
@@ -782,7 +779,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
     // a refused verdict writes nothing: it makes no store of a file, migrates none and gives none
     // an id.
     let line = {
-        let read = store::open_read_only(&args.store).map_err(failed)?;
+        let read = store::open_read_only(&args.store).map_err(|e| failed(&*e))?;
         this_store(&read, &sent)?;
         // A verdict sent again under its id gets its first answer before anything else can
         // refuse it: its line may have left the log since, or its finding been answered. Nothing

@@ -227,12 +227,9 @@ fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -
     if !store.is_file() {
         return Err(Stop::Store(store::absent(store)));
     }
-    let unreadable = |e: Box<dyn std::error::Error>| Stop::Store(e.to_string());
-    let conn = store::open_read_only(store).map_err(unreadable)?;
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| Stop::Store(e.to_string()))?;
-    ask(&tx).map_err(|e| Stop::Store(e.to_string()))
+    let conn = store::open_read_only(store)?;
+    let tx = conn.unchecked_transaction()?;
+    Ok(ask(&tx)?)
 }
 
 /// Whether the store has an entity with this id, of any type.

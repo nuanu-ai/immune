@@ -97,7 +97,7 @@ pub fn parse(
 
 /// Why an answer could not be given.
 enum Failure {
-    Store(String),
+    Store(crate::Stop),
     Log(String),
 }
 
@@ -110,12 +110,16 @@ pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
                 crate::lists::matches(m, args.single, &crate::screen::Screen::of_stdout())
             });
         }
-        Err(Failure::Store(why)) => (
+        Err(Failure::Store(crate::Stop::Store(why))) => (
             "store_unreadable",
             "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
             why,
             crate::EXIT_STORE,
         ),
+        Err(Failure::Store(stop)) => {
+            let (error, exit) = answer::stopped(&stop, "immunity matches --json");
+            return answer::fail("matches", args.form, error, exit);
+        }
         Err(Failure::Log(why)) => (
             "log_unreadable",
             "the event log could not be read, so nothing was evaluated",
@@ -146,10 +150,11 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
 /// `read`, naming in `unevaluated` these rules. Matching itself is the shipped rules'.
 fn read_with(rules: &Rules, args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
     if !args.store.is_file() {
-        return Err(Failure::Store(crate::store::absent(&args.store)));
+        let absent = crate::store::absent(&args.store);
+        return Err(Failure::Store(crate::Stop::Store(absent)));
     }
-    let unreadable = |e: &dyn std::fmt::Display| Failure::Store(e.to_string());
-    let conn = store::open_read_only(&args.store).map_err(|e| unreadable(&e))?;
+    let unreadable = |e: &(dyn std::error::Error + 'static)| Failure::Store(crate::Stop::of(e));
+    let conn = store::open_read_only(&args.store).map_err(|e| unreadable(&*e))?;
     let tx = conn.unchecked_transaction().map_err(|e| unreadable(&e))?;
     let held = Held {
         read_to: events::read_up_to(&tx).map_err(|e| unreadable(&e))?,
